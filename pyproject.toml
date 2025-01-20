@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "faam-vocal"
-version = "0.2.1"
+version = "0.2.2"
 description = "Compliance checking and metadata management"
 authors = ["Dave Sproson <dave.sproson@faam.ac.uk>"]
 license = "Open Government Licence v3.0"
@@ -11,7 +11,7 @@ packages = [
 ]
 
 [tool.poetry.dependencies]
-python = ">=3.9"
+python = ">=3.12"
 netcdf4 = "^1.7.2"
 cfunits = "^3.3.7"
 pydantic = "^2.10.3"
