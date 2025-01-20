@@ -120,3 +120,27 @@ class CFStandardNames:
                     return True
 
         return False
+    
+    def canonical_units(self, word: str) -> str | None:
+        """
+        Return the canonical units for the given word.
+
+        Args:
+            word (str): The word to check.
+
+        Returns:
+            str: The canonical units for the given word.
+        """
+        if self.tree is None:
+            return ""
+
+        root = self.tree.getroot()
+        for entry in root.findall("entry"):
+            if isinstance(entry, ET.Element):
+                std_name = entry.get("id")
+                if std_name == word:
+                    units = entry.find("canonical_units")
+                    if units is not None:
+                        return getattr(units, 'text', None)
+
+        return None
