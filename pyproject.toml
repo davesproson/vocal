@@ -1,33 +1,39 @@
-[tool.poetry]
+[project]
 name = "faam-vocal"
 version = "0.2.2"
 description = "Compliance checking and metadata management"
-authors = ["Dave Sproson <dave.sproson@faam.ac.uk>"]
-license = "Open Government Licence v3.0"
-repository = "https://github.com/FAAM-146/vocal"
+authors = [{ name = "Dave Sproson", email = "dave.sproson@faam.ac.uk" }]
+requires-python = ">=3.12"
 readme = "README.md"
-packages = [
-    { include = "vocal" }
+license = "OGL-UK-3.0"
+dependencies = [
+    "netcdf4>=1.7.2,<2",
+    "cfunits>=3.3.7,<4",
+    "pydantic>=2.10.3,<3",
+    "pyyaml>=6.0.2,<7",
+    "requests>=2.32.3,<3",
+    "fastapi[standard]>=0.115.6,<0.116",
 ]
 
-[tool.poetry.dependencies]
-python = ">=3.12"
-netcdf4 = "^1.7.2"
-cfunits = "^3.3.7"
-pydantic = "^2.10.3"
-pyyaml = "^6.0.2"
-requests = "^2.32.3"
-fastapi = {extras = ["standard"], version = "^0.115.6"}
+[project.urls]
+Repository = "https://github.com/FAAM-146/vocal"
 
-[tool.poetry.scripts]
-vocal = 'vocal.cli.vocal:main'
+[project.scripts]
+vocal = "vocal.cli.vocal:main"
 
+[dependency-groups]
+dev = [
+    "mypy>=1.14.1,<2",
+    "types-requests>=2.32.0.20241016,<3",
+    "types-pyyaml>=6.0.12.20241230,<7",
+]
 
-[tool.poetry.group.dev.dependencies]
-mypy = "^1.14.1"
-types-requests = "^2.32.0.20241016"
-types-pyyaml = "^6.0.12.20241230"
+[tool.hatch.build.targets.sdist]
+include = ["vocal"]
+
+[tool.hatch.build.targets.wheel]
+include = ["vocal"]
 
 [build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
