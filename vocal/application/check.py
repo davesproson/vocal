@@ -3,15 +3,15 @@
 import os
 import re
 import sys
+from typing import Optional
 
+import typer
 from netCDF4 import Dataset
 from pydantic import BaseModel
 from pydantic import ValidationError
 import yaml
 
 from vocal.utils.registry import Registry
-
-from . import parser_factory
 from ..checking import ProductChecker
 from ..core import register_defaults_module
 from ..netcdf import NetCDFReader
@@ -313,93 +313,52 @@ def run_checks(filename: str, projects: list[str], definitions: list[str]) -> bo
     return ok
 
 
-def main() -> None:
-    """
-    Main entry point for the vocal check command.
-    """
-
-    parser = parser_factory(
-        file=__file__,
-        description="Check a file against standard and/or product definition",
-    )
-
-    parser.add_argument(
-        "filename", type=str, metavar="FILE", help="The netCDF file to check"
-    )
-
-    parser.add_argument(
-        "-p",
-        "--project",
-        dest="project",
-        type=str,
-        metavar="PROJECT",
-        nargs="+",
-        action="store",
-        default=None,
-        help="Path to one or more vocal projects, defaults to current directory",
-    )
-
-    parser.add_argument(
-        "-d",
-        "--definition",
-        dest="definition",
-        type=str,
-        metavar="DEFINITION",
-        nargs="+",
-        default=None,
-        help="Product definition(s) to test against",
-    )
-
-    parser.add_argument(
-        "-e",
-        "--error-only",
-        action="store_true",
-        help="Only print errors. Takes presidence over -w/--warnings",
-    )
-
-    parser.add_argument(
-        "-w",
-        "--warnings",
-        action="store_true",
-        help="Only print warnings and errors",
-    )
-
-    parser.add_argument(
-        "-q",
-        "--quiet",
-        action="store_true",
-        help="Do not print any output",
-    )
-
-    parser.add_argument("-c", "--comments", action="store_true", help="Print comments")
-
-    parser.add_argument(
-        "--no-color", action="store_true", help="Do not print colored output"
-    )
-
-    args = parser.parse_args(sys.argv[2:])
-    if args.error_only:
+def command(
+    filename: str = typer.Argument(metavar="FILE", help="The netCDF file to check"),
+    project: Optional[list[str]] = typer.Option(
+        None, "-p", "--project",
+        help="Path to one or more vocal projects. Pass multiple times for multiple projects.",
+    ),
+    definition: Optional[list[str]] = typer.Option(
+        None, "-d", "--definition",
+        help="Product definition(s) to test against. Pass multiple times for multiple definitions.",
+    ),
+    error_only: bool = typer.Option(
+        False, "-e", "--error-only",
+        help="Only print errors. Takes precedence over -w/--warnings.",
+    ),
+    warnings: bool = typer.Option(
+        False, "-w", "--warnings",
+        help="Only print warnings and errors.",
+    ),
+    quiet: bool = typer.Option(False, "-q", "--quiet", help="Do not print any output."),
+    comments: bool = typer.Option(False, "-c", "--comments", help="Print comments."),
+    no_color: bool = typer.Option(False, "--no-color", help="Do not print colored output."),
+) -> None:
+    """Check a netCDF file against standard and product definitions."""
+    if error_only:
         p.ignore_info = True
         p.ignore_warnings = True
-    if args.warnings:
+    if warnings:
         p.ignore_info = True
-    if args.comments:
+    if comments:
         p.comments = True
 
-    p.quiet = args.quiet
+    p.quiet = quiet
 
-    if args.no_color:
+    if no_color:
         TS.enabled = False
 
     autoloaded_projects = False
-    if args.project is None:
+    if project is None:
         p.print_err()
-        args.project = load_matching_projects(args.filename)
+        project = load_matching_projects(filename)
         autoloaded_projects = True
 
-    if args.definition is None and autoloaded_projects:
-        args.definition = load_matching_definitions(args.filename)
+    if definition is None and autoloaded_projects:
+        definition = load_matching_definitions(filename)
 
-    ok = run_checks(args.filename, args.project, args.definition)
+    ok = run_checks(filename, project, definition)
 
-    sys.exit(0 if ok else 1)
+    if not ok:
+        raise typer.Exit(code=1)

@@ -1,16 +1,13 @@
 """Fetch a vocal project from a git repository."""
 
 import os
-import sys
 import subprocess
 import zipfile
 
-from typing import Never
-
+import typer
 import requests
 import yaml
 
-from vocal.application import parser_factory
 from vocal.application.register import register_project
 from vocal.utils import cache_dir, flip_to_dir
 
@@ -156,33 +153,16 @@ def fetch_project(url: str, git: bool) -> None:
     )
 
 
-def main() -> Never:
-    """
-    Main function for the fetch command.
-    """
-    parser = parser_factory(
-        file=__file__,
-        description="Fetch a vocal project from a github repository.",
-    )
-
-    parser.add_argument(
-        "url",
-        type=str,
-        help="The URL of the git repository to fetch the project from.",
-    )
-
-    parser.add_argument(
-        "--git",
-        action="store_true",
+def command(
+    url: str = typer.Argument(help="The URL of the git repository to fetch the project from."),
+    git: bool = typer.Option(
+        False, "--git",
         help=(
             "Use git to clone the repository. Requires git to be installed. "
-            "This is mandatory if using a repositiory other than GitHub, or "
+            "This is mandatory if using a repository other than GitHub, or "
             "if the repository is private."
         ),
-    )
-
-    args = parser.parse_args(sys.argv[2:])
-
-    fetch_project(args.url, args.git)
-
-    sys.exit(0)
+    ),
+) -> None:
+    """Fetch a vocal project from a git repository."""
+    fetch_project(url, git)

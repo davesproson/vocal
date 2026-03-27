@@ -1,10 +1,7 @@
 """Initialise a vocal project."""
 
-from argparse import Namespace
 import os
-import sys
-
-from . import parser_factory
+import typer
 
 ATTRIBUTES_TEMPLATE = """
 from pydantic import Field, BaseModel
@@ -206,33 +203,23 @@ def make_models_module(parent_folder: str) -> None:
     make_models_init(folder)
 
 
-def init_project(args: Namespace) -> None:
-    folder = args.directory[0]
-
+def init_project(directory: str) -> None:
     try:
-        os.mkdir(folder)
+        os.mkdir(directory)
     except FileExistsError:
-        print(f"Initializing into existing folder: {folder}")
+        print(f"Initializing into existing folder: {directory}")
 
-    make_attributes_module(folder)
-    make_defaults_module(folder)
-    make_definitions_dir(folder)
-    make_models_module(folder)
+    make_attributes_module(directory)
+    make_defaults_module(directory)
+    make_definitions_dir(directory)
+    make_models_module(directory)
 
 
-def main() -> None:
-    parser = parser_factory(file=__file__, description="Initialise a vocal project")
-
-    parser.add_argument(
-        "-d",
-        type=str,
-        nargs=1,
-        default=".",
-        metavar="DIRECTORY",
-        dest="directory",
+def command(
+    directory: str = typer.Option(
+        ".", "-d", "--directory",
         help="The directory in which to create the project. Defaults to cwd.",
-    )
-
-    args = parser.parse_args(sys.argv[2:])
-
-    init_project(args)
+    ),
+) -> None:
+    """Initialise a vocal project."""
+    init_project(directory)

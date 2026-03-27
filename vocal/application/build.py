@@ -1,21 +1,18 @@
 """Create an example data file from a definition."""
 
-import os
-from argparse import Namespace
-import sys
+import typer
 
 from vocal.core import ProductDefinition, register_defaults_module
 from vocal.utils import import_project
 
-from . import parser_factory
 
-
-def make_example_data(args: Namespace) -> None:
-    project = args.project
-    definition = args.definition
-    output = args.output
-
-    project = import_project(project)
+def make_example_data(
+    project_path: str,
+    definition: str,
+    output: str,
+    find_coordinates: bool,
+) -> None:
+    project = import_project(project_path)
 
     try:
         Dataset = project.models.Dataset
@@ -25,52 +22,29 @@ def make_example_data(args: Namespace) -> None:
     register_defaults_module(project.defaults)
 
     product = ProductDefinition(definition, Dataset)
-    product.create_example_file(output, find_coords=args.find_coordinates)
+    product.create_example_file(output, find_coords=find_coordinates)
 
 
-def main() -> None:
-    parser = parser_factory(file=__file__, description=__doc__)
-
-    parser.add_argument(
-        "-p",
-        "--project",
-        type=str,
-        metavar="PROJECT",
-        default=".",
-        dest="project",
+def command(
+    project: str = typer.Option(
+        ".", "-p", "--project",
         help="The path of a vocal project to use. Defaults to current directory.",
-    )
-
-    parser.add_argument(
-        "-d",
-        "--definiton",
-        type=str,
-        metavar="DEFINITION",
-        required=True,
-        dest="definition",
+    ),
+    definition: str = typer.Option(
+        ..., "-d", "--definition",
         help="The product definition file to use for the example data.",
-    )
-
-    parser.add_argument(
-        "-o",
-        "--output",
-        type=str,
-        metavar="OUTPUT",
-        dest="output",
-        required=True,
-        help="The output filename",
-    )
-
-    parser.add_argument(
-        "-fc",
-        "--find-coordinates",
-        action="store_true",
+    ),
+    output: str = typer.Option(
+        ..., "-o", "--output",
+        help="The output filename.",
+    ),
+    find_coordinates: bool = typer.Option(
+        False, "--find-coordinates", "-fc",
         help=(
             "Use standard names to generate coordinates attribute "
-            "rather than relying on specification/example"
+            "rather than relying on specification/example."
         ),
-    )
-
-    args = parser.parse_args(sys.argv[2:])
-
-    make_example_data(args)
+    ),
+) -> None:
+    """Create an example data file from a definition."""
+    make_example_data(project, definition, output, find_coordinates)

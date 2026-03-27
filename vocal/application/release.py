@@ -2,12 +2,9 @@
 
 import glob
 import os
-import importlib.util
-import sys
+from typing import Optional
 
-from argparse import Namespace
-
-from . import parser_factory
+import typer
 
 from vocal.core import ProductCollection, register_defaults_module
 from vocal.utils import import_project
@@ -29,11 +26,13 @@ def resolve_full_path(path: str) -> str:
     return path
 
 
-def release(args: Namespace) -> None:
-    project = resolve_full_path(args.project)
-    version = args.version
-    output_dir = args.output_dir
-    defs_dir = args.definitions
+def release(
+    project_path: str,
+    version: str,
+    output_dir: str,
+    definitions: Optional[str],
+) -> None:
+    project = resolve_full_path(project_path)
 
     if not os.path.isdir(project):
         raise ValueError(
@@ -54,11 +53,10 @@ def release(args: Namespace) -> None:
     except ModuleNotFoundError as e:
         raise RuntimeError("Unable to import project models") from e
 
-    if not defs_dir:
-        defs_dir = os.path.join(project, "definitions")
+    if not definitions:
+        definitions = os.path.join(project, "definitions")
 
-    defs_dir = resolve_full_path(defs_dir)
-
+    defs_dir = resolve_full_path(definitions)
     defs_glob = os.path.join(defs_dir, "*.yaml")
 
     collection = ProductCollection(model=Dataset, version=version)
@@ -80,50 +78,26 @@ def release(args: Namespace) -> None:
         os.chdir(cwd)
 
 
-def main() -> None:
-    parser = parser_factory(
-        file=__file__, description="Create a versioned JSON product release."
-    )
-
-    parser.add_argument(
-        "project",
-        type=str,
+def command(
+    project: str = typer.Argument(
         metavar="PROJECT",
-        help="The path of a vocal project for which to create vocabularies",
-    )
-
-    parser.add_argument(
-        "-d",
-        "--definitons",
-        type=str,
-        metavar="DEFINITION",
-        dest="definitions",
+        help="The path of a vocal project for which to create vocabularies.",
+    ),
+    definitions: Optional[str] = typer.Option(
+        None, "-d", "--definitions",
         help=(
             "The folder to look in for product definitions. "
-            "Defaults to <project>/definitions"
+            "Defaults to <project>/definitions."
         ),
-    )
-
-    parser.add_argument(
-        "-v",
-        "--version",
-        type=str,
-        required=True,
-        metavar="VERSION",
-        dest="version",
-        help="The product version, e.g. 1.0",
-    )
-
-    parser.add_argument(
-        "-o",
-        "--output-dir",
-        type=str,
-        default=".",
-        metavar="OUTPUT_DIR",
-        dest="output_dir",
+    ),
+    version: str = typer.Option(
+        ..., "-v", "--version",
+        help="The product version, e.g. 1.0.",
+    ),
+    output_dir: str = typer.Option(
+        ".", "-o", "--output-dir",
         help="The directory to write the versioned definitions to.",
-    )
-
-    args = parser.parse_args(sys.argv[2:])
-
-    release(args)
+    ),
+) -> None:
+    """Create versioned JSON product specifications."""
+    release(project, version, output_dir, definitions)

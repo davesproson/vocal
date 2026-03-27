@@ -2,9 +2,10 @@
 
 import os
 import re
-import sys
+from typing import Optional
 
-from vocal.application import parser_factory
+import typer
+
 from vocal.utils.registry import (
     ProjectSpec,
     Registry,
@@ -134,33 +135,20 @@ def conventions_to_spec(conventions_string: str) -> ProjectSpec:
     )
 
 
-def main() -> None:
-    parser = parser_factory(
-        file=__file__, description="Register a vocal project globally"
-    )
-    parser.add_argument("project", help="The vocal project to register", type=str)
-
-    parser.add_argument(
-        "--conventions-string",
-        "-c",
-        help='The conventions string to use for the project. Eg. "MYSTD-[].[]"',
-        required=True,
-        type=str,
-    )
-
-    parser.add_argument(
-        "--definitions",
-        "-d",
-        help="The folder to look in for product definitions. Defaults to <project>/definitions",
-        type=str,
-    )
-
-    parser.add_argument(
-        "--force",
-        "-f",
-        help="Force registration, even if the project is already registered",
-        action="store_true",
-    )
-
-    args = parser.parse_args(sys.argv[2:])
-    register_project(args.project, args.definitions, args.conventions_string, args.force)
+def command(
+    project: str = typer.Argument(help="The vocal project to register."),
+    conventions_string: str = typer.Option(
+        ..., "-c", "--conventions-string",
+        help='The conventions string to use for the project. E.g. "MYSTD-[].[]"',
+    ),
+    definitions: Optional[str] = typer.Option(
+        None, "-d", "--definitions",
+        help="The folder to look in for product definitions. Defaults to <project>/definitions.",
+    ),
+    force: bool = typer.Option(
+        False, "-f", "--force",
+        help="Force registration, even if the project is already registered.",
+    ),
+) -> None:
+    """Register a vocal project globally."""
+    register_project(project, definitions, conventions_string, force)

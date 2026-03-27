@@ -13,6 +13,7 @@ dependencies = [
     "pyyaml>=6.0.2,<7",
     "requests>=2.32.3,<3",
     "fastapi[standard]>=0.115.6,<0.116",
+    "typer>=0.15.1",
 ]
 
 [project.urls]
