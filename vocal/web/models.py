@@ -31,7 +31,7 @@ class CheckDefinition(BaseModel):
 class CheckContext(BaseModel):
     """
     A class to hold the context of a check, to be used in the web API.
-    
+
     Attributes:
         projects (dict): A dictionary of projects to check against.
         definitions (dict): A dictionary of definitions to check against.

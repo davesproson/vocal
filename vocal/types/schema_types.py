@@ -13,7 +13,8 @@ class UnknownDataType(Exception):
     """
 
 
-type_str = lambda typ: f"<{typ}>"
+def type_str(typ):
+    return f"<{typ}>"
 
 
 def derived_type(typ: str, optional: bool = False) -> str:

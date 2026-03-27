@@ -217,7 +217,9 @@ def init_project(directory: str) -> None:
 
 def command(
     directory: str = typer.Option(
-        ".", "-d", "--directory",
+        ".",
+        "-d",
+        "--directory",
         help="The directory in which to create the project. Defaults to cwd.",
     ),
 ) -> None:

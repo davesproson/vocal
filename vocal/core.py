@@ -37,7 +37,7 @@ class HasRequiredAttributesMembers(Protocol):
 
 
 def register_defaults(name: str, mapping: dict) -> None:
-    f"""
+    """
     Register a dictionary of default values
     """
     if name not in ATTRIBUTE_TYPES:
@@ -46,11 +46,13 @@ def register_defaults(name: str, mapping: dict) -> None:
 
 
 def register_defaults_module(module: HasRequiredAttributesMembers) -> None:
-    _templates.set({
-        "globals": getattr(module, "default_global_attrs"),
-        "group": getattr(module, "default_group_attrs"),
-        "variable": getattr(module, "default_variable_attrs"),
-    })
+    _templates.set(
+        {
+            "globals": getattr(module, "default_global_attrs"),
+            "group": getattr(module, "default_group_attrs"),
+            "variable": getattr(module, "default_variable_attrs"),
+        }
+    )
 
 
 @dataclass

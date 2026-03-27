@@ -8,7 +8,7 @@ import os
 import re
 import sys
 
-from typing import Iterator, Type, Generator
+from typing import Type, Generator
 from types import ModuleType
 from dataclasses import dataclass
 from contextlib import contextmanager
@@ -229,7 +229,6 @@ def dataset_from_partial_yaml(
     def parse_definition(defn: dict, ctype: str = "dataset") -> dict:
 
         for var in defn["variables"]:
-
             _temp = copy.deepcopy(variable_template)
             _temp.update(var["attributes"])
             var["attributes"] = _temp
@@ -391,7 +390,6 @@ def flip_to_dir(path: str) -> Generator[str, None, None]:
 
 @dataclass
 class TextStyles:
-
     _HEADER: str = "\033[95m"
     _OKBLUE: str = "\033[94m"
     _OKCYAN: str = "\033[96m"

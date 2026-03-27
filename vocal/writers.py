@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-import os
 from typing import Any, ContextManager, Protocol, Container, Type, TYPE_CHECKING
 from pydantic import BaseModel
 import json
@@ -87,7 +86,6 @@ class ContainerWriter(BaseWriter):
 
 @dataclass
 class VocabularyCreator:
-
     product_collection: ProductCollection
     folder_manager: Type[FolderManager]
     base_folder: str

@@ -147,7 +147,6 @@ class NetCDFReader:
 
 @dataclass
 class NetCDFWriter:
-
     model: Union[BaseModel, dict]
 
     def write(self, ncfile):

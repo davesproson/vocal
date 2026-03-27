@@ -27,19 +27,27 @@ def make_example_data(
 
 def command(
     project: str = typer.Option(
-        ".", "-p", "--project",
+        ".",
+        "-p",
+        "--project",
         help="The path of a vocal project to use. Defaults to current directory.",
     ),
     definition: str = typer.Option(
-        ..., "-d", "--definition",
+        ...,
+        "-d",
+        "--definition",
         help="The product definition file to use for the example data.",
     ),
     output: str = typer.Option(
-        ..., "-o", "--output",
+        ...,
+        "-o",
+        "--output",
         help="The output filename.",
     ),
     find_coordinates: bool = typer.Option(
-        False, "--find-coordinates", "-fc",
+        False,
+        "--find-coordinates",
+        "-fc",
         help=(
             "Use standard names to generate coordinates attribute "
             "rather than relying on specification/example."

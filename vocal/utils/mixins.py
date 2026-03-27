@@ -6,7 +6,6 @@ from vocal.validation import Validator
 
 
 class DatasetUtilsMixin:
-
     def _get_vocal_project(self):
         dataset_file = inspect.getfile(self.__class__)
         project_dir = os.path.dirname(os.path.dirname(dataset_file))
@@ -48,10 +47,9 @@ class DatasetUtilsMixin:
 
 
 class VocalValidatorsMixin:
-
     @property
     def validators(self) -> list[Validator]:
         return [
-            getattr(self, i) for i in 
-            [j for j in dir(self) if j.startswith('_validate')]
+            getattr(self, i)
+            for i in [j for j in dir(self) if j.startswith("_validate")]
         ]

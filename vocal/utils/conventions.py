@@ -13,15 +13,15 @@ class Conventions:
 
     def __str__(self) -> str:
         return f"{self.name}-{self.major_version}.{self.minor_version}"
-    
+
     @property
     def version_string(self) -> str:
         if self.major_version is None:
             return ""
-        
+
         if self.minor_version is None:
             return f"v{self.major_version}"
-        
+
         return f"v{self.major_version}.{self.minor_version}"
 
 

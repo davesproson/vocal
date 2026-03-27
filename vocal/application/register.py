@@ -138,15 +138,21 @@ def conventions_to_spec(conventions_string: str) -> ProjectSpec:
 def command(
     project: str = typer.Argument(help="The vocal project to register."),
     conventions_string: str = typer.Option(
-        ..., "-c", "--conventions-string",
+        ...,
+        "-c",
+        "--conventions-string",
         help='The conventions string to use for the project. E.g. "MYSTD-[].[]"',
     ),
     definitions: Optional[str] = typer.Option(
-        None, "-d", "--definitions",
+        None,
+        "-d",
+        "--definitions",
         help="The folder to look in for product definitions. Defaults to <project>/definitions.",
     ),
     force: bool = typer.Option(
-        False, "-f", "--force",
+        False,
+        "-f",
+        "--force",
         help="Force registration, even if the project is already registered.",
     ),
 ) -> None:

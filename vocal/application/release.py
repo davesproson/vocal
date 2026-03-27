@@ -84,18 +84,24 @@ def command(
         help="The path of a vocal project for which to create vocabularies.",
     ),
     definitions: Optional[str] = typer.Option(
-        None, "-d", "--definitions",
+        None,
+        "-d",
+        "--definitions",
         help=(
             "The folder to look in for product definitions. "
             "Defaults to <project>/definitions."
         ),
     ),
     version: str = typer.Option(
-        ..., "-v", "--version",
+        ...,
+        "-v",
+        "--version",
         help="The product version, e.g. 1.0.",
     ),
     output_dir: str = typer.Option(
-        ".", "-o", "--output-dir",
+        ".",
+        "-o",
+        "--output-dir",
         help="The directory to write the versioned definitions to.",
     ),
 ) -> None:

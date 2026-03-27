@@ -19,6 +19,4 @@ def command(
         webbrowser.open_new_tab(f"http://{host}:{port}")
 
     threading.Thread(target=_start_browser_in_thread, args=(host, port)).start()
-    uvicorn.run(
-        "vocal.web:app", host=host, port=port, log_level="info", reload=True
-    )
+    uvicorn.run("vocal.web:app", host=host, port=port, log_level="info", reload=True)

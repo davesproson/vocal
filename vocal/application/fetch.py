@@ -154,9 +154,12 @@ def fetch_project(url: str, git: bool) -> None:
 
 
 def command(
-    url: str = typer.Argument(help="The URL of the git repository to fetch the project from."),
+    url: str = typer.Argument(
+        help="The URL of the git repository to fetch the project from."
+    ),
     git: bool = typer.Option(
-        False, "--git",
+        False,
+        "--git",
         help=(
             "Use git to clone the repository. Requires git to be installed. "
             "This is mandatory if using a repository other than GitHub, or "

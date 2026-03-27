@@ -106,7 +106,6 @@ class Check:
 
 @dataclass
 class DimensionCollector:
-
     dimensions: list[dict] = field(default_factory=list)
 
     def search(self, container: dict, depth: int = 99) -> list[dict]:
@@ -215,7 +214,7 @@ class ProductChecker:
         if not matches:
             raise ValueError("Unable to get type from placeholder")
 
-        dtype = f'{matches["dtype"]}'
+        dtype = f"{matches['dtype']}"
         container = matches["container"]
 
         return np.dtype(dtype), container
@@ -239,9 +238,7 @@ class ProductChecker:
             raise InvalidPlaceholder(f"Invalid placeholder: {placeholder}")
 
         additional = matches["additional"]
-        additional_rex = re.compile(
-            "(?P<optional>optional)?," "?((regex=)(?P<regex>.+))?"
-        )
+        additional_rex = re.compile("(?P<optional>optional)?,?((regex=)(?P<regex>.+))?")
         matches = additional_rex.search(additional)
         if matches is None:
             raise InvalidPlaceholder(f"Invalid placeholder: {placeholder}")
@@ -596,7 +593,6 @@ class ProductChecker:
         """
 
         for def_group in d:
-
             group_name = def_group["meta"]["name"]
             group_path = f"{path}/{group_name}"
             group_required = def_group["meta"].get("required", True)
@@ -644,9 +640,9 @@ class ProductChecker:
         file_dims = DimensionCollector().search(f, depth=depth)
 
         for dim in file_dims:
-            _path = f'{path}/[{dim["name"]}]'
+            _path = f"{path}/[{dim['name']}]"
             check = self._check(
-                description=f'Checking dimension {dim["name"]} is in definition'
+                description=f"Checking dimension {dim['name']} is in definition"
             )
 
             # The dimension is in the definition. Checking equality here, which
@@ -660,21 +656,21 @@ class ProductChecker:
             if dims_with_name:
                 # There is a dimension with the same name, but different size.
                 message = (
-                    f'Dimension {dim["name"]} found in definition, but '
-                    f'with different size. Size in file: {dim["size"]}, '
-                    f'size in definition: {dims_with_name[0]["size"]}'
+                    f"Dimension {dim['name']} found in definition, but "
+                    f"with different size. Size in file: {dim['size']}, "
+                    f"size in definition: {dims_with_name[0]['size']}"
                 )
             else:
                 # There is no dimension with the same name.
-                message = f'Dimension {dim["name"]} not found in definition'
+                message = f"Dimension {dim['name']} not found in definition"
 
             check.passed = False
             check.error = CheckError(message=message, path=_path)
 
         for dim in def_dims:
-            _path = f'{path}/[{dim["name"]}]'
+            _path = f"{path}/[{dim['name']}]"
             check = self._check(
-                description=f'Checking dimension {dim["name"]} is in file'
+                description=f"Checking dimension {dim['name']} is in file"
             )
             if dim in file_dims:
                 continue
@@ -685,15 +681,15 @@ class ProductChecker:
             if dims_with_name:
                 # There is a dimension with the same name, but different size.
                 message = (
-                    f'Dimension {dim["name"]} found in file, but '
-                    f'with different size. Size in definition: {dim["size"]}, '
-                    f'size in file: {dims_with_name[0]["size"]}'
+                    f"Dimension {dim['name']} found in file, but "
+                    f"with different size. Size in definition: {dim['size']}, "
+                    f"size in file: {dims_with_name[0]['size']}"
                 )
                 check.passed = False
                 check.error = CheckError(message=message, path=_path)
             else:
                 # There is no dimension with the same name.
-                message = f'Dimension {dim["name"]} not found in file'
+                message = f"Dimension {dim['name']} not found in file"
 
                 check.has_warning = True
                 check.warning = CheckWarning(message=message, path=_path)

@@ -32,7 +32,6 @@ async def check_upload(file: UploadFile) -> CheckContext:
         )
 
     with tempfile.TemporaryDirectory() as temp_dir:
-
         # Save the file to a temporary directory
         file_path = os.path.join(temp_dir, file.filename)
         with open(file_path, "wb") as f:
@@ -100,21 +99,19 @@ async def check_upload(file: UploadFile) -> CheckContext:
                 )
 
                 if check.passed:
-
                     if check.has_comment and check.comment:
-                        context.definitions[os.path.basename(definition)].comments = (
-                            True
-                        )
+                        context.definitions[
+                            os.path.basename(definition)
+                        ].comments = True
                         _check.comment = check.comment
 
                     if check.has_warning and check.warning:
-                        context.definitions[os.path.basename(definition)].warnings = (
-                            True
-                        )
+                        context.definitions[
+                            os.path.basename(definition)
+                        ].warnings = True
                         _check.warning = check.warning
 
                 elif check.error:
-                    
                     _check.error = check.error
 
                 context.definitions[os.path.basename(definition)].checks.append(_check)

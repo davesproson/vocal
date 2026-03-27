@@ -8,16 +8,19 @@ from pydantic import model_validator, field_validator
 
 from vocal.vocab import Vocabulary
 
+
 @dataclass
 class Attribute:
     name: str
 
+
 class Model(enum.Enum):
     before = "before"
     after = "after"
-        
+
 
 Binding = Attribute | Model
+
 
 class Validator[I](Protocol):
     """
@@ -33,26 +36,25 @@ class Validator[I](Protocol):
 
 
 def _bind_validator(binding: Binding | None) -> Callable:
-        """
-        Return the appropriate validator function based on the binding
+    """
+    Return the appropriate validator function based on the binding
 
-        Args:
-            binding: The binding to use
+    Args:
+        binding: The binding to use
 
-        Returns:
-            The appropriate validator function
-        """
-        if binding is None:
-            return lambda x: x
+    Returns:
+        The appropriate validator function
+    """
+    if binding is None:
+        return lambda x: x
 
-        if isinstance(binding, Model):
-            return model_validator(mode=binding.value)
+    if isinstance(binding, Model):
+        return model_validator(mode=binding.value)
 
+    if isinstance(binding, Attribute):
+        return field_validator(binding.name)
 
-        if isinstance(binding, Attribute):
-            return field_validator(binding.name)
-
-        raise ValueError(f"Unknown binding: {binding}")
+    raise ValueError(f"Unknown binding: {binding}")
 
 
 def vocal_validator(description: str = "", bound: Binding | None = None):
@@ -82,7 +84,6 @@ def validate[I](binding: Binding, validator: Validator[I]) -> Validator[I]:
     """
     validator.binding = binding
     return _bind_validator(binding)(validator)
-
 
 
 def _randomize_object_name[I: Callable](obj: I) -> I:
@@ -163,16 +164,15 @@ def variable_exists(variable_name: str) -> Validator:
     """
 
     @vocal_validator(
-        description=f"Variable '{variable_name}' must exist in group",
-        bound=Model.after
+        description=f"Variable '{variable_name}' must exist in group", bound=Model.after
     )
     def _validator(cls, values):
         try:
-            variables = values['variables']
+            variables = values["variables"]
         except Exception:
             variables = []
-            
-        name = getattr(values.meta, 'name', 'root')
+
+        name = getattr(values.meta, "name", "root")
         if variables is None:
             raise ValueError(f"Variable '{variable_name}' not found in {name}")
 
@@ -211,7 +211,7 @@ def variable_has_types(variable_name: str, allowed_types: list[str]) -> Callable
             if var_type not in allowed_types:
                 raise ValueError(
                     f'Expected datatype of variable "{variable_name}" to be '
-                    f'one of [{",".join(allowed_types)}], got {var_type}'
+                    f"one of [{','.join(allowed_types)}], got {var_type}"
                 )
         return values
 
@@ -251,7 +251,7 @@ def variable_has_dimensions(variable_name: str, dimensions: list[str]) -> Callab
             for dim in var_dims:
                 if dim not in dimensions:
                     raise ValueError(
-                        f'Variable "{variable_name}" has unexpected dimension ' f"{dim}"
+                        f'Variable "{variable_name}" has unexpected dimension {dim}'
                     )
         return values
 
@@ -358,7 +358,6 @@ def substitute_placeholders(cls, values: dict) -> dict:
     DERIVED = "derived_from_file"
 
     for key, value in values.items():
-
         if not isinstance(value, (str, list)):
             continue
 
