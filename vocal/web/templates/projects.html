@@ -2,12 +2,29 @@
 
 {% block content %}
 <div class="container">
-    <h1>Projects</h1>
+    <div class="page-header">
+        <h1>Projects</h1>
+        <a class="btn btn-primary" href="/projects/add">Add project</a>
+    </div>
+
     {% for project_name, project in projects.items() %}
+    <div class="card">
         <h2>{{ project_name }}</h2>
-        <p>Project dir: <span class="code">{{ project.path }}</span></p>
-        <p>Products dir: <span class="code">{{ project.definitions }}</span></p>
-        <p>Identifier regex: <span class="code">{{project.spec.regex}}</span></p>
-        {% endfor %}
-    </div>  
+        <div class="card-meta">
+            <span>
+                <span class="label">Project dir</span>
+                <span class="code">{{ project.path }}</span>
+            </span>
+            <span>
+                <span class="label">Products dir</span>
+                <span class="code">{{ project.definitions }}</span>
+            </span>
+            <span>
+                <span class="label">Identifier regex</span>
+                <span class="code">{{ project.spec.regex }}</span>
+            </span>
+        </div>
+    </div>
+    {% endfor %}
+</div>
 {% endblock %}

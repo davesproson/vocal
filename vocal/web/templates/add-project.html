@@ -1,10 +1,16 @@
 {% extends "vocal.html" %}
 
 {% block content %}
-<div class="checker ">
-    <form class="flex-column" action="/projects/add" method="post">
-        <input class="mb-1"  name="url" type="text" id="project-url" placeholder="Project URL" style="width:300px">
-        <input type="submit" value="Add project">
-    </form>
+<div class="centered-page">
+    <div class="form-card">
+        <h2>Add Project</h2>
+        <form action="/projects/add" method="post">
+            <div class="form-group">
+                <label for="project-url">Project URL</label>
+                <input type="text" id="project-url" name="url" placeholder="https://..." autocomplete="off">
+            </div>
+            <input type="submit" value="Add project">
+        </form>
+    </div>
 </div>
 {% endblock %}

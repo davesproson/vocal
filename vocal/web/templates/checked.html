@@ -5,59 +5,93 @@
 
     {% for project in projects %}
     <div class="check-panel panel-{{'success' if projects[project]['passed'] else 'error'}}">
-        <h2>Checking against project <strong>{{project}}</strong></h2>
-        {% if projects[project]["passed"] %}
-        <h3>All checks passed</h3>
-        {% else %}
-        <h3>Failed</h3>
-        {% for error in projects[project]["errors"] %}
-        <p>{{error["path"]}}: {{error["message"]}}</p>
-        {% endfor %}
+        <div class="check-panel-header">
+            <span class="status-badge">{{ '✓' if projects[project]['passed'] else '✗' }}</span>
+            Project: <strong>{{ project }}</strong>
+        </div>
+        {% if not projects[project]['passed'] %}
+        <div class="check-panel-body">
+            {% for error in projects[project]['errors'] %}
+            <div class="check-item">
+                <span class="path">{{ error['path'] }}</span>
+                <span class="msg">{{ error['message'] }}</span>
+            </div>
+            {% endfor %}
+        </div>
         {% endif %}
-        {% endfor %}
     </div>
+    {% endfor %}
 
     {% for definition in definitions %}
-    <div class="check-panel">
-        <h2>Checking against definition <strong>{{definition}}</strong></h2>
+    <div class="definition-card">
+        <div class="definition-header">Definition: <strong>{{ definition }}</strong></div>
+        <div class="definition-body">
 
-        {% if not definitions[definition]["passed"] %}
-        <div class="check-panel panel-error">
-            <h3>Errors</h3>
-            {% for check in definitions[definition]["checks"] %}
-            {% if "error" in check and check["error"] %}
-            <p><strong>{{check["error"]["path"]}}:</strong> {{check["error"]["message"]}}</p>
+            {% if not definitions[definition]['passed'] %}
+            <div class="check-panel panel-error">
+                <div class="check-panel-header">
+                    <span class="status-badge">✗</span>
+                    Errors
+                </div>
+                <div class="check-panel-body">
+                    {% for check in definitions[definition]['checks'] %}
+                    {% if 'error' in check and check['error'] %}
+                    <div class="check-item">
+                        <span class="path">{{ check['error']['path'] }}</span>
+                        <span class="msg">{{ check['error']['message'] }}</span>
+                    </div>
+                    {% endif %}
+                    {% endfor %}
+                </div>
+            </div>
+            {% else %}
+            <div class="check-panel panel-success">
+                <div class="check-panel-header">
+                    <span class="status-badge">✓</span>
+                    All checks passed
+                </div>
+            </div>
             {% endif %}
-            {% endfor %}
-        </div>
-        {% else %}
-        <div class="check-panel panel-success">
-            <h3>All checks passed</h3>
-        </div>
-        {% endif %}
 
-        {% if definitions[definition]["warnings"] %}
-        <div class="check-panel panel-warning">
-            <h3>Warnings</h3>
-            {% for check in definitions[definition]["checks"] %}
-            {% if "warning" in check and check["warning"] %}
-            <p><strong>{{check["warning"]["path"]}}:</strong> {{check["warning"]["message"]}}</p>
+            {% if definitions[definition]['warnings'] %}
+            <div class="check-panel panel-warning">
+                <div class="check-panel-header">
+                    <span class="status-badge">!</span>
+                    Warnings
+                </div>
+                <div class="check-panel-body">
+                    {% for check in definitions[definition]['checks'] %}
+                    {% if 'warning' in check and check['warning'] %}
+                    <div class="check-item">
+                        <span class="path">{{ check['warning']['path'] }}</span>
+                        <span class="msg">{{ check['warning']['message'] }}</span>
+                    </div>
+                    {% endif %}
+                    {% endfor %}
+                </div>
+            </div>
             {% endif %}
-            {% endfor %}
-        </div>
-        {% endif %}
 
-        {% if definitions[definition]["comments"] %}
-        <div class="check-panel panel-info">
-            <h3>Comments</h3>
-            {% for check in definitions[definition]["checks"] %}
-            {% if "comment" in check and check["comment"] %}
-            <p><strong>{{check["comment"]["path"]}}:</strong> {{check["comment"]["message"]}}</p>
+            {% if definitions[definition]['comments'] %}
+            <div class="check-panel panel-info">
+                <div class="check-panel-header">
+                    <span class="status-badge">i</span>
+                    Comments
+                </div>
+                <div class="check-panel-body">
+                    {% for check in definitions[definition]['checks'] %}
+                    {% if 'comment' in check and check['comment'] %}
+                    <div class="check-item">
+                        <span class="path">{{ check['comment']['path'] }}</span>
+                        <span class="msg">{{ check['comment']['message'] }}</span>
+                    </div>
+                    {% endif %}
+                    {% endfor %}
+                </div>
+            </div>
             {% endif %}
-            {% endfor %}
-        </div>
-        {% endif %}
 
+        </div>
     </div>
     {% endfor %}
 

@@ -1,29 +1,34 @@
 {% extends "vocal.html" %}
 
-
 {% block content %}
-<div class="checker">
-    <form action="/" method="post" enctype="multipart/form-data">
-        <div class="flex-column">
-            <label class="mb-1 s-2" for="ncfile">Select a file:</label>
-            <input class="mb-1 s-1" type="file" id="ncfile" name="file" accept=".nc">
-        </div>
-       
-    </form>
-    <div id="progress-bar" class="flex-column" style="display: none;">
-        <div class="s-2 mb-1">Checking file...</div>
-        <div class="progress-bar">
-            <div class="progress-bar-value"></div>
+<div class="centered-page">
+    <div class="upload-card">
+        <h2>Check a NetCDF File</h2>
+        <p>Validate your file against registered project definitions.</p>
+
+        <form action="/" method="post" enctype="multipart/form-data" id="upload-form">
+            <label class="upload-zone" for="ncfile">
+                <div class="upload-icon">↑</div>
+                <span class="upload-zone-label">Choose a file</span>
+                <span class="upload-zone-hint">Accepts .nc files</span>
+                <input type="file" id="ncfile" name="file" accept=".nc">
+            </label>
+        </form>
+
+        <div id="progress-bar" class="progress-container" style="display: none; margin-top: 24px;">
+            <div class="progress-label">Checking file&hellip;</div>
+            <div class="progress-bar">
+                <div class="progress-bar-value"></div>
+            </div>
         </div>
     </div>
 </div>
 
 <script>
     document.getElementById("ncfile").addEventListener("change", function() {
-        document.getElementById("progress-bar").style.display = "block";
-        document.querySelector("form").style.display = "none";
-        document.querySelector("form").submit();
-
+        document.getElementById("progress-bar").style.display = "flex";
+        document.getElementById("upload-form").style.display = "none";
+        document.getElementById("upload-form").submit();
     });
 </script>
 {% endblock %}

@@ -1,9 +1,11 @@
 {% extends "vocal.html" %}
 
 {% block content %}
-<div class="checker flex-column">
-    <h2>No projects found</h2>
-    <p>No Vocal projects have been registered.</p>
-    <a class="btn" href="/projects/add">Add project</a>
+<div class="centered-page">
+    <div class="empty-state">
+        <h2>No projects registered</h2>
+        <p>Add a Vocal project to start validating NetCDF files against definitions.</p>
+        <a class="btn btn-primary" href="/projects/add">Add project</a>
+    </div>
 </div>
 {% endblock %}
