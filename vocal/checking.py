@@ -6,8 +6,6 @@ import numpy as np
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional, Union
 
-import numpy as np
-
 from vocal.netcdf import NetCDFReader
 from vocal.types import UnknownDataType, type_from_spec
 
@@ -362,12 +360,6 @@ class ProductChecker:
                     attr_props = self.get_attribute_props_from_placeholder(def_value)
                     if attr_props.optional:
                         continue
-                else:
-                    check.passed = False
-                    check.error = CheckError(
-                        message=f"Attribute .{def_key} not in {path}",
-                        path=f"{path}.{def_key}",
-                    )
 
                 check.passed = False
                 check.error = CheckError(
