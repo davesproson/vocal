@@ -23,6 +23,10 @@ Repository = "https://github.com/FAAM-146/vocal"
 vocal = "vocal.cli.vocal:main"
 
 [dependency-groups]
+test = [
+    "pytest>=8.0",
+    "pytest-cov>=6.0",
+]
 dev = [
     "mypy>=1.14.1,<2",
     "types-requests>=2.32.0.20241016,<3",

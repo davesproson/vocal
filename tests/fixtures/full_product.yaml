@@ -1,0 +1,64 @@
+meta:
+  file_pattern: "full_test"
+
+attributes:
+  title: "Full Test Product"
+  institution: "Test Institution"
+  source: "<str: derived_from_file>"
+  comment: "<str: derived_from_file optional>"
+
+dimensions:
+  - name: time
+    size: null
+  - name: sps32
+    size: 32
+
+variables:
+  - meta:
+      name: time
+      datatype: <float64>
+      required: true
+    dimensions:
+      - time
+    attributes:
+      units: "seconds since 1970-01-01"
+
+  - meta:
+      name: data
+      datatype: <float32>
+      required: true
+    dimensions:
+      - time
+      - sps32
+    attributes:
+      units: "K"
+      long_name: "Temperature"
+      valid_range: "<Array[float32]: derived_from_file>"
+
+  - meta:
+      name: latitude
+      datatype: <float32>
+      required: false
+    dimensions:
+      - time
+    attributes:
+      units: "degrees_north"
+      long_name: "Latitude"
+
+groups:
+  - meta:
+      name: raw_data
+      required: true
+    attributes:
+      comment: "Raw instrument data"
+    variables:
+      - meta:
+          name: raw_signal
+          datatype: <float32>
+          required: true
+        dimensions:
+          - time
+          - sps32
+        attributes:
+          units: "V"
+          long_name: "Raw Signal"
