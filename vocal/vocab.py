@@ -104,6 +104,9 @@ class CFStandardNames:
             return False
 
         root = self.tree.getroot()
+        if root is None:
+            return False
+
         for entry in root.findall("entry"):
             if isinstance(entry, ET.Element):
                 std_name = entry.get("id")
@@ -120,7 +123,7 @@ class CFStandardNames:
                     return True
 
         return False
-    
+
     def canonical_units(self, word: str) -> str | None:
         """
         Return the canonical units for the given word.
@@ -135,12 +138,15 @@ class CFStandardNames:
             return ""
 
         root = self.tree.getroot()
+        if root is None:
+            return None
+
         for entry in root.findall("entry"):
             if isinstance(entry, ET.Element):
                 std_name = entry.get("id")
                 if std_name == word:
                     units = entry.find("canonical_units")
                     if units is not None:
-                        return getattr(units, 'text', None)
+                        return getattr(units, "text", None)
 
         return None
