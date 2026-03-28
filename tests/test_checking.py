@@ -6,12 +6,10 @@ import numpy as np
 import pytest
 
 from vocal.checking import (
-    Check,
     CheckError,
     CheckWarning,
     DimensionCollector,
     ElementDoesNotExist,
-    ElementStatus,
     InvalidPlaceholder,
     NotCheckedError,
     ProductChecker,
@@ -162,8 +160,7 @@ class TestCheckAttributeValue:
             "<float32: derived_from_file>", np.float32(1.0), path="/fill"
         )
         value_errors = [
-            e for e in self.checker.errors
-            if "Unexpected value" in e.message
+            e for e in self.checker.errors if "Unexpected value" in e.message
         ]
         assert not value_errors
 
@@ -225,7 +222,9 @@ class TestCheckVariableDtype:
         return {"meta": {"name": "v", "datatype": datatype}, "attributes": {}}
 
     def test_correct_dtype_passes(self) -> None:
-        self.checker.check_variable_dtype(self._var("<float32>"), self._var("<float32>"))
+        self.checker.check_variable_dtype(
+            self._var("<float32>"), self._var("<float32>")
+        )
         assert self.checker.passing
 
     def test_wrong_dtype_fails(self) -> None:
@@ -236,7 +235,9 @@ class TestCheckVariableDtype:
         assert len(self.checker.errors) == 1
 
     def test_identical_dtype_strings_add_no_comment(self) -> None:
-        self.checker.check_variable_dtype(self._var("<float64>"), self._var("<float64>"))
+        self.checker.check_variable_dtype(
+            self._var("<float64>"), self._var("<float64>")
+        )
         assert not self.checker.comments
 
 
@@ -319,7 +320,9 @@ class TestCompareContainerIntegration:
     def setup_method(self) -> None:
         self.checker = ProductChecker(definition="")
 
-    def test_fully_matching_container_passes(self, simple_definition_dict: dict[str, Any]) -> None:
+    def test_fully_matching_container_passes(
+        self, simple_definition_dict: dict[str, Any]
+    ) -> None:
         file_dict: dict[str, Any] = {
             "meta": {"file_pattern": "test.nc"},
             "attributes": {"title": "Test Product"},
@@ -340,7 +343,11 @@ class TestCompareContainerIntegration:
             "attributes": {},
             "variables": [
                 {
-                    "meta": {"name": "temperature", "datatype": "<float32>", "required": True},
+                    "meta": {
+                        "name": "temperature",
+                        "datatype": "<float32>",
+                        "required": True,
+                    },
                     "dimensions": [],
                     "attributes": {},
                 }
@@ -355,7 +362,11 @@ class TestCompareContainerIntegration:
             "attributes": {},
             "variables": [
                 {
-                    "meta": {"name": "optional_var", "datatype": "<float32>", "required": False},
+                    "meta": {
+                        "name": "optional_var",
+                        "datatype": "<float32>",
+                        "required": False,
+                    },
                     "dimensions": [],
                     "attributes": {},
                 }
@@ -435,12 +446,16 @@ class TestCompareContainerIntegration:
 
 
 class TestProductCheckerCheckFile:
-    def test_valid_file_passes(self, simple_nc_file: str, simple_definition_file: str) -> None:
+    def test_valid_file_passes(
+        self, simple_nc_file: str, simple_definition_file: str
+    ) -> None:
         checker = ProductChecker(definition=simple_definition_file)
         checker.check(simple_nc_file)
         assert checker.passing
 
-    def test_wrong_attribute_value_fails(self, tmp_path: Path, simple_definition_file: str) -> None:
+    def test_wrong_attribute_value_fails(
+        self, tmp_path: Path, simple_definition_file: str
+    ) -> None:
         path = str(tmp_path / "wrong_title.nc")
         with netCDF4.Dataset(path, "w") as nc:
             nc.title = "WRONG TITLE"
@@ -452,7 +467,9 @@ class TestProductCheckerCheckFile:
         checker.check(path)
         assert not checker.passing
 
-    def test_missing_required_attribute_fails(self, tmp_path: Path, simple_definition_file: str) -> None:
+    def test_missing_required_attribute_fails(
+        self, tmp_path: Path, simple_definition_file: str
+    ) -> None:
         path = str(tmp_path / "no_title.nc")
         with netCDF4.Dataset(path, "w") as nc:
             nc.createDimension("time", None)
@@ -463,7 +480,9 @@ class TestProductCheckerCheckFile:
         checker.check(path)
         assert not checker.passing
 
-    def test_extra_attribute_passes_with_warning(self, tmp_path: Path, simple_definition_file: str) -> None:
+    def test_extra_attribute_passes_with_warning(
+        self, tmp_path: Path, simple_definition_file: str
+    ) -> None:
         path = str(tmp_path / "extra_attr.nc")
         with netCDF4.Dataset(path, "w") as nc:
             nc.title = "Test Product"
@@ -477,7 +496,9 @@ class TestProductCheckerCheckFile:
         assert checker.passing
         assert len(checker.warnings) > 0
 
-    def test_wrong_variable_dtype_fails(self, tmp_path: Path, simple_definition_file: str) -> None:
+    def test_wrong_variable_dtype_fails(
+        self, tmp_path: Path, simple_definition_file: str
+    ) -> None:
         path = str(tmp_path / "wrong_dtype.nc")
         with netCDF4.Dataset(path, "w") as nc:
             nc.title = "Test Product"
@@ -497,24 +518,32 @@ class TestProductCheckerCheckFile:
 
 
 class TestProductCheckerFullFixture:
-    def test_valid_full_file_passes(self, full_nc_file: str, full_definition_file: str) -> None:
+    def test_valid_full_file_passes(
+        self, full_nc_file: str, full_definition_file: str
+    ) -> None:
         checker = ProductChecker(definition=full_definition_file)
         checker.check(full_nc_file)
         assert checker.passing
 
-    def test_optional_variable_absent_passes(self, full_nc_file: str, full_definition_file: str) -> None:
+    def test_optional_variable_absent_passes(
+        self, full_nc_file: str, full_definition_file: str
+    ) -> None:
         # full_nc_file omits the optional 'latitude' variable by design
         checker = ProductChecker(definition=full_definition_file)
         checker.check(full_nc_file)
         assert checker.passing
 
-    def test_optional_attribute_absent_passes(self, full_nc_file: str, full_definition_file: str) -> None:
+    def test_optional_attribute_absent_passes(
+        self, full_nc_file: str, full_definition_file: str
+    ) -> None:
         # full_nc_file omits the optional 'comment' attribute by design
         checker = ProductChecker(definition=full_definition_file)
         checker.check(full_nc_file)
         assert checker.passing
 
-    def test_required_derived_attribute_missing_fails(self, tmp_path: Path, full_definition_file: str) -> None:
+    def test_required_derived_attribute_missing_fails(
+        self, tmp_path: Path, full_definition_file: str
+    ) -> None:
         path = str(tmp_path / "no_source.nc")
         with netCDF4.Dataset(path, "w") as nc:
             nc.title = "Full Test Product"
@@ -538,7 +567,9 @@ class TestProductCheckerFullFixture:
         checker.check(path)
         assert not checker.passing
 
-    def test_required_group_missing_fails(self, tmp_path: Path, full_definition_file: str) -> None:
+    def test_required_group_missing_fails(
+        self, tmp_path: Path, full_definition_file: str
+    ) -> None:
         path = str(tmp_path / "no_group.nc")
         with netCDF4.Dataset(path, "w") as nc:
             nc.title = "Full Test Product"
@@ -558,14 +589,16 @@ class TestProductCheckerFullFixture:
         checker.check(path)
         assert not checker.passing
 
-    def test_fixed_dimension_size_mismatch_fails(self, tmp_path: Path, full_definition_file: str) -> None:
+    def test_fixed_dimension_size_mismatch_fails(
+        self, tmp_path: Path, full_definition_file: str
+    ) -> None:
         path = str(tmp_path / "wrong_dim.nc")
         with netCDF4.Dataset(path, "w") as nc:
             nc.title = "Full Test Product"
             nc.institution = "Test Institution"
             nc.source = "Synthetic test data"
             nc.createDimension("time", None)
-            nc.createDimension("sps32", 16)   # definition expects 32
+            nc.createDimension("sps32", 16)  # definition expects 32
             tv = nc.createVariable("time", "f8", ("time",))
             tv.units = "seconds since 1970-01-01"
             dv = nc.createVariable("data", "f4", ("time", "sps32"))

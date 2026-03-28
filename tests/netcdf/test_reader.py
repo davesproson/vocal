@@ -3,7 +3,6 @@ from pathlib import Path
 from typing import Any
 
 import netCDF4
-import numpy as np
 import pytest
 
 from vocal.netcdf import NetCDFReader
