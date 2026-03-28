@@ -8,7 +8,7 @@ import os
 import re
 import sys
 
-from typing import Type, Generator
+from typing import Type, Generator, TypeVar
 from types import ModuleType
 from dataclasses import dataclass
 from contextlib import contextmanager
@@ -214,14 +214,17 @@ def get_type_from_placeholder(placeholder: str) -> tuple[str, str]:
     return dtype, container
 
 
+T = TypeVar("T", bound=pydantic.BaseModel)
+
+
 def dataset_from_partial_yaml(
     yamlfile: str,
     variable_template: dict,
     globals_template: dict,
     group_template: dict,
-    model: Type[pydantic.BaseModel],
+    model: Type[T],
     construct: bool = False,
-) -> pydantic.BaseModel:
+) -> T:
 
     if model is None:
         raise ValueError("Pydantic model has not been defined")
