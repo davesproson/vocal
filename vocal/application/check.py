@@ -12,7 +12,6 @@ import yaml
 
 from vocal.utils.registry import Registry
 from ..checking import ProductChecker
-from ..core import register_defaults_module
 from ..netcdf import NetCDFReader
 from ..utils import (
     get_error_locs,
@@ -170,8 +169,6 @@ def check_file_against_project(filename: str, project: str) -> bool:
             p.print_err(f'Could not import vocal project at "{project}"')
             p.print_err("Please check that the project exists and is importable.")
             raise
-
-    register_defaults_module(project_mod.defaults)
 
     return check_against_standard(
         model=project_mod.models.Dataset,

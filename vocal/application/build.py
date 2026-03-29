@@ -2,7 +2,7 @@
 
 import typer
 
-from vocal.core import ProductDefinition, register_defaults_module
+from vocal.core import ProductDefinition, TemplateSet
 from vocal.utils import import_project
 
 
@@ -19,9 +19,8 @@ def make_example_data(
     except ModuleNotFoundError as e:
         raise RuntimeError("Unable to import dataset schema") from e
 
-    register_defaults_module(project.defaults)
-
-    product = ProductDefinition(definition, Dataset)
+    templates = TemplateSet.from_module(project.defaults)
+    product = ProductDefinition(definition, Dataset, templates)
     product.create_example_file(output, find_coords=find_coordinates)
 
 

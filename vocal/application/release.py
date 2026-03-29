@@ -6,7 +6,7 @@ from typing import Optional
 
 import typer
 
-from vocal.core import ProductCollection, register_defaults_module
+from vocal.core import ProductCollection, TemplateSet
 from vocal.utils import import_project
 
 
@@ -47,11 +47,12 @@ def release(
     except ModuleNotFoundError as e:
         raise RuntimeError("Unable to import project defaults") from e
 
-    register_defaults_module(defaults)
     try:
         Dataset = module.models.Dataset
     except ModuleNotFoundError as e:
         raise RuntimeError("Unable to import project models") from e
+
+    templates = TemplateSet.from_module(defaults)
 
     if not definitions:
         definitions = os.path.join(project, "definitions")
@@ -59,7 +60,7 @@ def release(
     defs_dir = resolve_full_path(definitions)
     defs_glob = os.path.join(defs_dir, "*.yaml")
 
-    collection = ProductCollection(model=Dataset, version=version)
+    collection = ProductCollection(model=Dataset, version=version, templates=templates)
 
     for defn in glob.glob(defs_glob):
         collection.add_product(defn)

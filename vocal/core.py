@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 
-from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Iterator, Optional, Protocol, Tuple, Type
 import pydantic
@@ -12,12 +11,6 @@ from pydantic import ValidationError
 from .utils import FolderManager, dataset_from_partial_yaml
 from .writers import VocabularyCreator
 from .utils import get_error_locs
-
-ATTRIBUTE_TYPES = ("group", "variable", "globals")
-
-_templates: ContextVar[dict[str, Any]] = ContextVar(
-    "_templates", default={i: {} for i in ATTRIBUTE_TYPES}
-)
 
 
 class SupportsCreateVocabulary(Protocol):
@@ -31,28 +24,38 @@ class HasAttributesMembers(Protocol):
 
 
 class HasRequiredAttributesMembers(Protocol):
-    default_globals_attrs: dict[str, Any]
+    default_global_attrs: dict[str, Any]
     default_group_attrs: dict[str, Any]
     default_variable_attrs: dict[str, Any]
 
 
-def register_defaults(name: str, mapping: dict) -> None:
-    """
-    Register a dictionary of default values
-    """
-    if name not in ATTRIBUTE_TYPES:
-        raise ValueError("Invalid name")
-    _templates.set({**_templates.get(), name: mapping})
+@dataclass(frozen=True)
+class TemplateSet:
+    """Attribute template dicts applied when loading a product definition from YAML."""
 
+    globals: dict[str, Any] = field(default_factory=dict)
+    group: dict[str, Any] = field(default_factory=dict)
+    variable: dict[str, Any] = field(default_factory=dict)
 
-def register_defaults_module(module: HasRequiredAttributesMembers) -> None:
-    _templates.set(
-        {
-            "globals": getattr(module, "default_global_attrs"),
-            "group": getattr(module, "default_group_attrs"),
-            "variable": getattr(module, "default_variable_attrs"),
-        }
-    )
+    @classmethod
+    def empty(cls) -> "TemplateSet":
+        return cls()
+
+    @classmethod
+    def from_module(cls, module: HasRequiredAttributesMembers) -> "TemplateSet":
+        return cls(
+            globals=module.default_global_attrs,
+            group=module.default_group_attrs,
+            variable=module.default_variable_attrs,
+        )
+
+    def merge(self, override: "TemplateSet") -> "TemplateSet":
+        """Return a new TemplateSet with override keys winning on conflict."""
+        return TemplateSet(
+            globals={**self.globals, **override.globals},
+            group={**self.group, **override.group},
+            variable={**self.variable, **override.variable},
+        )
 
 
 @dataclass
@@ -63,6 +66,7 @@ class ProductDefinition:
 
     path: str
     model: Type[pydantic.BaseModel]
+    templates: TemplateSet = field(default_factory=TemplateSet.empty)
 
     def __call__(self) -> pydantic.BaseModel:
         """
@@ -94,12 +98,11 @@ class ProductDefinition:
             pydantic.BaseModel: The dataset, as a pydantic model.
         """
 
-        templates = _templates.get()
         return dataset_from_partial_yaml(
             self.path,
-            variable_template=templates["variable"],
-            group_template=templates["group"],
-            globals_template=templates["globals"],
+            variable_template=self.templates.variable,
+            group_template=self.templates.group,
+            globals_template=self.templates.globals,
             model=self.model,
             construct=construct,
         )
@@ -172,6 +175,7 @@ class ProductCollection:
 
     model: Type[pydantic.BaseModel]
     version: str
+    templates: TemplateSet = field(default_factory=TemplateSet.empty)
     vocab_creator: Optional[SupportsCreateVocabulary] = None
     definitions: list[ProductDefinition] = field(default_factory=list)
 
@@ -182,7 +186,7 @@ class ProductCollection:
             )
 
     def add_product(self, path: str) -> None:
-        product = ProductDefinition(path, self.model)
+        product = ProductDefinition(path, self.model, self.templates)
         self.definitions.append(product)
 
     @property

@@ -6,7 +6,6 @@ from fastapi import UploadFile, HTTPException, status
 
 from vocal.application.check import load_matching_definitions, load_matching_projects
 from vocal.checking import CheckError, ProductChecker
-from vocal.core import register_defaults_module
 from vocal.netcdf.writer import NetCDFReader
 from vocal.utils import get_error_locs, import_project
 from vocal.web.models import Check, CheckContext, CheckDefinition, CheckProject
@@ -58,9 +57,6 @@ async def check_upload(file: UploadFile) -> CheckContext:
                 )
             except Exception as e:
                 context.errors.append(f"Error loading project {project}: {e}")
-
-            # Register the project defaults
-            register_defaults_module(project_mod.defaults)
 
             # Load the Dataset model from the project. If the model
             # cannot be parsed, add the error to the context.
