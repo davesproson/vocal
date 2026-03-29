@@ -4,7 +4,12 @@ import tempfile
 from pydantic import ValidationError
 from fastapi import UploadFile, HTTPException, status
 
-from vocal.application.check import load_matching_definitions, load_matching_projects
+from vocal.application.check import (
+    load_matching_definitions,
+    load_matching_projects,
+    NoConventionsFound,
+    NoMatchingProjects,
+)
 from vocal.checking import CheckError, ProductChecker
 from vocal.netcdf.writer import NetCDFReader
 from vocal.utils import get_error_locs, import_project
@@ -39,8 +44,23 @@ async def check_upload(file: UploadFile) -> CheckContext:
 
         # Load the projects and definitions which match the file
         # pattern and Conventions
-        projects = load_matching_projects(file_path)
-        definitions = load_matching_definitions(file_path)
+        try:
+            projects = load_matching_projects(file_path)
+        except NoConventionsFound as e:
+            raise HTTPException(
+                detail=str(e), status_code=status.HTTP_422_UNPROCESSABLE_ENTITY
+            )
+        except NoMatchingProjects as e:
+            raise HTTPException(
+                detail=str(e), status_code=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            definitions = load_matching_definitions(file_path)
+        except NoConventionsFound as e:
+            raise HTTPException(
+                detail=str(e), status_code=status.HTTP_422_UNPROCESSABLE_ENTITY
+            )
 
         # Check against each project
         for project in projects:

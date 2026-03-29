@@ -2,7 +2,6 @@
 
 import os
 import re
-import sys
 from typing import Optional
 
 import typer
@@ -28,6 +27,14 @@ from ..utils.conventions import (
 )
 
 LINE_LEN = 50
+
+
+class NoConventionsFound(Exception):
+    pass
+
+
+class NoMatchingProjects(Exception):
+    pass
 
 TS = TextStyles()
 p = Printer()
@@ -191,21 +198,19 @@ def load_matching_projects(filename: str) -> list[str]:
     conventions = get_conventions_string(filename)
 
     if conventions is None:
-        p.print_err(
-            f"{TS.BOLD}{TS.FAIL}✗{TS.ENDC} No conventions found in file. Please provide a project or definition.\n"
+        raise NoConventionsFound(
+            "No conventions found in file. Please provide a project or definition."
         )
-        sys.exit(1)
 
     try:
         c = Registry.filter(conventions)
     except FileNotFoundError:
-        c = Registry(projects={})  # This will cause an exit
+        c = Registry(projects={})
 
     if len(c) == 0:
-        p.print_err(
-            f"{TS.BOLD}{TS.FAIL}✗{TS.ENDC} No registered project(s) found for conventions {conventions}\n"
+        raise NoMatchingProjects(
+            f"No registered project(s) found for conventions {conventions}"
         )
-        sys.exit(1)
 
     print(
         f"\n{TS.BOLD}{TS.OKGREEN}✔{TS.ENDC} Found {len(c)} registered project(s) for conventions {conventions}: {', '.join(c.projects.keys())}"
@@ -229,10 +234,9 @@ def load_matching_definitions(filename: str) -> list[str]:
     conventions = get_conventions_string(filename)
 
     if conventions is None:
-        p.print_err(
-            f"{TS.BOLD}{TS.FAIL}✗{TS.ENDC} No conventions found in file. Please provide a project or definition."
+        raise NoConventionsFound(
+            "No conventions found in file. Please provide a project or definition."
         )
-        sys.exit(1)
 
     registry = Registry.filter(conventions)
 
@@ -361,11 +365,19 @@ def command(
     autoloaded_projects = False
     if project is None:
         p.print_err()
-        project = load_matching_projects(filename)
+        try:
+            project = load_matching_projects(filename)
+        except (NoConventionsFound, NoMatchingProjects) as e:
+            p.print_err(f"{TS.BOLD}{TS.FAIL}✗{TS.ENDC} {e}\n")
+            raise typer.Exit(code=1)
         autoloaded_projects = True
 
     if definition is None and autoloaded_projects:
-        definition = load_matching_definitions(filename)
+        try:
+            definition = load_matching_definitions(filename)
+        except NoConventionsFound as e:
+            p.print_err(f"{TS.BOLD}{TS.FAIL}✗{TS.ENDC} {e}\n")
+            raise typer.Exit(code=1)
 
     ok = run_checks(filename, project, definition)
 
