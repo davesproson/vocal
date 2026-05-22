@@ -271,6 +271,8 @@ def import_project(project: str) -> ModuleType:
 
     import_error_msg = f"Unable to import project {project}"
 
+    project = os.path.normpath(project)
+
     with flip_to_dir(os.path.dirname(project)):
         module_path = os.path.join(os.path.basename(project), "__init__.py")
         if not module_path.startswith("/"):
