@@ -49,6 +49,11 @@ async def handle_unhandled_error(request: Request, exc: Exception) -> HTMLRespon
     )
 
 
+@app.get("/about", response_class=HTMLResponse)
+async def about(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(request=request, name="about.html")
+
+
 @app.get("/projects/add", response_class=HTMLResponse)
 async def add_project_get(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request=request, name="add-project.html")

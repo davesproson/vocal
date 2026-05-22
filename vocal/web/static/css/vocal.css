@@ -31,6 +31,7 @@
     --radius:      8px;
     --radius-lg:   12px;
     --nav-h:       56px;
+    --footer-h:    36px;
 }
 
 html, body {
@@ -102,7 +103,7 @@ a.a-plain.active { color: var(--text); }
 .container {
     max-width: 860px;
     margin: 0 auto;
-    padding: calc(var(--nav-h) + 32px) 24px 48px;
+    padding: calc(var(--nav-h) + 32px) 24px calc(var(--footer-h) + 32px);
 }
 
 .page-title {
@@ -265,7 +266,7 @@ a.a-plain.active { color: var(--text); }
 /* ── Centered page (checker, add-project, no-projects) ────────────── */
 .centered-page {
     position: fixed;
-    inset: var(--nav-h) 0 0 0;
+    inset: var(--nav-h) 0 var(--footer-h) 0;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -668,3 +669,36 @@ input[type="submit"]:hover { background: #1a4d80; }
 }
 
 .error-back:hover { background: var(--border); }
+
+/* ── About page prose ─────────────────────────────────────────────── */
+.prose {
+    color: var(--text);
+    font-size: 0.95rem;
+    line-height: 1.65;
+}
+
+.prose + .prose { margin-top: 12px; }
+
+.card .prose { color: var(--text); }
+
+/* ── Site footer ──────────────────────────────────────────────────── */
+.site-footer {
+    position: fixed;
+    inset: auto 0 0 0;
+    height: var(--footer-h);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--surface);
+    border-top: 1px solid var(--border-subtle);
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    letter-spacing: 0.02em;
+    z-index: 50;
+}
+
+.site-footer .heart {
+    color: #d65f6a;
+    margin: 0 4px;
+    font-size: 0.85rem;
+}

@@ -1,0 +1,45 @@
+{% extends "vocal.html" %}
+
+{% block content %}
+<div class="container">
+    <div class="page-header">
+        <h1>About Vocal</h1>
+    </div>
+
+    <div class="card">
+        <h2>What is Vocal?</h2>
+        <p class="prose">
+            Vocal manages netCDF data product standards and the specifications that describe them.
+            Data products are defined as <a href="https://docs.pydantic.dev/">pydantic</a> models,
+            and Vocal maps netCDF files onto those models so the full power of pydantic validation
+            can be used to check compliance. It is geared towards datasets following the
+            <a href="https://cfconventions.org/">Climate &amp; Forecast Conventions</a>, but works
+            with non-CF datasets too.
+        </p>
+    </div>
+
+    <div class="card">
+        <h2>Origins</h2>
+        <p class="prose">
+            Vocal began life inside the core FAAM data processing pipeline, as the layer responsible
+            for asserting that output files matched the agreed data product standards. As other
+            groups and projects needed to validate netCDF data against their own conventions, it
+            was extracted into a standalone package so the same machinery could be re-used outside
+            of the original pipeline.
+        </p>
+        <p class="prose">
+            Today, Vocal is a general-purpose tool for defining, publishing, and checking netCDF
+            data product standards &mdash; usable wherever a clear, versionable contract for
+            scientific data is needed.
+        </p>
+    </div>
+
+    <div class="card">
+        <h2>Learn more</h2>
+        <p class="prose">
+            The source, issue tracker, and project documentation live on
+            <a href="https://github.com/davesproson/vocal">GitHub</a>.
+        </p>
+    </div>
+</div>
+{% endblock %}
