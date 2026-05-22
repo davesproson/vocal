@@ -1,3 +1,4 @@
+import logging
 import os
 
 from fastapi import FastAPI, HTTPException, Request, File, UploadFile, status
@@ -7,7 +8,10 @@ from fastapi.templating import Jinja2Templates
 
 from vocal.utils.registry import Registry
 from vocal.application.fetch import fetch_project
+from vocal.exceptions import VocalError
 from vocal.web.utils import check_upload
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
@@ -21,32 +25,56 @@ templates = Jinja2Templates(
 )
 
 
+@app.exception_handler(VocalError)
+async def handle_vocal_error(request: Request, exc: VocalError) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="error.html",
+        context={"message": exc.message, "hint": exc.hint},
+        status_code=exc.status_code,
+    )
+
+
+@app.exception_handler(Exception)
+async def handle_unhandled_error(request: Request, exc: Exception) -> HTMLResponse:
+    logger.exception("Unhandled error in %s %s", request.method, request.url.path)
+    return templates.TemplateResponse(
+        request=request,
+        name="error.html",
+        context={
+            "message": "Something went wrong while handling your request.",
+            "hint": "If this keeps happening, check the server log.",
+        },
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+    )
+
+
 @app.get("/projects/add", response_class=HTMLResponse)
 async def add_project_get(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request=request, name="add-project.html")
 
 
-@app.post("/projects/add", response_class=RedirectResponse)
-async def add_project_post(request: Request) -> RedirectResponse:
+@app.post("/projects/add", response_class=HTMLResponse)
+async def add_project_post(request: Request):
     form = await request.form()
     url = form.get("url")
 
-    if not url:
-        raise HTTPException(
-            detail="No URL provided", status_code=status.HTTP_400_BAD_REQUEST
-        )
-
-    if not isinstance(url, str):
-        raise HTTPException(
-            detail="Invalid URL provided", status_code=status.HTTP_400_BAD_REQUEST
+    if not url or not isinstance(url, str):
+        return templates.TemplateResponse(
+            request=request,
+            name="add-project.html",
+            context={"error": "Please provide a project URL.", "url": url or ""},
+            status_code=status.HTTP_400_BAD_REQUEST,
         )
 
     try:
         fetch_project(url, git=False)
-    except Exception as e:
-        raise HTTPException(
-            detail=f"Error fetching project: {e}",
-            status_code=status.HTTP_400_BAD_REQUEST,
+    except VocalError as e:
+        return templates.TemplateResponse(
+            request=request,
+            name="add-project.html",
+            context={"error": e.message, "hint": e.hint, "url": url},
+            status_code=e.status_code,
         )
 
     return RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
@@ -79,7 +107,6 @@ async def root(request: Request):
 
 @app.post("/", response_class=JSONResponse)
 async def upload(request: Request, file: UploadFile = File(...)) -> HTMLResponse:
-
     context = await check_upload(file)
 
     return templates.TemplateResponse(

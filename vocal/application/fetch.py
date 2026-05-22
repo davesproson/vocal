@@ -4,13 +4,13 @@ import os
 import shutil
 import subprocess
 import zipfile
-from typing import Optional
 
 import typer
 import requests
 import yaml
 
 from vocal.application.register import register_project, CannotRegisterProjectError
+from vocal.exceptions import VocalError
 from vocal.utils import cache_dir, flip_to_dir, Printer, TextStyles
 
 
@@ -18,18 +18,8 @@ TS = TextStyles()
 p = Printer()
 
 
-class FetchError(Exception):
+class FetchError(VocalError):
     """Base class for user-facing fetch failures."""
-
-    def __init__(self, message: str, hint: Optional[str] = None) -> None:
-        super().__init__(message)
-        self.message = message
-        self.hint = hint
-
-    def __str__(self) -> str:
-        if self.hint:
-            return f"{self.message}\n  {self.hint}"
-        return self.message
 
 
 class NotAGitHubRepo(FetchError):

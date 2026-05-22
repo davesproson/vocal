@@ -1,0 +1,14 @@
+{% extends "vocal.html" %}
+
+{% block content %}
+<div class="centered-page">
+    <div class="error-card">
+        <h2>We couldn't check that file</h2>
+        <p class="error-message">{{ message }}</p>
+        {% if hint %}
+        <p class="error-hint">{{ hint }}</p>
+        {% endif %}
+        <a class="error-back" href="/">&larr; Back</a>
+    </div>
+</div>
+{% endblock %}

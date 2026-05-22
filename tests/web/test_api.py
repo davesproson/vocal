@@ -25,9 +25,11 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
+from vocal.application.check import NoConventionsFound, NoMatchingProjects
+from vocal.application.fetch import FetchError
 from vocal.utils.registry import Project, ProjectSpec, Registry
 from vocal.web.api import app
-from vocal.web.models import CheckContext
+from vocal.web.models import CheckContext, CheckIssue
 
 
 # ---------------------------------------------------------------------------
@@ -96,15 +98,32 @@ class TestAddProjectPost:
         assert response.status_code == 302
         assert response.headers["location"] == "/"
 
-    def test_fetch_failure_returns_400(self, client: TestClient) -> None:
+    def test_fetch_failure_rerenders_form_with_error(self, client: TestClient) -> None:
         with patch(
-            "vocal.web.api.fetch_project", side_effect=RuntimeError("unreachable host")
+            "vocal.web.api.fetch_project",
+            side_effect=FetchError("unreachable host", hint="check your network"),
         ):
             response = client.post(
                 "/projects/add",
                 data={"url": "https://example.com/bad"},
             )
-        assert response.status_code == 400
+        assert response.status_code == 422
+        assert "unreachable host" in response.text
+        assert "check your network" in response.text
+        # URL is preserved in the form so the user doesn't have to retype it.
+        assert "https://example.com/bad" in response.text
+
+    def test_unknown_failure_renders_error_page(self, client: TestClient) -> None:
+        client_no_raise = TestClient(app, raise_server_exceptions=False)
+        with patch(
+            "vocal.web.api.fetch_project", side_effect=RuntimeError("kaboom")
+        ):
+            response = client_no_raise.post(
+                "/projects/add",
+                data={"url": "https://example.com/bad"},
+            )
+        assert response.status_code == 500
+        assert "We couldn't check that file" in response.text
 
 
 # ---------------------------------------------------------------------------
@@ -179,3 +198,60 @@ class TestUploadPost:
                 files={"file": ("test.nc", b"dummy", "application/octet-stream")},
             )
         assert "text/html" in response.headers["content-type"]
+
+    def test_no_conventions_renders_error_page(self, client: TestClient) -> None:
+        with patch(
+            "vocal.web.api.check_upload",
+            side_effect=NoConventionsFound("No conventions in file"),
+        ):
+            response = client.post(
+                "/",
+                files={"file": ("test.nc", b"dummy", "application/octet-stream")},
+            )
+        assert response.status_code == 422
+        assert "We couldn't check that file" in response.text
+        assert "No conventions in file" in response.text
+
+    def test_no_matching_projects_uses_422(self, client: TestClient) -> None:
+        with patch(
+            "vocal.web.api.check_upload",
+            side_effect=NoMatchingProjects("No registered project for conventions X"),
+        ):
+            response = client.post(
+                "/",
+                files={"file": ("test.nc", b"dummy", "application/octet-stream")},
+            )
+        assert response.status_code == 422
+
+    def test_inline_errors_render_incomplete_banner(self, client: TestClient) -> None:
+        context = CheckContext()
+        context.errors.append(
+            CheckIssue(
+                message="No product definitions registered for FAAM_standard version 2.1",
+                hint="Register a project providing definitions for that version.",
+            )
+        )
+        with patch("vocal.web.api.check_upload", return_value=context):
+            response = client.post(
+                "/",
+                files={"file": ("test.nc", b"dummy", "application/octet-stream")},
+            )
+        assert response.status_code == 200
+        assert "INCOMPLETE CHECK" in response.text
+        assert "FAAM_standard version 2.1" in response.text
+        # message and hint render as separate elements
+        assert "Register a project providing definitions" in response.text
+
+    def test_unknown_check_failure_renders_error_page(
+        self, client: TestClient
+    ) -> None:
+        client_no_raise = TestClient(app, raise_server_exceptions=False)
+        with patch(
+            "vocal.web.api.check_upload", side_effect=RuntimeError("kaboom")
+        ):
+            response = client_no_raise.post(
+                "/",
+                files={"file": ("test.nc", b"dummy", "application/octet-stream")},
+            )
+        assert response.status_code == 500
+        assert "We couldn't check that file" in response.text

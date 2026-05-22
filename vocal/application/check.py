@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from pydantic import ValidationError
 import yaml
 
+from vocal.exceptions import VocalError
 from vocal.utils.registry import Registry
 from ..checking import ProductChecker
 from ..netcdf import NetCDFReader
@@ -29,11 +30,15 @@ from ..utils.conventions import (
 LINE_LEN = 50
 
 
-class NoConventionsFound(Exception):
+class NoConventionsFound(VocalError):
     pass
 
 
-class NoMatchingProjects(Exception):
+class NoMatchingProjects(VocalError):
+    pass
+
+
+class DefinitionVersionNotFound(VocalError):
     pass
 
 TS = TextStyles()
@@ -251,7 +256,18 @@ def load_matching_definitions(filename: str) -> list[str]:
         ci = extract_conventions_info(
             filename, project.spec.regex, name=project.spec.name
         )
-        paths.append(os.path.join(project.definitions, ci.version_string))
+        path = os.path.join(project.definitions, ci.version_string)
+        if not os.path.isdir(path):
+            raise DefinitionVersionNotFound(
+                f"No product definitions registered for "
+                f"{project.spec.name} version {ci.version_string}",
+                hint=(
+                    f"Register a project providing definitions for "
+                    f"{project.spec.name} {ci.version_string}, or upload "
+                    f"a file matching a registered version."
+                ),
+            )
+        paths.append(path)
         vocal_project = import_project(project.path)
         filecodecs.append(vocal_project.filecodec)
 
@@ -363,6 +379,7 @@ def command(
         TS.enabled = False
 
     autoloaded_projects = False
+    incomplete = False
     if project is None:
         p.print_err()
         try:
@@ -378,8 +395,12 @@ def command(
         except NoConventionsFound as e:
             p.print_err(f"{TS.BOLD}{TS.FAIL}✗{TS.ENDC} {e}\n")
             raise typer.Exit(code=1)
+        except DefinitionVersionNotFound as e:
+            p.print_err(f"{TS.BOLD}{TS.WARNING}!{TS.ENDC} {e}\n")
+            definition = None
+            incomplete = True
 
     ok = run_checks(filename, project, definition)
 
-    if not ok:
+    if not ok or incomplete:
         raise typer.Exit(code=1)

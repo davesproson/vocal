@@ -3,6 +3,13 @@ from pydantic import BaseModel, Field
 from vocal.checking import CheckError, CheckComment, CheckWarning
 
 
+class CheckIssue(BaseModel):
+    """A user-facing error or skipped-check notice surfaced on the results page."""
+
+    message: str
+    hint: str | None = None
+
+
 class Check(BaseModel):
     """A class to hold the context of a check."""
 
@@ -40,4 +47,4 @@ class CheckContext(BaseModel):
 
     projects: dict[str, CheckProject] = Field(default_factory=dict)
     definitions: dict[str, CheckDefinition] = Field(default_factory=dict)
-    errors: list[str] = Field(default_factory=list)
+    errors: list[CheckIssue] = Field(default_factory=list)

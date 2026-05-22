@@ -4,10 +4,17 @@
 <div class="centered-page">
     <div class="form-card">
         <h2>Add Project</h2>
+        {% if error %}
+        <div class="form-error">
+            <div class="form-error-message">{{ error }}</div>
+            {% if hint %}<div class="form-error-hint">{{ hint }}</div>{% endif %}
+        </div>
+        {% endif %}
         <form action="/projects/add" method="post">
             <div class="form-group">
                 <label for="project-url">Project URL</label>
-                <input type="text" id="project-url" name="url" placeholder="https://..." autocomplete="off">
+                <input type="text" id="project-url" name="url" placeholder="https://..."
+                       autocomplete="off" value="{{ url or '' }}">
             </div>
             <input type="submit" value="Add project">
         </form>
