@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from typing import Any, ContextManager, Protocol, Container, Type, TYPE_CHECKING
-from pydantic import BaseModel
 import json
+import os
+import shutil
+from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from dataclasses import dataclass
+from typing import Any, ContextManager, Container, Generator, Protocol, TYPE_CHECKING
 
-from .utils import FolderManager
+from pydantic import BaseModel
+
+from .manifest import Manifest, versioned_dirname
 
 if TYPE_CHECKING:
     from .core import ProductCollection
@@ -85,42 +89,100 @@ class ContainerWriter(BaseWriter):
 
 
 @dataclass
-class VocabularyCreator:
+class _TargetFolderManager:
+    """A :class:`SupportsInFolder` that writes straight into a fixed directory.
+
+    Unlike :class:`~vocal.utils.FolderManager` it adds no version subfolder — the
+    pack writer owns the ``v{Y}/`` directory structure.
+    """
+
+    folder: str
+
+    @contextmanager
+    def in_folder(self) -> Generator[None, None, None]:
+        os.makedirs(self.folder, exist_ok=True)
+        cwd = os.getcwd()
+        try:
+            os.chdir(self.folder)
+            yield
+        finally:
+            os.chdir(cwd)
+
+
+@dataclass
+class PackWriter:
+    """Write a pack release to disk.
+
+    Emits the product instance JSONs, ``dataset_schema.json``, and
+    ``manifest.json`` into ``<output_dir>/v{Y}/`` (where ``Y`` is the manifest's
+    version), then refreshes ``<output_dir>/latest/`` to be a byte-equal copy of
+    the highest-versioned ``v{N}/`` directory present after the write.
+
+    The version directory is replaced wholesale if it already exists; callers are
+    responsible for the ``--force`` gate that authorises overwriting a release.
+    """
+
     product_collection: ProductCollection
-    folder_manager: Type[FolderManager]
-    base_folder: str
-    version: str
+    manifest: Manifest
+    output_dir: str
+    indent: int = 2
 
-    def write_datasets(self, folder_manager: SupportsInFolder) -> None:
-        """
-        Write defined datasets to file.
-        """
+    def write(self) -> None:
+        version_dir = os.path.join(
+            self.output_dir, versioned_dirname(self.manifest.version)
+        )
+        if os.path.isdir(version_dir):
+            shutil.rmtree(version_dir)
+        os.makedirs(version_dir, exist_ok=True)
+
+        folder_manager = _TargetFolderManager(version_dir)
+        self._write_datasets(folder_manager)
+        self._write_schema(folder_manager)
+        self._write_manifest(version_dir)
+
+        self._refresh_latest()
+
+    def _write_datasets(self, folder_manager: SupportsInFolder) -> None:
         for name, dataset in self.product_collection.datasets:
-            writer = InstanceWriter(
-                model=dataset, name=name, folder_manager=folder_manager
-            )
-            writer.write()
+            InstanceWriter(
+                model=dataset,
+                name=name,
+                folder_manager=folder_manager,
+                indent=self.indent,
+            ).write()
 
-    def write_schemata(self, folder_manager: SupportsInFolder) -> None:
-        """
-        Write dataset, group, and variable schemata to file.
-        """
-        models = [self.product_collection.model]
-        names = ["dataset_schema"]
+    def _write_schema(self, folder_manager: SupportsInFolder) -> None:
+        SchemaWriter(
+            model=self.product_collection.model,
+            name="dataset_schema",
+            folder_manager=folder_manager,
+            indent=self.indent,
+        ).write()
 
-        for model, name in zip(models, names):
-            writer = SchemaWriter(model=model, name=name, folder_manager=folder_manager)
-            writer.write()
+    def _write_manifest(self, version_dir: str) -> None:
+        with open(os.path.join(version_dir, "manifest.json"), "w") as f:
+            f.write(self.manifest.to_json(indent=self.indent))
 
-    def create_vocabulary(self) -> None:
-        """
-        Create vocabularies.
-        """
-        versions = (f"v{self.version}", "latest")
+    def _refresh_latest(self) -> None:
+        """Copy the highest-versioned release directory to ``latest/``."""
+        highest = _highest_version_dir(self.output_dir)
+        latest_dir = os.path.join(self.output_dir, "latest")
+        if os.path.isdir(latest_dir):
+            shutil.rmtree(latest_dir)
+        shutil.copytree(highest, latest_dir)
 
-        for version in versions:
-            folder_manager = self.folder_manager(
-                base_folder=self.base_folder, version=version
-            )
-            self.write_datasets(folder_manager)
-            self.write_schemata(folder_manager)
+
+def _highest_version_dir(output_dir: str) -> str:
+    """Return the path of the highest-numbered ``v{N}/`` directory in ``output_dir``."""
+    best_version = -1
+    best_dir = ""
+    for entry in os.listdir(output_dir):
+        if not os.path.isdir(os.path.join(output_dir, entry)):
+            continue
+        if not (entry.startswith("v") and entry[1:].isdigit()):
+            continue
+        version = int(entry[1:])
+        if version > best_version:
+            best_version = version
+            best_dir = os.path.join(output_dir, entry)
+    return best_dir

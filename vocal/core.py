@@ -3,18 +3,20 @@ from __future__ import annotations
 import os
 
 from dataclasses import dataclass, field
-from typing import Any, Iterator, Optional, Protocol, Tuple, Type
+from typing import Any, Iterator, Protocol, Tuple, Type
 import pydantic
+import yaml
 
 from pydantic import ValidationError
 
-from .utils import FolderManager, dataset_from_partial_yaml
-from .writers import VocabularyCreator
+from .manifest import ManifestProduct
+from .utils import dataset_from_partial_yaml
 from .utils import get_error_locs
 
 
-class SupportsCreateVocabulary(Protocol):
-    def create_vocabulary(self) -> None: ...
+def product_name(path: str) -> str:
+    """Return the manifest product name for a definition file: its basename stem."""
+    return os.path.basename(path).split(".")[0]
 
 
 class HasAttributesMembers(Protocol):
@@ -67,6 +69,23 @@ class ProductDefinition:
     path: str
     model: Type[pydantic.BaseModel]
     templates: TemplateSet = field(default_factory=TemplateSet.empty)
+
+    @property
+    def file_pattern(self) -> str:
+        """The product's templated ``file_pattern``, read from its YAML ``meta``.
+
+        The pattern is a template; the project's ``filecodec`` supplies the regex
+        for each placeholder at check time. It is read straight from the source
+        YAML so it does not depend on the project's ``DatasetMeta`` shape.
+        """
+        with open(self.path, "r") as f:
+            raw = yaml.load(f, Loader=yaml.Loader)
+        try:
+            return raw["meta"]["file_pattern"]
+        except (KeyError, TypeError) as err:
+            raise ValueError(
+                f"Product definition {self.path} is missing meta.file_pattern"
+            ) from err
 
     def __call__(self) -> pydantic.BaseModel:
         """
@@ -170,20 +189,13 @@ class ProductDefinition:
 class ProductCollection:
     """
     Represents a collection of product definitions, which can be used to create
-    versioned product definitions.
+    a versioned pack.
     """
 
     model: Type[pydantic.BaseModel]
-    version: str
+    version: int
     templates: TemplateSet = field(default_factory=TemplateSet.empty)
-    vocab_creator: Optional[SupportsCreateVocabulary] = None
     definitions: list[ProductDefinition] = field(default_factory=list)
-
-    def __post_init__(self):
-        if self.vocab_creator is None:
-            self.vocab_creator = VocabularyCreator(
-                self, FolderManager, "products", self.version
-            )
 
     def add_product(self, path: str) -> None:
         product = ProductDefinition(path, self.model, self.templates)
@@ -192,10 +204,27 @@ class ProductCollection:
     @property
     def datasets(self) -> Iterator[Tuple[str, pydantic.BaseModel]]:
         for defn in self.definitions:
-            name = os.path.basename(defn.path).split(".")[0]
-            yield name, defn.construct()
+            yield product_name(defn.path), defn.construct()
 
-    def write_product_definitions(self):
+    @property
+    def manifest_products(self) -> list[ManifestProduct]:
+        """The pack's product index: one :class:`ManifestProduct` per definition.
+
+        Each entry's ``schema`` is the relative filename of the product JSON the
+        pack writer emits alongside ``manifest.json`` — it agrees with the name
+        yielded by :attr:`datasets`.
+        """
+        products: list[ManifestProduct] = []
+        for defn in self.definitions:
+            name = product_name(defn.path)
+            products.append(
+                ManifestProduct(
+                    name=name, file_pattern=defn.file_pattern, schema=f"{name}.json"
+                )
+            )
+        return products
+
+    def validate_all(self) -> None:
+        """Validate every product definition, raising on the first failure."""
         for defn in self.definitions:
             defn.validate()
-        self.vocab_creator.create_vocabulary()
