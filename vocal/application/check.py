@@ -18,14 +18,10 @@ from ..utils import (
     import_project,
     TextStyles,
     Printer,
-    import_versioned_project,
     regexify_file_pattern,
 )
-from ..utils.conventions import (
-    get_conventions_string,
-    read_conventions_identifier,
-    extract_conventions_info,
-)
+from ..utils.conventions import get_conventions_string
+from ..versioning import Version, InvalidVersion
 
 LINE_LEN = 50
 
@@ -170,17 +166,10 @@ def check_file_against_project(filename: str, project: str) -> bool:
 
     try:
         project_mod = import_project(project)
-
     except Exception:
-        try:
-            regex = read_conventions_identifier(project)
-            conventions_info = extract_conventions_info(filename, regex)
-            project_mod = import_versioned_project(project, conventions_info)
-            project = str(conventions_info)
-        except Exception:
-            p.print_err(f'Could not import vocal project at "{project}"')
-            p.print_err("Please check that the project exists and is importable.")
-            raise
+        p.print_err(f'Could not import vocal project at "{project}"')
+        p.print_err("Please check that the project exists and is importable.")
+        raise
 
     return check_against_standard(
         model=project_mod.models.Dataset,
@@ -224,6 +213,40 @@ def load_matching_projects(filename: str) -> list[str]:
     return [p.path for p in c.projects.values()]
 
 
+def file_version_string(filename: str, project_name: str) -> str:
+    """
+    Parse the version of ``project_name`` declared in a file's ``Conventions``
+    attribute and return it as a ``v{major}.{minor}`` directory string.
+
+    The ``Conventions`` attribute is tokenised on whitespace; the token whose
+    name matches ``project_name`` is parsed with :class:`vocal.versioning.Version`.
+
+    Raises:
+        NoConventionsFound: the file has no ``Conventions`` attribute, or none
+            of its tokens name ``project_name``.
+    """
+    conventions = get_conventions_string(filename)
+
+    if conventions is None:
+        raise NoConventionsFound(
+            "No conventions found in file. Please provide a project or definition."
+        )
+
+    for token in conventions.split():
+        token = token.rstrip(",")
+        if not token.startswith(f"{project_name}-"):
+            continue
+        try:
+            version = Version.parse(token)
+        except InvalidVersion:
+            continue
+        return f"v{version.major}.{version.minor}"
+
+    raise NoConventionsFound(
+        f"No conventions token for '{project_name}' found in file {filename}."
+    )
+
+
 def load_matching_definitions(filename: str) -> list[str]:
     """
     Given a filename, load all definitions that have registered projects
@@ -249,21 +272,19 @@ def load_matching_definitions(filename: str) -> list[str]:
     paths: list[str] = []
     filecodecs: list[dict] = []
 
-    # For each project, extract the conventions info and find all of the
+    # For each project, parse the file's declared version and find all of the
     # definitions that have the matching version. Also, store the filecodec
     # for each project.
     for project in registry:
-        ci = extract_conventions_info(
-            filename, project.spec.regex, name=project.spec.name
-        )
-        path = os.path.join(project.definitions, ci.version_string)
+        version_string = file_version_string(filename, project.spec.name)
+        path = os.path.join(project.definitions, version_string)
         if not os.path.isdir(path):
             raise DefinitionVersionNotFound(
                 f"No product definitions registered for "
-                f"{project.spec.name} version {ci.version_string}",
+                f"{project.spec.name} version {version_string}",
                 hint=(
                     f"Register a project providing definitions for "
-                    f"{project.spec.name} {ci.version_string}, or upload "
+                    f"{project.spec.name} {version_string}, or upload "
                     f"a file matching a registered version."
                 ),
             )

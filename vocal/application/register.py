@@ -6,6 +6,12 @@ from typing import Optional
 
 import typer
 
+from vocal.conventions_file import (
+    ConventionsFile,
+    import_project_package,
+    module_path,
+    validate_project_contract,
+)
 from vocal.utils.registry import (
     ProjectSpec,
     Registry,
@@ -19,28 +25,45 @@ class CannotRegisterProjectError(Exception):
 
 
 def register_project(
-    project_path: str,
-    definitions: str | None,
-    conventions_string: str,
+    repo_path: str,
+    definitions: str | None = None,
     force: bool = False,
 ) -> None:
     """
     Register a vocal project globally.
 
+    ``repo_path`` is the project repo root — the directory holding
+    ``conventions.yaml``. The project's identity and module layout are read from
+    that file; the importable package is imported and checked for the required
+    exports before registration.
+
     Args:
-        args (Namespace): The parsed command line arguments.
+        repo_path: path to the project repo root.
+        definitions: path to a product-definitions directory. Defaults to
+            ``<repo>/definitions``.
+        force: re-register even if a project of the same name is registered.
     """
 
-    print(f"Registering project {project_path} in userspace")
+    print(f"Registering project {repo_path} in userspace")
+
+    conventions = ConventionsFile.load(repo_path)
+
+    # Import the project package via the single import path and enforce the
+    # project contract before registering anything.
+    module = import_project_package(repo_path)
+    validate_project_contract(module)
 
     if definitions is None:
-        definitions = os.path.abspath(os.path.join(project_path, "..", "products"))
-        print(f"Using default product definitions path: {definitions}")
+        definitions = os.path.join(repo_path, "definitions")
 
     registry = load_registry()
 
-    spec = conventions_to_spec(conventions_string)
-    project = Project(spec=spec, path=project_path, definitions=definitions)
+    spec = conventions_to_spec(f"{conventions.name}-[].[]")
+    project = Project(
+        spec=spec,
+        path=module_path(repo_path, conventions),
+        definitions=definitions,
+    )
 
     try:
         registry.add_project(project, force=force)
@@ -136,12 +159,8 @@ def conventions_to_spec(conventions_string: str) -> ProjectSpec:
 
 
 def command(
-    project: str = typer.Argument(help="The vocal project to register."),
-    conventions_string: str = typer.Option(
-        ...,
-        "-c",
-        "--conventions-string",
-        help='The conventions string to use for the project. E.g. "MYSTD-[].[]"',
+    project: str = typer.Argument(
+        help="The vocal project repo root to register (holds conventions.yaml)."
     ),
     definitions: Optional[str] = typer.Option(
         None,
@@ -157,4 +176,4 @@ def command(
     ),
 ) -> None:
     """Register a vocal project globally."""
-    register_project(project, definitions, conventions_string, force)
+    register_project(project, definitions, force)

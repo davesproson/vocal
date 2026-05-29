@@ -6,8 +6,8 @@ Strategy
 Each helper is tested in isolation. Network and subprocess calls are mocked
 via ``unittest.mock.patch``; filesystem state uses ``tmp_path``. The full
 ``fetch_http`` end-to-end path (download + extract a real zip) is not
-covered here — its individual pieces (``get_latest_release``,
-``read_vocal_yaml``, atomic cleanup) are tested separately.
+covered here — its individual pieces (``get_latest_release``, atomic
+cleanup) are tested separately.
 """
 
 import os
@@ -23,12 +23,10 @@ from vocal.application.fetch import (
     GitCloneFailed,
     GitHubAPIError,
     GitNotInstalled,
-    InvalidVocalYaml,
     NoReleasesFound,
     NotAGitHubRepo,
     ProjectAlreadyFetched,
     ProjectNotFetched,
-    ProjectPathMissing,
     RateLimited,
     RepoNotFound,
     convert_github_repo_to_api_url,
@@ -36,8 +34,8 @@ from vocal.application.fetch import (
     fetch_project,
     fetch_with_git,
     get_latest_release,
-    read_vocal_yaml,
 )
+from vocal.conventions_file import InvalidConventionsFile
 
 
 # ---------------------------------------------------------------------------
@@ -55,24 +53,20 @@ def _make_response(status_code: int, json_data: Any = None, text: str = "") -> M
     return resp
 
 
-def _write_vocal_yaml(root: Path, body: Any) -> None:
-    """Drop a vocal.yaml at ``root`` with the given top-level body."""
-    with open(root / "vocal.yaml", "w") as f:
+def _write_conventions_yaml(root: Path, body: Any) -> None:
+    """Drop a conventions.yaml at ``root`` with the given top-level body."""
+    with open(root / "conventions.yaml", "w") as f:
         yaml.dump(body, f)
 
 
 def _make_valid_project(root: Path) -> None:
     """Materialise a minimal but valid fetched-project tree under ``root``."""
     os.makedirs(root / "src", exist_ok=True)
-    os.makedirs(root / "products", exist_ok=True)
-    _write_vocal_yaml(
+    _write_conventions_yaml(
         root,
         {
-            "vocal": {
-                "project_directory": "src",
-                "products_directory": "products",
-                "conventions": "STD-[].[]",
-            }
+            "conventions": {"name": "STD", "major": 1, "minor": 0},
+            "layout": {"project_directory": "src"},
         },
     )
 
@@ -178,77 +172,6 @@ class TestGetLatestRelease:
             with pytest.raises(FetchError) as exc_info:
                 get_latest_release("https://api.github.com/repos/u/r")
         assert "Network error" in exc_info.value.message
-
-
-# ---------------------------------------------------------------------------
-# read_vocal_yaml
-# ---------------------------------------------------------------------------
-
-
-class TestReadVocalYaml:
-    def test_valid_yaml_returns_block(self, tmp_path: Path) -> None:
-        _make_valid_project(tmp_path)
-        data = read_vocal_yaml(str(tmp_path))
-        assert data["project_directory"] == "src"
-        assert data["products_directory"] == "products"
-        assert data["conventions"] == "STD-[].[]"
-
-    def test_missing_file_raises(self, tmp_path: Path) -> None:
-        with pytest.raises(InvalidVocalYaml) as exc_info:
-            read_vocal_yaml(str(tmp_path))
-        assert "vocal.yaml not found" in exc_info.value.message
-
-    def test_malformed_yaml_raises(self, tmp_path: Path) -> None:
-        (tmp_path / "vocal.yaml").write_text("vocal: [unclosed\n")
-        with pytest.raises(InvalidVocalYaml) as exc_info:
-            read_vocal_yaml(str(tmp_path))
-        assert "not valid YAML" in exc_info.value.message
-
-    def test_missing_top_level_block_raises(self, tmp_path: Path) -> None:
-        _write_vocal_yaml(tmp_path, {"not_vocal": {}})
-        with pytest.raises(InvalidVocalYaml) as exc_info:
-            read_vocal_yaml(str(tmp_path))
-        assert "top-level 'vocal:' block" in exc_info.value.message
-
-    def test_vocal_block_not_mapping_raises(self, tmp_path: Path) -> None:
-        _write_vocal_yaml(tmp_path, {"vocal": "a string, not a mapping"})
-        with pytest.raises(InvalidVocalYaml):
-            read_vocal_yaml(str(tmp_path))
-
-    @pytest.mark.parametrize(
-        "missing_key", ["project_directory", "products_directory", "conventions"]
-    )
-    def test_missing_required_key_raises(
-        self, tmp_path: Path, missing_key: str
-    ) -> None:
-        _make_valid_project(tmp_path)
-        # Rewrite the yaml without one of the required keys.
-        body = {
-            "project_directory": "src",
-            "products_directory": "products",
-            "conventions": "STD-[].[]",
-        }
-        del body[missing_key]
-        _write_vocal_yaml(tmp_path, {"vocal": body})
-
-        with pytest.raises(InvalidVocalYaml) as exc_info:
-            read_vocal_yaml(str(tmp_path))
-        assert missing_key in exc_info.value.message
-
-    def test_project_directory_path_missing_raises(self, tmp_path: Path) -> None:
-        _make_valid_project(tmp_path)
-        # Remove the referenced directory.
-        os.rmdir(tmp_path / "src")
-        with pytest.raises(ProjectPathMissing) as exc_info:
-            read_vocal_yaml(str(tmp_path))
-        assert "project_directory" in exc_info.value.message
-
-    def test_products_directory_path_missing_raises(self, tmp_path: Path) -> None:
-        _make_valid_project(tmp_path)
-        os.rmdir(tmp_path / "products")
-        with pytest.raises(ProjectPathMissing) as exc_info:
-            read_vocal_yaml(str(tmp_path))
-        assert "products_directory" in exc_info.value.message
 
 
 # ---------------------------------------------------------------------------
@@ -411,11 +334,12 @@ class TestFetchProjectFlags:
 class TestFetchProjectCleanup:
     """Atomic cleanup of the target dir on post-download failure."""
 
-    def test_invalid_vocal_yaml_cleans_up(self, tmp_path: Path) -> None:
+    def test_missing_conventions_cleans_up(self, tmp_path: Path) -> None:
         target = tmp_path / "r"
 
         def fake_fetch(url: str, tgt: str) -> None:
-            # Materialise a directory that will fail validation (no vocal.yaml).
+            # Materialise a directory that will fail validation (no
+            # conventions.yaml).
             os.makedirs(tgt, exist_ok=True)
 
         with patch(
@@ -425,7 +349,7 @@ class TestFetchProjectCleanup:
             fetch_http=MagicMock(side_effect=fake_fetch),
             register_project=MagicMock(),
         ):
-            with pytest.raises(InvalidVocalYaml):
+            with pytest.raises(InvalidConventionsFile):
                 fetch_project("https://github.com/u/r")
 
         assert not target.exists()

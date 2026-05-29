@@ -13,8 +13,6 @@ from types import ModuleType
 from dataclasses import dataclass
 from contextlib import contextmanager
 
-from vocal.utils.conventions import Conventions
-
 import pydantic
 import yaml
 
@@ -294,23 +292,6 @@ def import_project(project: str) -> ModuleType:
         spec.loader.exec_module(module)
 
     return module
-
-
-def import_versioned_project(project: str, version: Conventions) -> ModuleType:
-    """
-    Import a version of a vocal project from a given path. If multiple *major*
-    versions of the project exist, these are assumed to be in subdirectories
-    named v{major_version}.
-
-    Args:
-        project: the path to the project
-        version: the version of the project to import
-
-    Returns:
-        the imported module
-    """
-    project_path = os.path.join(project, f"v{version.major_version}")
-    return import_project(project_path)
 
 
 def get_error_locs(
