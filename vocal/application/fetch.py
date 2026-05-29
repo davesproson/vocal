@@ -7,9 +7,9 @@ import zipfile
 
 import typer
 import requests
-import yaml
 
 from vocal.application.register import register_project, CannotRegisterProjectError
+from vocal.conventions_file import ConventionsFile
 from vocal.exceptions import VocalError
 from vocal.utils import cache_dir, flip_to_dir, Printer, TextStyles
 
@@ -55,14 +55,6 @@ class ProjectAlreadyFetched(FetchError):
 
 
 class ProjectNotFetched(FetchError):
-    pass
-
-
-class InvalidVocalYaml(FetchError):
-    pass
-
-
-class ProjectPathMissing(FetchError):
     pass
 
 
@@ -280,51 +272,6 @@ def fetch_http(url: str, target: str) -> None:
             os.remove(zip_path)
 
 
-def read_vocal_yaml(project_dir: str) -> dict:
-    """
-    Read and validate the `vocal.yaml` config at the root of a fetched
-    project directory. Returns the validated `vocal:` block as a dict.
-
-    Raises:
-        InvalidVocalYaml: file missing, not valid YAML, or missing a
-            required key.
-        ProjectPathMissing: a referenced path doesn't exist on disk.
-    """
-    yaml_file = os.path.join(project_dir, "vocal.yaml")
-
-    try:
-        with open(yaml_file, "r") as f:
-            try:
-                raw = yaml.load(f, Loader=yaml.Loader)
-            except yaml.YAMLError as e:
-                raise InvalidVocalYaml(f"vocal.yaml is not valid YAML: {e}")
-    except FileNotFoundError:
-        raise InvalidVocalYaml(
-            f"vocal.yaml not found at {yaml_file}.",
-            hint="The repository does not look like a vocal project.",
-        )
-
-    if not isinstance(raw, dict) or "vocal" not in raw:
-        raise InvalidVocalYaml("vocal.yaml is missing the top-level 'vocal:' block.")
-
-    data = raw["vocal"]
-    if not isinstance(data, dict):
-        raise InvalidVocalYaml("'vocal:' block in vocal.yaml must be a mapping.")
-
-    for key in ("project_directory", "products_directory", "conventions"):
-        if key not in data:
-            raise InvalidVocalYaml(f"vocal.yaml is missing required key: {key}")
-
-    for key in ("project_directory", "products_directory"):
-        path = os.path.join(project_dir, data[key])
-        if not os.path.isdir(path):
-            raise ProjectPathMissing(
-                f"vocal.yaml '{key}' points at a directory that does not exist: {path}"
-            )
-
-    return data
-
-
 def fetch_project(
     url: str,
     git: bool = False,
@@ -369,14 +316,12 @@ def fetch_project(
         fetch_http(url, target)
 
     try:
-        data = read_vocal_yaml(target)
+        # Validate that the fetched tree looks like a vocal project before
+        # registering. ConventionsFile.load raises InvalidConventionsFile when
+        # conventions.yaml is missing or malformed.
+        ConventionsFile.load(target)
 
-        register_project(
-            project_path=os.path.join(target, data["project_directory"]),
-            definitions=os.path.join(target, data["products_directory"]),
-            conventions_string=data["conventions"],
-            force=True,
-        )
+        register_project(target, force=True)
     except CannotRegisterProjectError as e:
         shutil.rmtree(target, ignore_errors=True)
         raise FetchError(f"Failed to register project: {e}")

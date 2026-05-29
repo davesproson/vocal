@@ -3,6 +3,21 @@
 import os
 import typer
 
+from vocal.conventions_file import ConventionsFile
+
+PACKAGE_INIT = """
+from . import defaults
+from . import models
+
+# filecodec maps the placeholders used in product file_pattern templates to the
+# regex that expands them at check time, e.g.:
+#
+# filecodec = {
+#     'date': {'regex': r'\\d{8}'},
+# }
+filecodec: dict = {}
+"""
+
 ATTRIBUTES_TEMPLATE = """
 from pydantic import Field, BaseModel
 
@@ -151,9 +166,10 @@ class Dimension(BaseModel, DimensionNetCDFMixin):
 """
 
 
-def make_definitions_dir(folder: str) -> None:
-    def_dir = os.path.join(folder, "definitions")
-    os.mkdir(def_dir)
+def make_package_init(folder: str) -> None:
+    filename = os.path.join(folder, "__init__.py")
+    with open(filename, "w") as f:
+        f.write(PACKAGE_INIT)
 
 
 def make_defaults_module(folder: str) -> None:
@@ -203,16 +219,35 @@ def make_models_module(parent_folder: str) -> None:
     make_models_init(folder)
 
 
-def init_project(directory: str) -> None:
-    try:
-        os.mkdir(directory)
-    except FileExistsError:
-        print(f"Initializing into existing folder: {directory}")
+def init_project(
+    directory: str,
+    name: str,
+    major: int,
+    minor: int,
+    project_directory: str,
+) -> None:
+    """Scaffold a vocal project.
 
-    make_attributes_module(directory)
-    make_defaults_module(directory)
-    make_definitions_dir(directory)
-    make_models_module(directory)
+    Writes ``conventions.yaml`` at ``directory`` carrying the standard's
+    identity and module layout, then scaffolds an importable Python package at
+    ``<directory>/<project_directory>``.
+    """
+    os.makedirs(directory, exist_ok=True)
+
+    ConventionsFile(
+        name=name,
+        major=major,
+        minor=minor,
+        project_directory=project_directory,
+    ).write(directory)
+
+    module_dir = os.path.join(directory, project_directory)
+    os.makedirs(module_dir, exist_ok=True)
+
+    make_attributes_module(module_dir)
+    make_defaults_module(module_dir)
+    make_models_module(module_dir)
+    make_package_init(module_dir)
 
 
 def command(
@@ -222,6 +257,33 @@ def command(
         "--directory",
         help="The directory in which to create the project. Defaults to cwd.",
     ),
+    name: str = typer.Option(
+        ...,
+        "-n",
+        "--name",
+        help="The standard's name, e.g. 'MYSTD'.",
+    ),
+    major: int = typer.Option(
+        1,
+        "--major",
+        help="The standard's major version. One project repo per major version.",
+    ),
+    minor: int = typer.Option(
+        0,
+        "--minor",
+        help="The standard's current minor version.",
+    ),
+    project_directory: str = typer.Option(
+        None,
+        "-p",
+        "--project-directory",
+        help=(
+            "The importable Python module directory to scaffold. "
+            "Defaults to the lower-cased standard name."
+        ),
+    ),
 ) -> None:
     """Initialise a vocal project."""
-    init_project(directory)
+    if project_directory is None:
+        project_directory = name.lower()
+    init_project(directory, name, major, minor, project_directory)
