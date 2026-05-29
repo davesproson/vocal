@@ -3,24 +3,18 @@
 {% block content %}
 <div class="container">
 
-    {% if errors %}
+    {% if error %}
     <div class="incomplete-banner">
         <div class="incomplete-banner-header">
             <span class="incomplete-icon">!</span>
-            INCOMPLETE CHECK &mdash; {{ errors|length }} error{% if errors|length != 1 %}s{% endif %}
+            COULDN'T CHECK FILE
         </div>
         <div class="incomplete-banner-body">
-            <ul class="incomplete-list">
-                {% for error in errors %}
-                <li>
-                    <div class="incomplete-msg">{{ error.message }}</div>
-                    {% if error.hint %}
-                    <div class="incomplete-hint">{{ error.hint }}</div>
-                    {% endif %}
-                </li>
-                {% endfor %}
-            </ul>
-            <div class="incomplete-footer">Some checks below were skipped.</div>
+            <div class="incomplete-msg">{{ error.message }}</div>
+            {% if error.hint %}
+            <div class="incomplete-hint">{{ error.hint }}</div>
+            {% endif %}
+            <div class="incomplete-footer">No checks could be run against this file.</div>
         </div>
     </div>
     {% endif %}

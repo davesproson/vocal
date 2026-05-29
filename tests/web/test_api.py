@@ -1,12 +1,17 @@
 """
-Tests for the vocal web API (vocal/web/api.py).
+Tests for the vocal web API (vocal/web/api.py) and the resolver-driven check
+flow behind it (vocal/web/utils.py).
 
 Strategy
 --------
-These tests cover the HTTP layer only. Complex internal logic (file checking,
-project fetching, registry I/O) is mocked so that each test exercises exactly
-one concern. Integration of the underlying logic is covered by the dedicated
-tests for checking.py, validation.py, etc.
+``TestClient`` tests cover the HTTP layer only: ``check_upload`` is mocked so
+each test exercises exactly one routing/rendering concern.
+
+``TestCheckUploadResolution`` drives ``check_upload`` directly against real
+netCDF files and a controlled in-memory registry, asserting the typed
+``error: {code, message, hint}`` shape surfaced for each resolver failure
+category and for the web-only attribute preconditions. The project import is
+patched so no real project package is needed.
 
 Mocking conventions
 -------------------
@@ -18,18 +23,23 @@ Mocking conventions
   ``side_effect`` work as expected.
 """
 
+import asyncio
 from contextlib import contextmanager
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Generator
 from unittest.mock import patch
 
+import netCDF4
 import pytest
+from fastapi import UploadFile
 from fastapi.testclient import TestClient
 
-from vocal.web.utils import NoConventionsFound, NoMatchingProjects
 from vocal.application.fetch import FetchError
-from vocal.utils.registry import Project, Registry
+from vocal.manifest import ManifestProduct, build_manifest
+from vocal.utils.registry import Pack, Project, Registry
 from vocal.web.api import app
-from vocal.web.models import CheckContext, CheckIssue
+from vocal.web.models import CheckContext, ResolverError
 
 
 # ---------------------------------------------------------------------------
@@ -175,7 +185,7 @@ class TestRootGet:
 
 
 # ---------------------------------------------------------------------------
-# POST /
+# POST / — HTTP layer (check_upload mocked)
 # ---------------------------------------------------------------------------
 
 
@@ -200,36 +210,14 @@ class TestUploadPost:
             )
         assert "text/html" in response.headers["content-type"]
 
-    def test_no_conventions_renders_error_page(self, client: TestClient) -> None:
-        with patch(
-            "vocal.web.api.check_upload",
-            side_effect=NoConventionsFound("No conventions in file"),
-        ):
-            response = client.post(
-                "/",
-                files={"file": ("test.nc", b"dummy", "application/octet-stream")},
-            )
-        assert response.status_code == 422
-        assert "We couldn't check that file" in response.text
-        assert "No conventions in file" in response.text
-
-    def test_no_matching_projects_uses_422(self, client: TestClient) -> None:
-        with patch(
-            "vocal.web.api.check_upload",
-            side_effect=NoMatchingProjects("No registered project for conventions X"),
-        ):
-            response = client.post(
-                "/",
-                files={"file": ("test.nc", b"dummy", "application/octet-stream")},
-            )
-        assert response.status_code == 422
-
-    def test_inline_errors_render_incomplete_banner(self, client: TestClient) -> None:
-        context = CheckContext()
-        context.errors.append(
-            CheckIssue(
-                message="No product definitions registered for FAAM_standard version 2.1",
-                hint="Register a project providing definitions for that version.",
+    def test_resolver_error_renders_banner_with_message_and_hint(
+        self, client: TestClient
+    ) -> None:
+        context = CheckContext(
+            error=ResolverError(
+                code="pack_missing",
+                message="No pack registered for https://host/packs version 3",
+                hint="Run 'vocal fetch https://host/packs/v3' to register it.",
             )
         )
         with patch("vocal.web.api.check_upload", return_value=context):
@@ -238,10 +226,13 @@ class TestUploadPost:
                 files={"file": ("test.nc", b"dummy", "application/octet-stream")},
             )
         assert response.status_code == 200
-        assert "INCOMPLETE CHECK" in response.text
-        assert "FAAM_standard version 2.1" in response.text
-        # message and hint render as separate elements
-        assert "Register a project providing definitions" in response.text
+        assert "COULDN'T CHECK FILE" in response.text
+        # message and hint both reach the rendered page.
+        assert "No pack registered for https://host/packs version 3" in response.text
+        # Apostrophes in the hint are HTML-escaped by the template; match the
+        # stable parts of the hint that survive escaping.
+        assert "vocal fetch https://host/packs/v3" in response.text
+        assert "to register it." in response.text
 
     def test_unknown_check_failure_renders_error_page(
         self, client: TestClient
@@ -256,3 +247,220 @@ class TestUploadPost:
             )
         assert response.status_code == 500
         assert "We couldn't check that file" in response.text
+
+
+# ---------------------------------------------------------------------------
+# check_upload — resolver-driven flow, asserting the typed error shape
+# ---------------------------------------------------------------------------
+
+FILECODEC = {"date": {"regex": r"\d{8}"}}
+
+
+def _make_nc(
+    tmp_path: Path,
+    name: str = "foo_20260522.nc",
+    *,
+    conventions: str | None = None,
+    project_url: str | None = None,
+    definitions_url: str | None = None,
+    definitions_version: int | None = None,
+) -> str:
+    """Write a minimal netCDF file carrying the given vocal-managed attributes."""
+    path = str(tmp_path / name)
+    with netCDF4.Dataset(path, "w") as nc:
+        if conventions is not None:
+            nc.Conventions = conventions
+        if project_url is not None:
+            nc.vocal_project_url = project_url
+        if definitions_url is not None:
+            nc.vocal_definitions_url = definitions_url
+        if definitions_version is not None:
+            nc.vocal_definitions_version = definitions_version
+    return path
+
+
+def _project(name: str = "MYSTD", major: int = 2, minor: int = 3) -> Project:
+    return Project(
+        name=name,
+        major=major,
+        minor=minor,
+        project_directory="mystd",
+        local_path="/cache/projects/mystd",
+    )
+
+
+def _pack(
+    url: str = "https://host/packs",
+    version: int = 3,
+    name: str = "MYSTD",
+    major: int = 2,
+    min_minor: int = 3,
+    local_path: str = "/cache/packs/host-packs/v3",
+    products=None,
+) -> Pack:
+    if products is None:
+        products = [
+            ManifestProduct(
+                name="foo", file_pattern="foo_{date}", schema="product_foo.json"
+            )
+        ]
+    manifest = build_manifest(
+        version=version,
+        url=url,
+        standard_name=name,
+        standard_major=major,
+        min_minor=min_minor,
+        products=products,
+    )
+    return Pack(manifest=manifest, local_path=local_path)
+
+
+def _registry(project: Project | None = None, pack: Pack | None = None) -> Registry:
+    registry = Registry()
+    if project is not None:
+        registry.add_project(project)
+    if pack is not None:
+        registry.add_pack(pack)
+    return registry
+
+
+def _fake_project_module() -> SimpleNamespace:
+    return SimpleNamespace(
+        models=SimpleNamespace(Dataset=object()),
+        filecodec=FILECODEC,
+    )
+
+
+def _run_check_upload(nc_path: str, registry: Registry) -> CheckContext:
+    """Drive ``check_upload`` against ``nc_path`` with the registry and project
+    import patched, returning the resulting context."""
+    from vocal.web import utils as web_utils
+
+    with open(nc_path, "rb") as fh:
+        upload = UploadFile(filename=Path(nc_path).name, file=fh)
+        with (
+            patch.object(web_utils.Registry, "load", return_value=registry),
+            patch.object(
+                web_utils,
+                "import_project_package",
+                return_value=_fake_project_module(),
+            ),
+        ):
+            return asyncio.run(web_utils.check_upload(upload))
+
+
+class TestCheckUploadResolution:
+    """The five resolver failure categories each surface as a typed error."""
+
+    def test_project_missing(self, tmp_path: Path) -> None:
+        nc = _make_nc(
+            tmp_path,
+            conventions="MYSTD-2.3",
+            project_url="https://host/mystd.git",
+            definitions_url="https://host/packs",
+            definitions_version=3,
+        )
+        context = _run_check_upload(nc, _registry())
+
+        assert context.error is not None
+        assert context.error.code == "project_missing"
+        assert "No project registered for MYSTD-2" in context.error.message
+        assert context.error.hint is not None
+        assert not context.projects and not context.definitions
+
+    def test_project_too_old(self, tmp_path: Path) -> None:
+        nc = _make_nc(
+            tmp_path,
+            conventions="MYSTD-2.5",
+            definitions_url="https://host/packs",
+            definitions_version=3,
+        )
+        context = _run_check_upload(nc, _registry(project=_project(minor=3)))
+
+        assert context.error is not None
+        assert context.error.code == "project_too_old"
+        assert (
+            "File claims MYSTD-2.5 but registered project is at MYSTD-2.3"
+            in context.error.message
+        )
+
+    def test_pack_missing(self, tmp_path: Path) -> None:
+        nc = _make_nc(
+            tmp_path,
+            conventions="MYSTD-2.3",
+            definitions_url="https://host/packs",
+            definitions_version=3,
+        )
+        context = _run_check_upload(nc, _registry(project=_project()))
+
+        assert context.error is not None
+        assert context.error.code == "pack_missing"
+        assert (
+            "No pack registered for https://host/packs version 3"
+            in context.error.message
+        )
+        assert context.error.hint is not None
+        assert "vocal fetch https://host/packs/v3" in context.error.hint
+
+    def test_pack_incompatible(self, tmp_path: Path) -> None:
+        nc = _make_nc(
+            tmp_path,
+            conventions="MYSTD-2.3",
+            definitions_url="https://host/packs",
+            definitions_version=3,
+        )
+        pack = _pack(major=3, min_minor=0)
+        context = _run_check_upload(nc, _registry(project=_project(), pack=pack))
+
+        assert context.error is not None
+        assert context.error.code == "pack_incompatible"
+        assert (
+            "Pack targets MYSTD-3 but registered project is MYSTD-2"
+            in context.error.message
+        )
+
+    def test_product_not_found(self, tmp_path: Path) -> None:
+        nc = _make_nc(
+            tmp_path,
+            name="unmatched.nc",
+            conventions="MYSTD-2.3",
+            definitions_url="https://host/packs",
+            definitions_version=3,
+        )
+        context = _run_check_upload(nc, _registry(project=_project(), pack=_pack()))
+
+        assert context.error is not None
+        assert context.error.code == "product_not_found"
+        assert "'unmatched.nc' did not match any product pattern" in (
+            context.error.message
+        )
+        assert context.error.hint is not None
+        assert "foo_{date}" in context.error.hint
+
+
+class TestCheckUploadPreconditions:
+    """The web flow rejects files it cannot resolve without a flag fallback."""
+
+    def test_missing_conventions(self, tmp_path: Path) -> None:
+        nc = _make_nc(
+            tmp_path,
+            definitions_url="https://host/packs",
+            definitions_version=3,
+        )  # no Conventions attribute
+        context = _run_check_upload(nc, _registry(project=_project()))
+
+        assert context.error is not None
+        assert context.error.code == "missing_conventions"
+        assert "Conventions" in context.error.message
+        assert not context.projects and not context.definitions
+
+    def test_missing_pack_reference(self, tmp_path: Path) -> None:
+        # Conventions present, but no vocal_definitions_url / _version: the web
+        # UI cannot fall back to a -d flag, so the file is rejected.
+        nc = _make_nc(tmp_path, conventions="MYSTD-2.3")
+        context = _run_check_upload(nc, _registry(project=_project()))
+
+        assert context.error is not None
+        assert context.error.code == "missing_pack_reference"
+        assert context.error.hint is not None
+        assert "vocal_definitions_url" in context.error.hint
