@@ -1,41 +1,43 @@
-"""Check a netCDF file against standard and product definitions."""
+"""Check a netCDF file against a standard and a product definition.
+
+``vocal check`` is a thin CLI shell over :mod:`vocal.resolution`: it reads the
+file's vocal-managed global attributes, hands them to the resolver together
+with the local registry, and renders whatever the resolver returns (or the
+typed error it raises). All of the "what should this file be validated
+against?" logic lives in :mod:`vocal.resolution`; this module only reads
+attributes, drives the resolver, runs pydantic / product-spec validation, and
+prints results.
+
+The graceful-degradation matrix (see the parent PRD) governs how CLI flags
+substitute for missing file attributes:
+
+- ``-p <path>`` supplied: the user takes over project resolution. The resolver
+  is bypassed entirely; the given project(s) are imported directly and the
+  given ``-d`` definition(s) checked against. This is the only path when the
+  file carries no ``Conventions`` attribute.
+- no ``-p``: the resolver resolves the project from ``Conventions`` and (when
+  ``vocal_definitions_url`` / ``_version`` are present) the pack. An explicit
+  ``-d`` overrides the file's declared pack. When the file declares no pack and
+  no ``-d`` is given, the run is incomplete and ``-d`` is required.
+"""
 
 import os
-import re
-from typing import Optional
+from typing import Any, Mapping, Optional
 
 import typer
 from pydantic import BaseModel
 from pydantic import ValidationError
-import yaml
 
+from vocal.conventions_file import import_project_package
 from vocal.exceptions import VocalError
-from vocal.utils.registry import Registry
+from vocal.resolution import ResolutionError, resolve
+from vocal.utils.registry import Project, Registry
 from ..checking import ProductChecker
 from ..netcdf import NetCDFReader
-from ..utils import (
-    get_error_locs,
-    import_project,
-    TextStyles,
-    Printer,
-    regexify_file_pattern,
-)
-from ..utils.conventions import get_conventions_string
-from ..versioning import Version, InvalidVersion
+from ..utils import get_error_locs, TextStyles, Printer
+from ..utils.conventions import read_file_conventions
 
 LINE_LEN = 50
-
-
-class NoConventionsFound(VocalError):
-    pass
-
-
-class NoMatchingProjects(VocalError):
-    pass
-
-
-class DefinitionVersionNotFound(VocalError):
-    pass
 
 TS = TextStyles()
 p = Printer()
@@ -154,203 +156,124 @@ def check_against_specification(filename: str, specification: str) -> bool:
 
 def check_file_against_project(filename: str, project: str) -> bool:
     """
-    Check a file against standard and/or product definition.
+    Check a file against the standard defined by a project at ``project``.
+
+    ``project`` is a project repo root (containing ``conventions.yaml``); its
+    package is imported through the single project-import path.
 
     Args:
-        args (Namespace): The parsed command line arguments.
+        filename (str): The path to the netCDF file.
+        project (str): The path to the project repo root.
 
-    Exit:
-        0 if all checks pass, 1 otherwise.
+    Returns:
+        bool: True if the file validates against the project's Dataset model.
     """
     p.print_err()
 
     try:
-        project_mod = import_project(project)
-    except Exception:
-        p.print_err(f'Could not import vocal project at "{project}"')
-        p.print_err("Please check that the project exists and is importable.")
-        raise
+        project_mod = import_project_package(project)
+    except VocalError as e:
+        _print_error(e)
+        raise typer.Exit(code=1)
 
     return check_against_standard(
         model=project_mod.models.Dataset,
         filename=filename,
-        project_name=os.path.basename(project),
+        project_name=os.path.basename(os.path.normpath(project)),
     )
 
 
-def load_matching_projects(filename: str) -> list[str]:
+def _print_error(error: VocalError) -> None:
+    """Render a typed vocal error — its message and actionable hint — to stderr."""
+    p.print_err(f"\n{TS.BOLD}{TS.FAIL}✗{TS.ENDC} {error.message}")
+    if error.hint:
+        p.print_err(f"  {error.hint}\n")
+
+
+def _load_filecodec(project: Project) -> Mapping[str, Mapping[str, Any]]:
+    """Import a resolved project's package and return its ``filecodec``.
+
+    Passed to :func:`vocal.resolution.resolve` so that product matching can
+    expand templated ``file_pattern`` entries. Defined here (rather than relying
+    on the resolver's default loader) so tests can patch the import.
     """
-    Given a filename, load all projects that match the conventions
-    found in the file.
-
-    Args:
-        filename (str): The path to the netCDF file.
-
-    Returns:
-        list[str]: The paths to the matching projects.
-    """
-    conventions = get_conventions_string(filename)
-
-    if conventions is None:
-        raise NoConventionsFound(
-            "No conventions found in file. Please provide a project or definition."
-        )
-
-    try:
-        c = Registry.filter(conventions)
-    except FileNotFoundError:
-        c = Registry(projects={})
-
-    if len(c) == 0:
-        raise NoMatchingProjects(
-            f"No registered project(s) found for conventions {conventions}"
-        )
-
-    print(
-        f"\n{TS.BOLD}{TS.OKGREEN}✔{TS.ENDC} Found {len(c)} registered project(s) for conventions {conventions}: {', '.join(c.projects.keys())}"
-    )
-
-    return [p.path for p in c.projects.values()]
+    return import_project_package(project.local_path).filecodec
 
 
-def file_version_string(filename: str, project_name: str) -> str:
-    """
-    Parse the version of ``project_name`` declared in a file's ``Conventions``
-    attribute and return it as a ``v{major}.{minor}`` directory string.
-
-    The ``Conventions`` attribute is tokenised on whitespace; the token whose
-    name matches ``project_name`` is parsed with :class:`vocal.versioning.Version`.
-
-    Raises:
-        NoConventionsFound: the file has no ``Conventions`` attribute, or none
-            of its tokens name ``project_name``.
-    """
-    conventions = get_conventions_string(filename)
-
-    if conventions is None:
-        raise NoConventionsFound(
-            "No conventions found in file. Please provide a project or definition."
-        )
-
-    for token in conventions.split():
-        token = token.rstrip(",")
-        if not token.startswith(f"{project_name}-"):
-            continue
-        try:
-            version = Version.parse(token)
-        except InvalidVersion:
-            continue
-        return f"v{version.major}.{version.minor}"
-
-    raise NoConventionsFound(
-        f"No conventions token for '{project_name}' found in file {filename}."
-    )
-
-
-def load_matching_definitions(filename: str) -> list[str]:
-    """
-    Given a filename, load all definitions that have registered projects
-    that match the conventions found in the file.
-
-    Args:
-        filename (str): The path to the netCDF file.
-
-    Returns:
-        list[str]: The paths to the matching definition files.
-    """
-
-    conventions = get_conventions_string(filename)
-
-    if conventions is None:
-        raise NoConventionsFound(
-            "No conventions found in file. Please provide a project or definition."
-        )
-
-    registry = Registry.filter(conventions)
-
-    definitions: list[str] = []
-    paths: list[str] = []
-    filecodecs: list[dict] = []
-
-    # For each project, parse the file's declared version and find all of the
-    # definitions that have the matching version. Also, store the filecodec
-    # for each project.
-    for project in registry:
-        version_string = file_version_string(filename, project.spec.name)
-        path = os.path.join(project.definitions, version_string)
-        if not os.path.isdir(path):
-            raise DefinitionVersionNotFound(
-                f"No product definitions registered for "
-                f"{project.spec.name} version {version_string}",
-                hint=(
-                    f"Register a project providing definitions for "
-                    f"{project.spec.name} {version_string}, or upload "
-                    f"a file matching a registered version."
-                ),
-            )
-        paths.append(path)
-        vocal_project = import_project(project.path)
-        filecodecs.append(vocal_project.filecodec)
-
-    # Iterate over the definitions and filecodecs to find the matching
-    # definition for the file.
-    for path, codec in zip(paths, filecodecs):
-        def_files = [
-            f
-            for f in os.listdir(path)
-            if f.endswith(".json") and f != "dataset_schema.json"
-        ]
-        for file in def_files:
-            with open(os.path.join(path, file), "r") as f:
-                data = yaml.load(f, Loader=yaml.Loader)
-
-                # Get the filename from the file pattern, and convert it to a
-                # regex.
-                rex = regexify_file_pattern(data["meta"]["file_pattern"], codec)
-
-                # If the filename matches the regex, we want to use this
-                # definition.
-                if re.match(rex, os.path.basename(filename)):
-                    p.print_err(
-                        f"{TS.BOLD}{TS.OKGREEN}✔{TS.ENDC} Found matching definition: {file}"
-                    )
-                    definitions.append(os.path.join(path, file))
-
-    if len(definitions) == 0:
-        p.print_err(
-            f"{TS.BOLD}{TS.WARNING}!{TS.ENDC} No definitions match for file {filename}"
-        )
-
-    return definitions
-
-
-def run_checks(
-    filename: str, projects: list[str], definitions: list[str] | None
+def _run_manual_checks(
+    filename: str, projects: list[str], definitions: Optional[list[str]]
 ) -> bool:
-    """
-    Run all required checks on a file.
+    """Manual mode: check ``filename`` against explicitly supplied paths.
 
-    Args:
-        filename (str): The path to the netCDF file.
-        projects (list[str]): The paths to the projects to check against.
-        definitions (list[str]): The paths to the definitions to check against.
-
-    Returns:
-        bool: True if all checks pass, False otherwise.
+    The resolver is bypassed: each ``-p`` project is imported directly and each
+    ``-d`` definition checked against. This is the path taken when the file has
+    no ``Conventions`` attribute (the matrix's "absent" row requires both ``-p``
+    and ``-d``).
     """
     ok = True
     for project in projects:
-        str_project = str(project)
-        if str_project.endswith("/"):
-            str_project = str_project[:-1]
+        ok = check_file_against_project(filename, project.rstrip("/")) and ok
 
-        ok = check_file_against_project(filename, str_project) and ok
-
-    if definitions is not None:
-        for definition in definitions:
-            ok = check_against_specification(filename, definition) and ok
+    for definition in definitions or []:
+        ok = check_against_specification(filename, definition) and ok
 
     return ok
+
+
+def _run_resolved_checks(
+    filename: str, attrs, definitions: Optional[list[str]]
+) -> bool:
+    """Resolver mode: drive :func:`vocal.resolution.resolve` and render results.
+
+    ``-d`` (the first definition, if any) becomes the resolver's
+    ``definition_override``, short-circuiting pack resolution. Typed resolver
+    errors are rendered with their locked message and hint.
+    """
+    override = definitions[0] if definitions else None
+
+    try:
+        registry = Registry.load()
+    except FileNotFoundError:
+        registry = Registry()
+
+    try:
+        target = resolve(
+            registry,
+            filename=filename,
+            conventions=attrs.conventions,
+            definitions_url=attrs.definitions_url,
+            definitions_version=attrs.definitions_version,
+            definition_override=override,
+            project_url=attrs.project_url,
+            filecodec_loader=_load_filecodec,
+        )
+    except ResolutionError as e:
+        _print_error(e)
+        return False
+
+    try:
+        project_mod = import_project_package(target.project.local_path)
+    except VocalError as e:
+        _print_error(e)
+        return False
+
+    p.print_err()
+    project_name = f"{target.project.name}-{target.project.major}"
+    ok = check_against_standard(project_mod.models.Dataset, filename, project_name)
+
+    if target.schema_path is None:
+        # The project resolved, but the file declares no pack and no -d override
+        # was supplied — there is no product definition to check against.
+        p.print_err(
+            f"{TS.BOLD}{TS.FAIL}✗{TS.ENDC} The file declares no product "
+            f"definitions (no vocal_definitions_url / vocal_definitions_version)."
+        )
+        p.print_err(
+            "  Pass -d <path> to supply a product definition to check against.\n"
+        )
+        return False
+
+    return check_against_specification(filename, target.schema_path) and ok
 
 
 def command(
@@ -399,29 +322,11 @@ def command(
     if no_color:
         TS.enabled = False
 
-    autoloaded_projects = False
-    incomplete = False
-    if project is None:
-        p.print_err()
-        try:
-            project = load_matching_projects(filename)
-        except (NoConventionsFound, NoMatchingProjects) as e:
-            p.print_err(f"{TS.BOLD}{TS.FAIL}✗{TS.ENDC} {e}\n")
-            raise typer.Exit(code=1)
-        autoloaded_projects = True
+    if project:
+        ok = _run_manual_checks(filename, project, definition)
+    else:
+        attrs = read_file_conventions(filename)
+        ok = _run_resolved_checks(filename, attrs, definition)
 
-    if definition is None and autoloaded_projects:
-        try:
-            definition = load_matching_definitions(filename)
-        except NoConventionsFound as e:
-            p.print_err(f"{TS.BOLD}{TS.FAIL}✗{TS.ENDC} {e}\n")
-            raise typer.Exit(code=1)
-        except DefinitionVersionNotFound as e:
-            p.print_err(f"{TS.BOLD}{TS.WARNING}!{TS.ENDC} {e}\n")
-            definition = None
-            incomplete = True
-
-    ok = run_checks(filename, project, definition)
-
-    if not ok or incomplete:
+    if not ok:
         raise typer.Exit(code=1)

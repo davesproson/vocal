@@ -1,17 +1,24 @@
 import os
+import re
 import tempfile
 
 from pydantic import ValidationError
 from fastapi import UploadFile, HTTPException, status
 
-from vocal.application.check import (
-    load_matching_definitions,
-    load_matching_projects,
-    DefinitionVersionNotFound,
-)
+import yaml
+
 from vocal.checking import CheckError, ProductChecker
+from vocal.exceptions import VocalError
 from vocal.netcdf.writer import NetCDFReader
-from vocal.utils import get_error_locs, import_project
+from vocal.utils import (
+    get_error_locs,
+    import_project,
+    regexify_file_pattern,
+    TextStyles,
+)
+from vocal.utils.conventions import get_conventions_string
+from vocal.utils.registry import Registry
+from vocal.versioning import InvalidVersion, Version
 from vocal.web.models import (
     Check,
     CheckContext,
@@ -19,6 +26,129 @@ from vocal.web.models import (
     CheckIssue,
     CheckProject,
 )
+
+TS = TextStyles()
+
+
+# ---------------------------------------------------------------------------
+# Legacy registry-driven resolution.
+#
+# These helpers predate the :mod:`vocal.resolution` module and are kept here,
+# alongside their only remaining caller (:func:`check_upload`), until the web
+# check flow is rewired onto the resolver. The CLI (``vocal check``) no longer
+# uses them.
+# ---------------------------------------------------------------------------
+
+
+class NoConventionsFound(VocalError):
+    pass
+
+
+class NoMatchingProjects(VocalError):
+    pass
+
+
+class DefinitionVersionNotFound(VocalError):
+    pass
+
+
+def load_matching_projects(filename: str) -> list[str]:
+    """Load all registered projects matching the file's ``Conventions``."""
+    conventions = get_conventions_string(filename)
+
+    if conventions is None:
+        raise NoConventionsFound(
+            "No conventions found in file. Please provide a project or definition."
+        )
+
+    try:
+        c = Registry.filter(conventions)
+    except FileNotFoundError:
+        c = Registry(projects={})
+
+    if len(c) == 0:
+        raise NoMatchingProjects(
+            f"No registered project(s) found for conventions {conventions}"
+        )
+
+    print(
+        f"\n{TS.BOLD}{TS.OKGREEN}✔{TS.ENDC} Found {len(c)} registered project(s) "
+        f"for conventions {conventions}: {', '.join(c.projects.keys())}"
+    )
+
+    return [proj.path for proj in c.projects.values()]
+
+
+def file_version_string(filename: str, project_name: str) -> str:
+    """Return the file's claimed ``project_name`` version as ``v{major}.{minor}``."""
+    conventions = get_conventions_string(filename)
+
+    if conventions is None:
+        raise NoConventionsFound(
+            "No conventions found in file. Please provide a project or definition."
+        )
+
+    for token in conventions.split():
+        token = token.rstrip(",")
+        if not token.startswith(f"{project_name}-"):
+            continue
+        try:
+            version = Version.parse(token)
+        except InvalidVersion:
+            continue
+        return f"v{version.major}.{version.minor}"
+
+    raise NoConventionsFound(
+        f"No conventions token for '{project_name}' found in file {filename}."
+    )
+
+
+def load_matching_definitions(filename: str) -> list[str]:
+    """Load all definitions matching the file's ``Conventions`` and version."""
+    conventions = get_conventions_string(filename)
+
+    if conventions is None:
+        raise NoConventionsFound(
+            "No conventions found in file. Please provide a project or definition."
+        )
+
+    registry = Registry.filter(conventions)
+
+    definitions: list[str] = []
+    paths: list[str] = []
+    filecodecs: list[dict] = []
+
+    for project in registry:
+        version_string = file_version_string(filename, project.spec.name)
+        path = os.path.join(project.definitions, version_string)
+        if not os.path.isdir(path):
+            raise DefinitionVersionNotFound(
+                f"No product definitions registered for "
+                f"{project.spec.name} version {version_string}",
+                hint=(
+                    f"Register a project providing definitions for "
+                    f"{project.spec.name} {version_string}, or upload "
+                    f"a file matching a registered version."
+                ),
+            )
+        paths.append(path)
+        vocal_project = import_project(project.path)
+        filecodecs.append(vocal_project.filecodec)
+
+    for path, codec in zip(paths, filecodecs):
+        def_files = [
+            f
+            for f in os.listdir(path)
+            if f.endswith(".json") and f != "dataset_schema.json"
+        ]
+        for file in def_files:
+            with open(os.path.join(path, file), "r") as f:
+                data = yaml.load(f, Loader=yaml.Loader)
+                rex = regexify_file_pattern(data["meta"]["file_pattern"], codec)
+                if re.match(rex, os.path.basename(filename)):
+                    definitions.append(os.path.join(path, file))
+
+    return definitions
 
 
 async def check_upload(file: UploadFile) -> CheckContext:

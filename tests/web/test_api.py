@@ -25,7 +25,7 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
-from vocal.application.check import NoConventionsFound, NoMatchingProjects
+from vocal.web.utils import NoConventionsFound, NoMatchingProjects
 from vocal.application.fetch import FetchError
 from vocal.utils.registry import Project, Registry
 from vocal.web.api import app
