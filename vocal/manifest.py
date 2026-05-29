@@ -39,6 +39,11 @@ from vocal.versioning import VersionConstraint
 # refused with an "upgrade vocal" hint. This PRD introduces version 1.
 SCHEMA_VERSION = 1
 
+# The marker file that identifies a pack release directory. Sits at the root of
+# each ``v{Y}/`` (and ``latest/``) directory alongside ``dataset_schema.json``
+# and the product schema JSONs.
+MANIFEST_FILENAME = "manifest.json"
+
 _VERSIONED_DIR_RE = re.compile(r"^v(?P<version>\d+)$")
 
 

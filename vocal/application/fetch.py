@@ -1,17 +1,42 @@
-"""Fetch a vocal project from a git repository."""
+"""Fetch a vocal project or pack and register it.
+
+``vocal fetch <url>`` auto-detects whether ``<url>`` refers to a project or a
+pack by inspecting the resource's marker file: a downloaded git repo carrying a
+``conventions.yaml`` is a project; a URL serving a ``manifest.json`` is a pack.
+
+Pack URL grammar carries the version in the path: ``vocal fetch <base>`` fetches
+``<base>/latest/``; ``vocal fetch <base>/v{Y}`` fetches that pinned version.
+There is no ``--version`` flag.
+"""
 
 import os
+import re
 import shutil
 import subprocess
+import tempfile
 import zipfile
+from typing import Optional
+from urllib.parse import urlsplit, urlunsplit
 
 import typer
 import requests
 
-from vocal.application.register import register_project, CannotRegisterProjectError
-from vocal.conventions_file import ConventionsFile
+from vocal.application.register import (
+    register_pack,
+    register_project,
+    CannotRegisterProjectError,
+)
+from vocal.conventions_file import ConventionsFile, InvalidConventionsFile
 from vocal.exceptions import VocalError
+from vocal.manifest import (
+    Manifest,
+    MANIFEST_FILENAME,
+    PackInconsistent,
+    normalize_pack_url,
+    versioned_dirname,
+)
 from vocal.utils import cache_dir, flip_to_dir, Printer, TextStyles
+from vocal.utils.registry import project_key
 
 
 TS = TextStyles()
@@ -55,6 +80,15 @@ class ProjectAlreadyFetched(FetchError):
 
 
 class ProjectNotFetched(FetchError):
+    pass
+
+
+class ProjectIdentityChanged(FetchError):
+    """Raised when a re-fetched project's ``{name}-{major}`` differs from the
+    one previously registered at the same local cache directory."""
+
+
+class PackAlreadyFetched(FetchError):
     pass
 
 
@@ -307,6 +341,16 @@ def fetch_project(
             hint="Pass --update to refresh it, or --force to overwrite.",
         )
 
+    # On --update, remember the project's prior identity so we can refuse to
+    # silently re-register a different {name}-{major} under the same cache dir.
+    prior_key: Optional[str] = None
+    if exists and update:
+        try:
+            prior = ConventionsFile.load(target)
+            prior_key = project_key(prior.name, prior.major)
+        except InvalidConventionsFile:
+            prior_key = None
+
     if exists:
         shutil.rmtree(target)
 
@@ -319,7 +363,20 @@ def fetch_project(
         # Validate that the fetched tree looks like a vocal project before
         # registering. ConventionsFile.load raises InvalidConventionsFile when
         # conventions.yaml is missing or malformed.
-        ConventionsFile.load(target)
+        conventions = ConventionsFile.load(target)
+
+        if prior_key is not None:
+            new_key = project_key(conventions.name, conventions.major)
+            if new_key != prior_key:
+                raise ProjectIdentityChanged(
+                    f"Re-fetched project is '{new_key}', but '{prior_key}' was "
+                    f"registered at {target}.",
+                    hint=(
+                        "A new major is a new project: fetch it to a fresh URL "
+                        "and register it under its own key rather than updating "
+                        "in place."
+                    ),
+                )
 
         register_project(target, force=True)
     except CannotRegisterProjectError as e:
@@ -330,9 +387,224 @@ def fetch_project(
         raise
 
 
+# ---------------------------------------------------------------------------
+# Packs
+# ---------------------------------------------------------------------------
+
+_PINNED_RE = re.compile(r"^v(\d+)$")
+
+
+def get_packs_dir() -> str:
+    """Return the local cache directory for packs (``~/.vocal/packs``).
+
+    Creates the directory if it does not exist.
+    """
+    packs_dir = os.path.join(cache_dir(), "packs")
+    os.makedirs(packs_dir, exist_ok=True)
+    return packs_dir
+
+
+def derive_url_slug(base_url: str) -> str:
+    """Derive a stable, filesystem-safe slug from a pack's base URL.
+
+    The slug is the normalised URL's host plus path, lowercased, with runs of
+    non-alphanumeric characters collapsed to a single ``-``. Packs fetched from
+    the same base URL share a slug directory; their versions coexist as
+    ``v{Y}/`` siblings within it.
+    """
+    parts = urlsplit(normalize_pack_url(base_url))
+    raw = f"{parts.netloc}{parts.path}"
+    slug = re.sub(r"[^a-z0-9]+", "-", raw.lower()).strip("-")
+    return slug or "pack"
+
+
+def parse_pack_url(url: str) -> tuple[str, str, str, Optional[int]]:
+    """Split a pack fetch URL into its addressing components.
+
+    ``<base>`` resolves to the ``latest/`` release; ``<base>/v{Y}`` pins a
+    version. Returns ``(base_url, version_dir_url, manifest_url, pinned)`` where
+    ``pinned`` is the requested version for a ``v{Y}`` URL or ``None`` for a
+    bare base URL.
+    """
+    trimmed = url.strip().rstrip("/")
+    parts = urlsplit(trimmed)
+    segments = parts.path.split("/")
+    last = segments[-1] if segments else ""
+
+    match = _PINNED_RE.match(last)
+    if match:
+        pinned: Optional[int] = int(match.group(1))
+        base_path = "/".join(segments[:-1])
+        base_url = urlunsplit((parts.scheme, parts.netloc, base_path, "", ""))
+        version_dir_url = trimmed
+    else:
+        pinned = None
+        base_url = trimmed
+        version_dir_url = f"{trimmed}/latest"
+
+    manifest_url = f"{version_dir_url}/{MANIFEST_FILENAME}"
+    return base_url, version_dir_url, manifest_url, pinned
+
+
+def _http_get(url: str) -> requests.Response:
+    """GET ``url``, raising :class:`FetchError` on network or HTTP failure."""
+    try:
+        response = requests.get(url)
+    except requests.RequestException as e:
+        raise FetchError(f"Network error fetching {url}: {e}")
+    if not response.ok:
+        raise FetchError(
+            f"Failed to fetch {url}: HTTP {response.status_code}.",
+            hint="Check the pack URL is correct and the host is reachable.",
+        )
+    return response
+
+
+def _load_remote_manifest(manifest_url: str) -> Manifest:
+    """Download and parse a pack manifest from ``manifest_url``."""
+    response = _http_get(manifest_url)
+    try:
+        data = response.json()
+    except ValueError as e:
+        raise FetchError(f"Pack manifest at {manifest_url} is not valid JSON: {e}")
+    try:
+        return Manifest.from_dict(data)
+    except VocalError as e:
+        raise FetchError(
+            f"Invalid pack manifest at {manifest_url}: {e.message}", hint=e.hint
+        )
+
+
+def looks_like_pack(url: str) -> bool:
+    """Probe ``url`` for a pack manifest, returning whether one was found.
+
+    Used to auto-detect resource kind: a URL serving a valid ``manifest.json``
+    (at ``<base>/latest/`` or ``<base>/v{Y}/``) is a pack; anything else is
+    treated as a project git URL.
+    """
+    _, _, manifest_url, _ = parse_pack_url(url)
+    try:
+        response = requests.get(manifest_url)
+    except requests.RequestException:
+        return False
+    if not response.ok:
+        return False
+    try:
+        Manifest.from_dict(response.json())
+    except Exception:
+        return False
+    return True
+
+
+def fetch_pack(url: str, update: bool = False, force: bool = False) -> None:
+    """Fetch a pack and register it.
+
+    Downloads the pack's ``manifest.json``, ``dataset_schema.json``, and product
+    schema JSONs into ``~/.vocal/packs/<url-slug>/v{Y}/`` (where ``Y`` is the
+    manifest's canonical version), then registers it keyed by ``(url, version)``.
+
+    Pack versions are immutable, so re-fetching an already-cached version
+    requires ``--update`` (or ``--force``); without one this raises
+    :class:`PackAlreadyFetched`.
+
+    Raises:
+        PackInconsistent: the pinned ``v{Y}`` URL disagrees with the manifest's
+            version.
+        PackAlreadyFetched: the version is already cached and neither ``--update``
+            nor ``--force`` was given.
+        FetchError: on a network/HTTP failure or a malformed manifest.
+    """
+    base_url, version_dir_url, manifest_url, pinned = parse_pack_url(url)
+
+    manifest = _load_remote_manifest(manifest_url)
+    version = manifest.version
+
+    if pinned is not None and pinned != version:
+        raise PackInconsistent(
+            f"Pack at {version_dir_url} declares version {version}, "
+            f"not v{pinned}.",
+            "The versioned directory name and manifest version must agree; "
+            "this is a hosting bug.",
+        )
+
+    slug_dir = os.path.join(get_packs_dir(), derive_url_slug(base_url))
+    target = os.path.join(slug_dir, versioned_dirname(version))
+    exists = os.path.exists(target)
+
+    if exists and not (update or force):
+        raise PackAlreadyFetched(
+            f"Pack {base_url} version {version} is already fetched at {target}.",
+            hint="Pack versions are immutable; pass --update to re-download it.",
+        )
+
+    os.makedirs(slug_dir, exist_ok=True)
+    staging = tempfile.mkdtemp(prefix=".fetch-", dir=slug_dir)
+    try:
+        _write_text(os.path.join(staging, MANIFEST_FILENAME), manifest.to_json())
+        _download_file(
+            f"{version_dir_url}/dataset_schema.json",
+            os.path.join(staging, "dataset_schema.json"),
+        )
+        for product in manifest.products:
+            _download_file(
+                f"{version_dir_url}/{product.schema}",
+                os.path.join(staging, product.schema),
+            )
+
+        if exists:
+            shutil.rmtree(target)
+        os.rename(staging, target)
+    except Exception:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+
+    register_pack(target, force=True)
+
+
+def _write_text(path: str, content: str) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write(content)
+
+
+def _download_file(url: str, dest: str) -> None:
+    """Download ``url`` to ``dest``, creating parent directories as needed."""
+    response = _http_get(url)
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(dest, "wb") as f:
+        f.write(response.content)
+
+
+# ---------------------------------------------------------------------------
+# Dispatch
+# ---------------------------------------------------------------------------
+
+
+def fetch(
+    url: str,
+    git: bool = False,
+    update: bool = False,
+    force: bool = False,
+) -> None:
+    """Fetch a project or pack from ``url``, auto-detecting the kind.
+
+    A URL serving a pack ``manifest.json`` is fetched as a pack; anything else
+    is fetched as a project git repository. ``--git`` forces the project path
+    (a git clone is always a project).
+    """
+    if not git and looks_like_pack(url):
+        fetch_pack(url, update=update, force=force)
+    else:
+        fetch_project(url, git=git, update=update, force=force)
+
+
 def command(
     url: str = typer.Argument(
-        help="The URL of the git repository to fetch the project from."
+        help=(
+            "The resource to fetch: a project git URL, or a pack base URL "
+            "(<base> for the latest release, <base>/v{Y} for a pinned version). "
+            "The kind is auto-detected."
+        )
     ),
     git: bool = typer.Option(
         False,
@@ -340,27 +612,28 @@ def command(
         help=(
             "Use git to clone the repository. Requires git to be installed. "
             "This is mandatory if using a repository other than GitHub, or "
-            "if the repository is private."
+            "if the repository is private. Always fetches a project."
         ),
     ),
     update: bool = typer.Option(
         False,
         "--update",
         help=(
-            "Refresh a previously-fetched project. Fails if the project is "
-            "not already fetched."
+            "Refresh a previously-fetched resource. For a project, re-clones "
+            "and re-registers it; for a pack, re-downloads the immutable "
+            "version. Fails if the resource is not already fetched."
         ),
     ),
     force: bool = typer.Option(
         False,
         "--force",
-        help="Overwrite any existing fetched copy of the project.",
+        help="Overwrite any existing fetched copy of the resource.",
     ),
 ) -> None:
-    """Fetch a vocal project from a git repository."""
+    """Fetch a vocal project or pack and register it."""
     try:
-        fetch_project(url, git=git, update=update, force=force)
-    except FetchError as e:
+        fetch(url, git=git, update=update, force=force)
+    except VocalError as e:
         p.print_err(f"{TS.BOLD}{TS.FAIL}✗{TS.ENDC} {e.message}")
         if e.hint:
             p.print_err(f"  {e.hint}")

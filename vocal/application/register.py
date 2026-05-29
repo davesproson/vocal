@@ -1,29 +1,68 @@
-"""Register a vocal project globally."""
+"""Register a vocal project or pack globally.
+
+``vocal register <path>`` auto-detects the kind of resource at ``<path>`` from
+its marker file — ``conventions.yaml`` for a project, ``manifest.json`` for a
+pack — and registers it under the correct key. There is no ``-c`` conventions
+string flag: a project's conventions string has exactly one source of truth,
+its ``conventions.yaml``.
+"""
 
 import os
-from typing import Optional
 
 import typer
 
 from vocal.conventions_file import (
+    CONVENTIONS_FILENAME,
     ConventionsFile,
     import_project_package,
     validate_project_contract,
 )
+from vocal.manifest import MANIFEST_FILENAME, load_manifest
 from vocal.utils.registry import (
     Registry,
+    Pack,
     Project,
     get_default_registry_path,
 )
 
 
-class CannotRegisterProjectError(Exception):
+class CannotRegisterError(Exception):
+    """Base class for registration failures."""
+
+
+class CannotRegisterProjectError(CannotRegisterError):
     pass
+
+
+class CannotRegisterPackError(CannotRegisterError):
+    pass
+
+
+class UnknownResourceKind(CannotRegisterError):
+    """Raised when a path carries neither a ``conventions.yaml`` nor a ``manifest.json``."""
+
+
+def register_resource(path: str, force: bool = False) -> None:
+    """Register the resource at ``path``, auto-detecting its kind.
+
+    A directory holding ``conventions.yaml`` is a project; one holding
+    ``manifest.json`` is a pack. A path carrying neither marker raises
+    :class:`UnknownResourceKind`.
+    """
+    if os.path.isfile(os.path.join(path, CONVENTIONS_FILENAME)):
+        register_project(path, force=force)
+    elif os.path.isfile(os.path.join(path, MANIFEST_FILENAME)):
+        register_pack(path, force=force)
+    else:
+        raise UnknownResourceKind(
+            f"{path} does not look like a vocal project or pack.",
+            f"Expected a '{CONVENTIONS_FILENAME}' (project) or "
+            f"'{MANIFEST_FILENAME}' (pack) at the path.",
+        )
 
 
 def register_project(
     repo_path: str,
-    definitions: str | None = None,
     force: bool = False,
 ) -> None:
     """
@@ -36,8 +75,6 @@ def register_project(
 
     Args:
         repo_path: path to the project repo root.
-        definitions: accepted for CLI compatibility but unused — projects no
-            longer carry an embedded definitions path.
         force: re-register even if a project of the same ``{name}-{major}`` is
             registered.
     """
@@ -66,6 +103,43 @@ def register_project(
     except ValueError:
         raise CannotRegisterProjectError(
             f"Project '{project.key}' is already registered. Use --force to override."
+        )
+
+    save_registry(registry)
+
+
+def register_pack(
+    pack_path: str,
+    force: bool = False,
+) -> None:
+    """Register a vocal pack globally.
+
+    ``pack_path`` is a pack release directory — the directory holding
+    ``manifest.json``, ``dataset_schema.json``, and the product schema JSONs.
+    The pack's identity (base ``url`` and ``version``) is read from its
+    ``manifest.json``; loading enforces the ``v{Y}/`` directory-name vs
+    ``manifest.json:version`` equality check and raises ``PackInconsistent`` on
+    drift.
+
+    Args:
+        pack_path: path to the pack release directory.
+        force: re-register even if the same ``(url, version)`` is registered.
+    """
+
+    print(f"Registering pack {pack_path} in userspace")
+
+    manifest = load_manifest(os.path.join(pack_path, MANIFEST_FILENAME))
+
+    registry = load_registry()
+
+    pack = Pack(manifest=manifest, local_path=pack_path)
+
+    try:
+        registry.add_pack(pack, force=force)
+    except ValueError:
+        raise CannotRegisterPackError(
+            f"Pack '{pack.url}' version {pack.version} is already registered. "
+            "Use --force to override."
         )
 
     save_registry(registry)
@@ -115,21 +189,19 @@ def save_registry(registry: Registry) -> None:
 
 
 def command(
-    project: str = typer.Argument(
-        help="The vocal project repo root to register (holds conventions.yaml)."
-    ),
-    definitions: Optional[str] = typer.Option(
-        None,
-        "-d",
-        "--definitions",
-        help="The folder to look in for product definitions. Defaults to <project>/definitions.",
+    path: str = typer.Argument(
+        help=(
+            "The resource to register. A project repo root (holds "
+            "conventions.yaml) or a pack release directory (holds manifest.json); "
+            "the kind is auto-detected from the marker file."
+        )
     ),
     force: bool = typer.Option(
         False,
         "-f",
         "--force",
-        help="Force registration, even if the project is already registered.",
+        help="Force registration, even if the resource is already registered.",
     ),
 ) -> None:
-    """Register a vocal project globally."""
-    register_project(project, definitions, force)
+    """Register a vocal project or pack globally."""
+    register_resource(path, force=force)

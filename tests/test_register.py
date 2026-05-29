@@ -6,6 +6,7 @@ single import path, and the project contract is enforced before a project is
 added to the registry.
 """
 
+import json
 import shutil
 from pathlib import Path
 from unittest.mock import patch
@@ -13,8 +14,15 @@ from unittest.mock import patch
 import pytest
 
 from vocal.application.init import init_project
-from vocal.application.register import register_project
+from vocal.application.register import (
+    CannotRegisterPackError,
+    UnknownResourceKind,
+    register_pack,
+    register_project,
+    register_resource,
+)
 from vocal.conventions_file import ConventionsFile, MissingProjectExport
+from vocal.manifest import PackInconsistent
 from vocal.utils.registry import Registry
 
 
@@ -98,3 +106,84 @@ class TestInitThenRegister:
         assert "filecodec" in exc.value.message
         # Nothing was registered.
         assert captured["registry"].projects == {}
+
+
+def _make_pack_dir(
+    root: Path, dirname: str, version: int, manifest_version: int | None = None
+) -> Path:
+    """Materialise a pack release directory on disk and return its path."""
+    if manifest_version is None:
+        manifest_version = version
+    vdir = root / dirname
+    vdir.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "schema_version": 1,
+        "version": manifest_version,
+        "url": "https://host/packs",
+        "requires_standard": {"name": "MYSTD", "major": 2, "min_minor": 3},
+        "products": [
+            {"name": "alpha", "file_pattern": "alpha_{date}.nc", "schema": "alpha.json"}
+        ],
+    }
+    (vdir / "manifest.json").write_text(json.dumps(manifest))
+    (vdir / "dataset_schema.json").write_text(json.dumps({"type": "object"}))
+    (vdir / "alpha.json").write_text(json.dumps({"meta": {}}))
+    return vdir
+
+
+class TestRegisterAutoDetect:
+    def test_detects_and_registers_project(self, tmp_path: Path) -> None:
+        repo = tmp_path / "myrepo"
+        init_project(
+            str(repo), name="MYSTD", major=2, minor=3, project_directory="mystd"
+        )
+        _fill_in_module(repo, "mystd")
+
+        captured: dict = {}
+        with _registers_into(captured):
+            register_resource(str(repo))
+
+        assert "MYSTD-2" in captured["registry"].projects
+
+    def test_detects_and_registers_pack(self, tmp_path: Path) -> None:
+        pack_dir = _make_pack_dir(tmp_path, "v3", version=3)
+
+        captured: dict = {}
+        with _registers_into(captured):
+            register_resource(str(pack_dir))
+
+        registry = captured["registry"]
+        pack = registry.find_pack("https://host/packs", 3)
+        assert pack is not None
+        assert pack.local_path == str(pack_dir)
+
+    def test_path_with_no_marker_raises(self, tmp_path: Path) -> None:
+        bare = tmp_path / "bare"
+        bare.mkdir()
+        with pytest.raises(UnknownResourceKind):
+            register_resource(str(bare))
+
+
+class TestRegisterPack:
+    def test_inconsistent_version_raises(self, tmp_path: Path) -> None:
+        # v99/ directory whose manifest declares version 3.
+        pack_dir = _make_pack_dir(tmp_path, "v99", version=99, manifest_version=3)
+
+        captured: dict = {}
+        with _registers_into(captured):
+            with pytest.raises(PackInconsistent):
+                register_pack(str(pack_dir))
+
+        # Nothing was registered.
+        assert captured["registry"].packs == {}
+
+    def test_already_registered_raises_without_force(self, tmp_path: Path) -> None:
+        pack_dir = _make_pack_dir(tmp_path, "v3", version=3)
+
+        captured: dict = {}
+        with _registers_into(captured):
+            register_pack(str(pack_dir))
+            with pytest.raises(CannotRegisterPackError):
+                register_pack(str(pack_dir))
+            # force re-registers cleanly.
+            register_pack(str(pack_dir), force=True)

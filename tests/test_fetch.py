@@ -26,6 +26,7 @@ from vocal.application.fetch import (
     NoReleasesFound,
     NotAGitHubRepo,
     ProjectAlreadyFetched,
+    ProjectIdentityChanged,
     ProjectNotFetched,
     RateLimited,
     RepoNotFound,
@@ -329,6 +330,62 @@ class TestFetchProjectFlags:
 
         git_mock.assert_called_once()
         http_mock.assert_not_called()
+
+
+class TestFetchProjectUpdateIdentity:
+    """--update guards against re-registering a different {name}-{major}."""
+
+    def _patch_projects_dir(self, tmp_path: Path) -> Any:
+        return patch(
+            "vocal.application.fetch.get_projects_dir", return_value=str(tmp_path)
+        )
+
+    def test_update_same_identity_reregisters(self, tmp_path: Path) -> None:
+        target = tmp_path / "r"
+        _make_valid_project(target)  # STD-1
+
+        def fake_fetch(url: str, tgt: str) -> None:
+            os.makedirs(tgt, exist_ok=True)
+            _make_valid_project(Path(tgt))  # same STD-1
+
+        register_mock = MagicMock()
+        with self._patch_projects_dir(tmp_path), patch.multiple(
+            "vocal.application.fetch",
+            fetch_http=MagicMock(side_effect=fake_fetch),
+            register_project=register_mock,
+        ):
+            fetch_project("https://github.com/u/r", update=True)
+
+        register_mock.assert_called_once()
+        # Re-registers the refreshed cache dir.
+        assert register_mock.call_args[0][0] == str(target)
+
+    def test_update_changed_major_raises(self, tmp_path: Path) -> None:
+        target = tmp_path / "r"
+        _make_valid_project(target)  # STD-1
+
+        def fake_fetch(url: str, tgt: str) -> None:
+            os.makedirs(tgt, exist_ok=True)
+            os.makedirs(Path(tgt) / "src", exist_ok=True)
+            _write_conventions_yaml(
+                Path(tgt),
+                {
+                    "conventions": {"name": "STD", "major": 2, "minor": 0},
+                    "layout": {"project_directory": "src"},
+                },
+            )
+
+        register_mock = MagicMock()
+        with self._patch_projects_dir(tmp_path), patch.multiple(
+            "vocal.application.fetch",
+            fetch_http=MagicMock(side_effect=fake_fetch),
+            register_project=register_mock,
+        ):
+            with pytest.raises(ProjectIdentityChanged):
+                fetch_project("https://github.com/u/r", update=True)
+
+        # Refused before registering under the new key.
+        register_mock.assert_not_called()
 
 
 class TestFetchProjectCleanup:
