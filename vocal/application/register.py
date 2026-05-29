@@ -1,7 +1,6 @@
 """Register a vocal project globally."""
 
 import os
-import re
 from typing import Optional
 
 import typer
@@ -9,11 +8,9 @@ import typer
 from vocal.conventions_file import (
     ConventionsFile,
     import_project_package,
-    module_path,
     validate_project_contract,
 )
 from vocal.utils.registry import (
-    ProjectSpec,
     Registry,
     Project,
     get_default_registry_path,
@@ -39,9 +36,10 @@ def register_project(
 
     Args:
         repo_path: path to the project repo root.
-        definitions: path to a product-definitions directory. Defaults to
-            ``<repo>/definitions``.
-        force: re-register even if a project of the same name is registered.
+        definitions: accepted for CLI compatibility but unused — projects no
+            longer carry an embedded definitions path.
+        force: re-register even if a project of the same ``{name}-{major}`` is
+            registered.
     """
 
     print(f"Registering project {repo_path} in userspace")
@@ -53,23 +51,21 @@ def register_project(
     module = import_project_package(repo_path)
     validate_project_contract(module)
 
-    if definitions is None:
-        definitions = os.path.join(repo_path, "definitions")
-
     registry = load_registry()
 
-    spec = conventions_to_spec(f"{conventions.name}-[].[]")
     project = Project(
-        spec=spec,
-        path=module_path(repo_path, conventions),
-        definitions=definitions,
+        name=conventions.name,
+        major=conventions.major,
+        minor=conventions.minor,
+        project_directory=conventions.project_directory,
+        local_path=repo_path,
     )
 
     try:
         registry.add_project(project, force=force)
     except ValueError:
         raise CannotRegisterProjectError(
-            f"Project for '{spec.name}' is already registered. Use --force to override."
+            f"Project '{project.key}' is already registered. Use --force to override."
         )
 
     save_registry(registry)
@@ -116,46 +112,6 @@ def save_registry(registry: Registry) -> None:
         registry.save(default_path)
     except Exception as e:
         raise CannotRegisterProjectError(f"Unable to save registry file: {e}") from e
-
-
-def conventions_to_spec(conventions_string: str) -> ProjectSpec:
-    """
-    Convert the given conventions string to a regex pattern.
-
-    Args:
-        conventions_string (str): The conventions string to convert.
-
-    Returns:
-        str: The regex pattern.
-    """
-    # Regex which matches STD, STD-[], STD-[].[], indicating standard
-    # name, with optional major and minor version numbers
-    regex = r"(?P<name>[a-zA-Z0-9]+)(-?(?P<major>\[\])?(\.)?(?P<minor>\[\])?)"
-
-    cmatchd = re.search(regex, conventions_string)
-
-    if cmatchd is None:
-        raise ValueError(f"Invalid conventions string: {conventions_string}")
-
-    cmatch = cmatchd.groupdict()
-    name = cmatch.get("name")
-
-    if name is None:
-        raise ValueError(f"Invalid conventions string: {conventions_string}")
-
-    re_out = name
-    if cmatch.get("major"):
-        re_out += r"-(?P<major>\d+)"
-    if cmatch.get("minor"):
-        re_out += r"\.(?P<minor>\d+)"
-    re_out += r",?\s?"
-
-    return ProjectSpec(
-        name=name,
-        has_major=bool(cmatch.get("major")),
-        has_minor=bool(cmatch.get("minor")),
-        regex=re_out,
-    )
 
 
 def command(

@@ -75,9 +75,12 @@ class TestInitThenRegister:
             register_project(str(repo))
 
         registry = captured["registry"]
-        assert "MYSTD" in registry.projects
-        registered = registry.projects["MYSTD"]
-        assert registered.path == str(repo / "mystd")
+        assert "MYSTD-2" in registry.projects
+        registered = registry.projects["MYSTD-2"]
+        # local_path is the repo root, not the module subdirectory.
+        assert registered.local_path == str(repo)
+        assert registered.minor == 3
+        assert registered.project_directory == "mystd"
 
     def test_register_missing_export_raises_named(self, tmp_path: Path) -> None:
         repo = tmp_path / "myrepo"
