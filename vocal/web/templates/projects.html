@@ -12,16 +12,12 @@
         <h2>{{ project_name }}</h2>
         <div class="card-meta">
             <span>
-                <span class="label">Project dir</span>
-                <span class="code">{{ project.path }}</span>
+                <span class="label">Version</span>
+                <span class="code">{{ project.name }}-{{ project.major }}.{{ project.minor }}</span>
             </span>
             <span>
-                <span class="label">Products dir</span>
-                <span class="code">{{ project.definitions }}</span>
-            </span>
-            <span>
-                <span class="label">Identifier regex</span>
-                <span class="code">{{ project.spec.regex }}</span>
+                <span class="label">Local path</span>
+                <span class="code">{{ project.local_path }}</span>
             </span>
         </div>
     </div>

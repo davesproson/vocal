@@ -27,7 +27,7 @@ from fastapi.testclient import TestClient
 
 from vocal.application.check import NoConventionsFound, NoMatchingProjects
 from vocal.application.fetch import FetchError
-from vocal.utils.registry import Project, ProjectSpec, Registry
+from vocal.utils.registry import Project, Registry
 from vocal.web.api import app
 from vocal.web.models import CheckContext, CheckIssue
 
@@ -45,11 +45,12 @@ def _open_registry(projects: dict[str, Project]) -> Generator[Registry, None, No
 
 
 def _make_project(name: str = "test_project") -> Project:
-    spec = ProjectSpec(name=name, has_major=True, has_minor=True, regex=".*")
     return Project(
-        spec=spec,
-        path=f"/tmp/{name}",
-        definitions=f"/tmp/{name}/definitions",
+        name=name,
+        major=1,
+        minor=0,
+        project_directory=name,
+        local_path=f"/tmp/{name}",
     )
 
 
