@@ -8,24 +8,25 @@ inspected directly.
 """
 
 import json
-import os
 import shutil
-from contextlib import ExitStack, contextmanager
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from vocal.application.fetch import (
     PackAlreadyFetched,
+    PackNotFetched,
     derive_url_slug,
     fetch,
     fetch_pack,
     looks_like_pack,
     parse_pack_url,
 )
-from vocal.manifest import PackInconsistent
+from vocal.application.register import register_pack
+from vocal.manifest import Manifest, PackInconsistent
 from vocal.utils.registry import Registry
 
 
@@ -107,9 +108,81 @@ def _make_remote_pack(
     return root
 
 
+def _make_canonical_pack(
+    root: Path, version: int = 3, url: str = "https://host/packs"
+) -> Path:
+    """Materialise a pack source whose ``manifest.json`` is in canonical form.
+
+    Unlike :func:`_make_remote_pack` (which writes a compact manifest, modelling
+    arbitrary hosted bytes), this writes ``manifest.json`` via
+    :meth:`Manifest.to_json` — the same serialisation ``fetch_pack`` produces —
+    so a local ``register`` of this source and a ``fetch`` of an equivalent
+    remote reach byte-identical owned copies.
+    """
+    vdir = root / f"v{version}"
+    vdir.mkdir(parents=True, exist_ok=True)
+    manifest = Manifest.from_dict(
+        {
+            "schema_version": 1,
+            "version": version,
+            "url": url,
+            "requires_standard": {"name": "MYSTD", "major": 2, "min_minor": 3},
+            "products": [
+                {
+                    "name": "alpha",
+                    "file_pattern": "alpha_{date}.nc",
+                    "schema": "alpha.json",
+                }
+            ],
+        }
+    )
+    (vdir / "manifest.json").write_text(manifest.to_json())
+    (vdir / "dataset_schema.json").write_text(json.dumps({"type": "object"}))
+    (vdir / "alpha.json").write_text(json.dumps({"meta": {"file_pattern": "alpha"}}))
+    return root
+
+
+def _snapshot(root: Path) -> dict[str, str]:
+    """Return ``{relative_path: contents}`` for every file under ``root``."""
+    out: dict[str, str] = {}
+    for path in sorted(root.rglob("*")):
+        if path.is_file():
+            out[str(path.relative_to(root))] = path.read_text()
+    return out
+
+
+@contextmanager
+def _pack_env(cache_root: Path, captured: dict) -> Iterator[str]:
+    """Isolate an install: in-memory registry + a tmp ``~/.vocal`` root.
+
+    Both ``fetch_pack`` (the gate) and ``install_pack`` (via ``register``) read
+    the registry, so both name bindings are patched to share one in-memory
+    ``Registry``; ``install``'s ``cache_dir`` is redirected so the owned copy
+    lands under ``cache_root``. Yields the vocal root.
+    """
+    captured["registry"] = Registry()
+
+    def _load() -> Registry:
+        return captured["registry"]
+
+    def _save(r: Registry) -> None:
+        captured["registry"] = r
+
+    with patch.multiple(
+        "vocal.application.register",
+        load_registry=_load,
+        save_registry=_save,
+    ), patch(
+        "vocal.application.fetch.load_registry", _load
+    ), patch(
+        "vocal.application.install.cache_dir", return_value=str(cache_root)
+    ):
+        yield str(cache_root)
+
+
 @pytest.fixture
 def registers_into():
-    """Redirect register's registry I/O to an in-memory registry."""
+    """Redirect register's and fetch's registry I/O to one in-memory registry."""
     captured: dict = {"registry": Registry()}
 
     def _load():
@@ -122,7 +195,7 @@ def registers_into():
         "vocal.application.register",
         load_registry=_load,
         save_registry=_save,
-    ):
+    ), patch("vocal.application.fetch.load_registry", _load):
         yield captured
 
 
@@ -211,26 +284,16 @@ class TestFetchDispatch:
 class TestFetchPack:
     @contextmanager
     def _patch_packs_dir(self, tmp_path: Path) -> Iterator[None]:
-        """Redirect both the fetch download dir and the install root to ``tmp``.
+        """Redirect the install root to a sandboxed ``~/.vocal``.
 
-        ``register_pack`` now installs an owned copy under ``cache_dir()``, so
-        the install root must be sandboxed alongside fetch's download dir;
-        pointing both at the same ``tmp/cache`` keeps the owned copy where the
-        fetch flow downloaded it.
+        ``fetch_pack`` now downloads to a private temp directory and installs via
+        ``install_pack``; only the install root (``cache_dir``) needs
+        redirecting, so the owned copy lands under ``tmp/cache``.
         """
-        with ExitStack() as stack:
-            stack.enter_context(
-                patch(
-                    "vocal.application.fetch.get_packs_dir",
-                    return_value=str(tmp_path / "cache" / "packs"),
-                )
-            )
-            stack.enter_context(
-                patch(
-                    "vocal.application.install.cache_dir",
-                    return_value=str(tmp_path / "cache"),
-                )
-            )
+        with patch(
+            "vocal.application.install.cache_dir",
+            return_value=str(tmp_path / "cache"),
+        ):
             yield
 
     def test_fetch_latest_caches_and_registers(
@@ -317,3 +380,50 @@ class TestFetchPack:
         assert not stray.exists()
         assert (packs_dir / "host-packs" / "v3" / "manifest.json").is_file()
         assert registers_into["registry"].find_pack("https://host/packs", 3) is not None
+
+    def test_update_missing_raises_not_fetched(
+        self, tmp_path: Path, registers_into: dict
+    ) -> None:
+        remote = _FakeRemote(_make_remote_pack(tmp_path / "remote", version=3))
+        with self._patch_packs_dir(tmp_path), patch(
+            "requests.get", side_effect=remote.get
+        ):
+            with pytest.raises(PackNotFetched) as exc_info:
+                fetch_pack("https://host/packs", update=True)
+
+        assert "vocal fetch" in (exc_info.value.hint or "")
+        # Nothing was installed or registered.
+        assert registers_into["registry"].packs == {}
+        assert not (tmp_path / "cache" / "packs" / "host-packs").exists()
+
+
+class TestFetchRegisterConvergence:
+    """fetch and register reach identical on-disk + registry state for a pack."""
+
+    def test_equivalent_source_reaches_identical_state(self, tmp_path: Path) -> None:
+        # register installs from a local pack release directory...
+        source_root = _make_canonical_pack(tmp_path / "src", version=3)
+        reg_captured: dict = {}
+        with _pack_env(tmp_path / "regcache", reg_captured) as reg_root:
+            register_pack(str(source_root / "v3"))
+
+        # ...fetch installs from an equivalent remote serving the same tree.
+        fet_captured: dict = {}
+        remote = _FakeRemote(source_root)
+        with _pack_env(tmp_path / "fetcache", fet_captured) as fet_root, patch(
+            "requests.get", side_effect=remote.get
+        ):
+            fetch_pack("https://host/packs/v3")
+
+        reg_owned = Path(reg_root) / "packs" / "host-packs" / "v3"
+        fet_owned = Path(fet_root) / "packs" / "host-packs" / "v3"
+        # Identical on-disk shape, byte for byte.
+        assert _snapshot(reg_owned) == _snapshot(fet_owned)
+
+        # Identical registry record (modulo the root each is installed under).
+        reg_pack = reg_captured["registry"].find_pack("https://host/packs", 3)
+        fet_pack = fet_captured["registry"].find_pack("https://host/packs", 3)
+        assert reg_pack is not None and fet_pack is not None
+        assert reg_pack.manifest.to_dict() == fet_pack.manifest.to_dict()
+        assert reg_pack.local_path == str(reg_owned)
+        assert fet_pack.local_path == str(fet_owned)

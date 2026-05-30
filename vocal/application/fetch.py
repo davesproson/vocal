@@ -23,9 +23,9 @@ import requests
 
 from vocal.application.install import derive_url_slug
 from vocal.application.register import (
+    install_pack,
     install_project,
     load_registry,
-    register_pack,
 )
 from vocal.conventions_file import ConventionsFile
 from vocal.exceptions import VocalError
@@ -35,8 +35,8 @@ from vocal.manifest import (
     PackInconsistent,
     versioned_dirname,
 )
-from vocal.utils import cache_dir, flip_to_dir, Printer, TextStyles
-from vocal.utils.registry import project_key
+from vocal.utils import flip_to_dir, Printer, TextStyles
+from vocal.utils.registry import Pack, project_key
 
 
 TS = TextStyles()
@@ -84,6 +84,10 @@ class ProjectNotFetched(FetchError):
 
 
 class PackAlreadyFetched(FetchError):
+    pass
+
+
+class PackNotFetched(FetchError):
     pass
 
 
@@ -367,16 +371,6 @@ def fetch_project(
 _PINNED_RE = re.compile(r"^v(\d+)$")
 
 
-def get_packs_dir() -> str:
-    """Return the local cache directory for packs (``~/.vocal/packs``).
-
-    Creates the directory if it does not exist.
-    """
-    packs_dir = os.path.join(cache_dir(), "packs")
-    os.makedirs(packs_dir, exist_ok=True)
-    return packs_dir
-
-
 def parse_pack_url(url: str) -> tuple[str, str, str, Optional[int]]:
     """Split a pack fetch URL into its addressing components.
 
@@ -456,21 +450,33 @@ def looks_like_pack(url: str) -> bool:
 
 
 def fetch_pack(url: str, update: bool = False, force: bool = False) -> None:
-    """Fetch a pack and register it.
+    """Download a pack and install an owned copy under ``~/.vocal``.
 
-    Downloads the pack's ``manifest.json``, ``dataset_schema.json``, and product
-    schema JSONs into ``~/.vocal/packs/<url-slug>/v{Y}/`` (where ``Y`` is the
-    manifest's canonical version), then registers it keyed by ``(url, version)``.
+    A thin shell over the shared install primitive: the pack's
+    ``manifest.json``, ``dataset_schema.json``, and product schema JSONs are
+    downloaded into a temporary location, then handed to
+    :func:`~vocal.application.register.install_pack`, which normalises and
+    atomically installs them under ``~/.vocal/packs/{slug}/v{Y}`` keyed by
+    ``(url, version)``.
 
-    Pack versions are immutable, so re-fetching an already-cached version
-    requires ``--update`` (or ``--force``); without one this raises
-    :class:`PackAlreadyFetched`.
+    The pinned-``v{Y}``-vs-manifest consistency check stays on this side: a
+    pinned URL *asserts* a version, so a manifest that disagrees is a hosting bug
+    worth surfacing before anything is downloaded for install. The remaining
+    gating mirrors :func:`fetch_project` and keys on the registry — the source of
+    truth for "is it installed":
+
+    - default: install only if ``(url, version)`` is not already registered, else
+      :class:`PackAlreadyFetched`;
+    - ``--force``: overwrite any existing install;
+    - ``--update``: require ``(url, version)`` to already be registered (else
+      :class:`PackNotFetched`), then refresh it.
 
     Raises:
         PackInconsistent: the pinned ``v{Y}`` URL disagrees with the manifest's
             version.
-        PackAlreadyFetched: the version is already cached and neither ``--update``
-            nor ``--force`` was given.
+        PackAlreadyFetched: the version is already installed and neither
+            ``--update`` nor ``--force`` was given.
+        PackNotFetched: ``--update`` was given but the version is not installed.
         FetchError: on a network/HTTP failure or a malformed manifest.
     """
     base_url, version_dir_url, manifest_url, pinned = parse_pack_url(url)
@@ -486,38 +492,41 @@ def fetch_pack(url: str, update: bool = False, force: bool = False) -> None:
             "this is a hosting bug.",
         )
 
-    slug_dir = os.path.join(get_packs_dir(), derive_url_slug(base_url))
-    target = os.path.join(slug_dir, versioned_dirname(version))
-    exists = os.path.exists(target)
+    # Gate on the registry key — the source of truth for "is it installed".
+    key = Pack(manifest=manifest, local_path="").key
+    installed = key in load_registry().packs
 
-    if exists and not (update or force):
-        raise PackAlreadyFetched(
-            f"Pack {base_url} version {version} is already fetched at {target}.",
-            hint="Pack versions are immutable; pass --update to re-download it.",
+    if update and not installed:
+        raise PackNotFetched(
+            f"Cannot update pack '{base_url}' version {version}: "
+            "not currently fetched.",
+            hint=f"Run 'vocal fetch {url}' to fetch it for the first time.",
         )
 
-    os.makedirs(slug_dir, exist_ok=True)
-    staging = tempfile.mkdtemp(prefix=".fetch-", dir=slug_dir)
+    if installed and not (update or force):
+        raise PackAlreadyFetched(
+            f"Pack {base_url} version {version} is already fetched.",
+            hint="Pack versions are immutable; pass --update to re-download it, "
+            "or --force to overwrite.",
+        )
+
+    tmp_root = tempfile.mkdtemp(prefix="vocal-fetch-pack-")
     try:
-        _write_text(os.path.join(staging, MANIFEST_FILENAME), manifest.to_json())
+        download = os.path.join(tmp_root, versioned_dirname(version))
+        _write_text(os.path.join(download, MANIFEST_FILENAME), manifest.to_json())
         _download_file(
             f"{version_dir_url}/dataset_schema.json",
-            os.path.join(staging, "dataset_schema.json"),
+            os.path.join(download, "dataset_schema.json"),
         )
         for product in manifest.products:
             _download_file(
                 f"{version_dir_url}/{product.schema}",
-                os.path.join(staging, product.schema),
+                os.path.join(download, product.schema),
             )
 
-        if exists:
-            shutil.rmtree(target)
-        os.rename(staging, target)
-    except Exception:
-        shutil.rmtree(staging, ignore_errors=True)
-        raise
-
-    register_pack(target, force=True)
+        install_pack(download, force=update or force)
+    finally:
+        shutil.rmtree(tmp_root, ignore_errors=True)
 
 
 def _write_text(path: str, content: str) -> None:
