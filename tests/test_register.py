@@ -7,8 +7,11 @@ added to the registry.
 """
 
 import json
+import os
 import shutil
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 from unittest.mock import patch
 
 import pytest
@@ -16,6 +19,7 @@ import pytest
 from vocal.application.init import init_project
 from vocal.application.register import (
     CannotRegisterPackError,
+    CannotRegisterProjectError,
     UnknownResourceKind,
     register_pack,
     register_project,
@@ -23,7 +27,7 @@ from vocal.application.register import (
 )
 from vocal.conventions_file import ConventionsFile, MissingProjectExport
 from vocal.manifest import PackInconsistent
-from vocal.utils.registry import Registry
+from vocal.utils.registry import Registry, project_key
 
 
 def _fill_in_module(repo: Path, module_name: str, *, filecodec: bool = True) -> None:
@@ -61,6 +65,36 @@ def _registers_into(captured: dict):
     )
 
 
+@contextmanager
+def _install_env(tmp_path: Path, captured: dict) -> Iterator[str]:
+    """Isolate an install: in-memory registry + a tmp ``~/.vocal`` root.
+
+    Yields the vocal root so tests can assert on the owned copy that
+    ``install_project`` writes under ``<root>/projects/{name}-{major}``. The
+    registry object is shared across calls within the ``with`` block (mutated in
+    place by ``add_project``), so re-install / ``--force`` scenarios see prior
+    state.
+    """
+    registry = Registry(projects={})
+    captured["registry"] = registry
+    vocal_root = str(tmp_path / "vocalroot")
+    with patch.multiple(
+        "vocal.application.register",
+        load_registry=lambda: registry,
+        save_registry=lambda r: captured.__setitem__("registry", r),
+    ), patch("vocal.application.install.cache_dir", return_value=vocal_root):
+        yield vocal_root
+
+
+def _snapshot(root: Path) -> dict[str, str]:
+    """Return ``{relative_path: contents}`` for every file under ``root``."""
+    out: dict[str, str] = {}
+    for path in sorted(root.rglob("*")):
+        if path.is_file():
+            out[str(path.relative_to(root))] = path.read_text()
+    return out
+
+
 class TestInitThenRegister:
     def test_scaffold_then_fill_in_registers(self, tmp_path: Path) -> None:
         repo = tmp_path / "myrepo"
@@ -79,16 +113,21 @@ class TestInitThenRegister:
         _fill_in_module(repo, "mystd")
 
         captured: dict = {}
-        with _registers_into(captured):
+        with _install_env(tmp_path, captured) as vocal_root:
             register_project(str(repo))
 
         registry = captured["registry"]
         assert "MYSTD-2" in registry.projects
         registered = registry.projects["MYSTD-2"]
-        # local_path is the repo root, not the module subdirectory.
-        assert registered.local_path == str(repo)
+        # local_path is the owned copy under ~/.vocal, not the source repo.
+        owned = os.path.join(vocal_root, "projects", "MYSTD-2")
+        assert registered.local_path == owned
+        assert registered.local_path != str(repo)
         assert registered.minor == 3
         assert registered.project_directory == "mystd"
+        # The project was actually copied into the owned location.
+        assert (Path(owned) / "conventions.yaml").is_file()
+        assert (Path(owned) / "mystd" / "__init__.py").is_file()
 
     def test_register_missing_export_raises_named(self, tmp_path: Path) -> None:
         repo = tmp_path / "myrepo"
@@ -99,13 +138,159 @@ class TestInitThenRegister:
         _fill_in_module(repo, "mystd", filecodec=False)
 
         captured: dict = {}
-        with _registers_into(captured):
+        with _install_env(tmp_path, captured) as vocal_root:
             with pytest.raises(MissingProjectExport) as exc:
                 register_project(str(repo))
 
         assert "filecodec" in exc.value.message
-        # Nothing was registered.
+        # Nothing was registered, and no owned copy was left behind.
         assert captured["registry"].projects == {}
+        assert not (Path(vocal_root) / "projects" / "MYSTD-1").exists()
+
+
+class TestInstallProject:
+    """Integration coverage for ``register`` installing an owned copy.
+
+    Driven through the public ``register_project`` entry point; assertions are
+    on externally observable state — what lands under ``~/.vocal`` and what the
+    registry records — not on private helpers.
+    """
+
+    def test_copies_owned_copy_and_applies_denylist(self, tmp_path: Path) -> None:
+        repo = tmp_path / "myrepo"
+        init_project(
+            str(repo), name="MYSTD", major=2, minor=3, project_directory="mystd"
+        )
+        _fill_in_module(repo, "mystd")
+        # Cruft the install must normalise away, plus a data file it must keep.
+        (repo / ".git").mkdir()
+        (repo / ".git" / "config").write_text("x")
+        (repo / "tests").mkdir()
+        (repo / "tests" / "test_x.py").write_text("x")
+        (repo / "mystd" / "__pycache__").mkdir()
+        (repo / "mystd" / "__pycache__" / "m.pyc").write_text("x")
+        (repo / "mystd" / "data.csv").write_text("rows")
+
+        captured: dict = {}
+        with _install_env(tmp_path, captured) as vocal_root:
+            register_project(str(repo))
+
+        owned = Path(vocal_root) / "projects" / "MYSTD-2"
+        snap = _snapshot(owned)
+        # Denylisted entries are gone at every level...
+        assert ".git/config" not in snap
+        assert "tests/test_x.py" not in snap
+        assert "mystd/__pycache__/m.pyc" not in snap
+        # ...while the runtime-relevant files (module + data) survive.
+        assert snap["conventions.yaml"]
+        assert snap["mystd/__init__.py"]
+        assert snap["mystd/data.csv"] == "rows"
+
+    def test_relative_source_resolves_location_independently(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = tmp_path / "myrepo"
+        init_project(
+            str(repo), name="REL", major=1, minor=0, project_directory="relmod"
+        )
+        _fill_in_module(repo, "relmod")
+
+        # Register via a *relative* path from tmp_path.
+        monkeypatch.chdir(tmp_path)
+        captured: dict = {}
+        with _install_env(tmp_path, captured) as vocal_root:
+            register_project("myrepo")
+
+        registered = captured["registry"].projects["REL-1"]
+        owned = os.path.join(vocal_root, "projects", "REL-1")
+        # The stored path is the absolute owned copy, not the relative input.
+        assert registered.local_path == owned
+        assert os.path.isabs(registered.local_path)
+        assert (Path(owned) / "relmod" / "__init__.py").is_file()
+
+    def test_duplicate_without_force_raises_and_keeps_install(
+        self, tmp_path: Path
+    ) -> None:
+        repo = tmp_path / "myrepo"
+        init_project(
+            str(repo), name="DUP", major=1, minor=0, project_directory="dupmod"
+        )
+        _fill_in_module(repo, "dupmod")
+
+        captured: dict = {}
+        with _install_env(tmp_path, captured) as vocal_root:
+            register_project(str(repo))
+            before = _snapshot(Path(vocal_root) / "projects" / "DUP-1")
+            with pytest.raises(CannotRegisterProjectError):
+                register_project(str(repo))
+            # The existing install is untouched.
+            assert _snapshot(Path(vocal_root) / "projects" / "DUP-1") == before
+        assert project_key("DUP", 1) in captured["registry"].projects
+
+    def test_force_reinstalls_overwriting_copy_and_entry(self, tmp_path: Path) -> None:
+        repo = tmp_path / "myrepo"
+        init_project(
+            str(repo), name="FRC", major=1, minor=2, project_directory="frcmod"
+        )
+        _fill_in_module(repo, "frcmod")
+
+        captured: dict = {}
+        with _install_env(tmp_path, captured) as vocal_root:
+            register_project(str(repo))
+
+            # Bump the source minor and re-register with --force.
+            cf = ConventionsFile.load(str(repo))
+            cf.minor = 7
+            cf.write(str(repo))
+            register_project(str(repo), force=True)
+
+            registered = captured["registry"].projects["FRC-1"]
+            assert registered.minor == 7
+            owned = Path(vocal_root) / "projects" / "FRC-1"
+            assert ConventionsFile.load(str(owned)).minor == 7
+
+    def test_broken_force_reinstall_preserves_good_install(
+        self, tmp_path: Path
+    ) -> None:
+        repo = tmp_path / "myrepo"
+        init_project(
+            str(repo), name="SAFE", major=1, minor=0, project_directory="safemod"
+        )
+        _fill_in_module(repo, "safemod")
+
+        captured: dict = {}
+        with _install_env(tmp_path, captured) as vocal_root:
+            register_project(str(repo))
+            owned = Path(vocal_root) / "projects" / "SAFE-1"
+            before = _snapshot(owned)
+
+            # Break the module but keep the same identity, then force-reinstall.
+            _fill_in_module(repo, "safemod", filecodec=False)
+            with pytest.raises(MissingProjectExport):
+                register_project(str(repo), force=True)
+
+            # The good install survived byte-for-byte.
+            assert _snapshot(owned) == before
+
+    def test_leftover_dir_without_entry_is_overwritten(self, tmp_path: Path) -> None:
+        repo = tmp_path / "myrepo"
+        init_project(
+            str(repo), name="DRIFT", major=1, minor=0, project_directory="drmod"
+        )
+        _fill_in_module(repo, "drmod")
+
+        captured: dict = {}
+        with _install_env(tmp_path, captured) as vocal_root:
+            # Drift: a stale dir on disk with no matching registry entry.
+            stale = Path(vocal_root) / "projects" / "DRIFT-1"
+            stale.mkdir(parents=True)
+            (stale / "stale.txt").write_text("garbage")
+
+            register_project(str(repo))
+
+            snap = _snapshot(stale)
+            assert "stale.txt" not in snap
+            assert snap["conventions.yaml"]
 
 
 def _make_pack_dir(
@@ -140,7 +325,7 @@ class TestRegisterAutoDetect:
         _fill_in_module(repo, "mystd")
 
         captured: dict = {}
-        with _registers_into(captured):
+        with _install_env(tmp_path, captured):
             register_resource(str(repo))
 
         assert "MYSTD-2" in captured["registry"].projects

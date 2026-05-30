@@ -8,9 +8,15 @@ its ``conventions.yaml``.
 """
 
 import os
+import sys
 
 import typer
 
+from vocal.application.install import (
+    DEFAULT_IGNORE,
+    project_install_dir,
+    staged_install,
+)
 from vocal.conventions_file import (
     CONVENTIONS_FILENAME,
     ConventionsFile,
@@ -23,6 +29,7 @@ from vocal.utils.registry import (
     Pack,
     Project,
     get_default_registry_path,
+    project_key,
 )
 
 
@@ -61,17 +68,100 @@ def register_resource(path: str, force: bool = False) -> None:
         )
 
 
+def install_project(
+    source: str,
+    force: bool = False,
+) -> Project:
+    """Install an owned copy of the project at ``source`` under ``~/.vocal``.
+
+    The single orchestration both ``register`` and ``fetch`` route a project
+    through. It reads the project's identity from ``source``'s
+    ``conventions.yaml``, computes the canonical install directory
+    ``~/.vocal/projects/{name}-{major}``, and — unless a project of that key is
+    already registered (the gate) or ``force`` is passed — stages a normalised
+    copy, validates it by importing the package and enforcing the project
+    contract against the *staging* copy, then atomically swaps it into place.
+
+    The registry record's ``local_path`` points at the owned copy under
+    ``~/.vocal``, so resolution no longer depends on ``source`` continuing to
+    exist where it was when registered. A relative ``source`` therefore resolves
+    to a location-independent entry. A leftover on-disk directory with no
+    matching registry entry passes the registry-key gate and is transparently
+    overwritten by the atomic swap; a broken source leaves any existing install
+    untouched, because validation runs against the staging copy before ``dest``
+    is touched.
+
+    Args:
+        source: the project repo root — the directory holding
+            ``conventions.yaml``.
+        force: re-install even if a project of the same ``{name}-{major}`` is
+            registered, overwriting both the on-disk copy and the registry entry.
+
+    Returns:
+        the registered :class:`~vocal.utils.registry.Project`.
+
+    Raises:
+        CannotRegisterProjectError: a project of the same ``{name}-{major}`` is
+            already registered and ``force`` is False.
+        InvalidConventionsFile, MissingProjectExport: ``source`` is not a valid,
+            importable vocal project; raised before any existing install or
+            registry entry is touched.
+    """
+    conventions = ConventionsFile.load(source)
+
+    registry = load_registry()
+
+    # Gate on the registry key — the source of truth for "is it installed". A
+    # leftover on-disk directory without a matching entry is not gated; the
+    # atomic swap below overwrites it, so drift self-heals.
+    key = project_key(conventions.name, conventions.major)
+    if key in registry.projects and not force:
+        raise CannotRegisterProjectError(
+            f"Project '{key}' is already registered. Use --force to override."
+        )
+
+    dest = project_install_dir(conventions)
+
+    def validate(staging: str) -> None:
+        # Import + contract-check the byte-identical staging copy, so a broken
+        # source aborts the install before any existing dest is torn down.
+        # Suppress bytecode writing so the validation import does not seed
+        # __pycache__ into the copy that becomes the owned install — the
+        # denylist already excludes it on the way in, and it must not creep
+        # back in on the way out.
+        prior = sys.dont_write_bytecode
+        sys.dont_write_bytecode = True
+        try:
+            module = import_project_package(staging)
+            validate_project_contract(module)
+        finally:
+            sys.dont_write_bytecode = prior
+
+    staged_install(source, dest, ignore=DEFAULT_IGNORE, validate=validate)
+
+    project = Project(
+        name=conventions.name,
+        major=conventions.major,
+        minor=conventions.minor,
+        project_directory=conventions.project_directory,
+        local_path=dest,
+    )
+    registry.add_project(project, force=force)
+    save_registry(registry)
+    return project
+
+
 def register_project(
     repo_path: str,
     force: bool = False,
 ) -> None:
-    """
-    Register a vocal project globally.
+    """Register a vocal project globally by installing an owned copy.
 
-    ``repo_path`` is the project repo root — the directory holding
-    ``conventions.yaml``. The project's identity and module layout are read from
-    that file; the importable package is imported and checked for the required
-    exports before registration.
+    Thin wrapper over :func:`install_project`: ``repo_path`` is the project repo
+    root (the directory holding ``conventions.yaml``); its contents are copied
+    into ``~/.vocal/projects/{name}-{major}`` and that owned copy is what the
+    registry records, so the registration survives the source being moved or
+    deleted.
 
     Args:
         repo_path: path to the project repo root.
@@ -80,32 +170,7 @@ def register_project(
     """
 
     print(f"Registering project {repo_path} in userspace")
-
-    conventions = ConventionsFile.load(repo_path)
-
-    # Import the project package via the single import path and enforce the
-    # project contract before registering anything.
-    module = import_project_package(repo_path)
-    validate_project_contract(module)
-
-    registry = load_registry()
-
-    project = Project(
-        name=conventions.name,
-        major=conventions.major,
-        minor=conventions.minor,
-        project_directory=conventions.project_directory,
-        local_path=repo_path,
-    )
-
-    try:
-        registry.add_project(project, force=force)
-    except ValueError:
-        raise CannotRegisterProjectError(
-            f"Project '{project.key}' is already registered. Use --force to override."
-        )
-
-    save_registry(registry)
+    install_project(repo_path, force=force)
 
 
 def register_pack(
