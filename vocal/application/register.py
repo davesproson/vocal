@@ -14,6 +14,7 @@ import typer
 
 from vocal.application.install import (
     DEFAULT_IGNORE,
+    pack_install_dir,
     project_install_dir,
     staged_install,
 )
@@ -173,18 +174,96 @@ def register_project(
     install_project(repo_path, force=force)
 
 
+def install_pack(
+    source: str,
+    force: bool = False,
+) -> Pack:
+    """Install an owned copy of the pack at ``source`` under ``~/.vocal``.
+
+    The single orchestration both ``register`` and ``fetch`` route a pack
+    through. It reads the pack's identity ``(url, version)`` from ``source``'s
+    ``manifest.json``, computes the canonical install directory
+    ``~/.vocal/packs/{slug}/v{Y}`` — keyed on the manifest, not the source
+    directory name — and, unless a pack of that ``(url, version)`` is already
+    registered (the gate) or ``force`` is passed, stages a normalised copy,
+    validates it by re-loading the *staging* manifest, then atomically swaps it
+    into place.
+
+    Reading the source manifest with :func:`load_manifest` enforces the
+    ``v{Y}/`` directory-name vs ``manifest.json:version`` equality check on the
+    source: a source already named ``v{Y}/`` (as ``vocal release`` produces)
+    must agree with its manifest, but the install destination is derived from
+    the manifest's version regardless of what the source directory was called.
+
+    The registry record's ``local_path`` points at the owned copy under
+    ``~/.vocal``, so resolution no longer depends on ``source`` continuing to
+    exist where it was when registered. A leftover on-disk directory with no
+    matching registry entry passes the registry-key gate and is transparently
+    overwritten by the atomic swap; a broken manifest leaves any existing
+    install untouched, because the source manifest is loaded — and validated —
+    before ``dest`` is touched.
+
+    Args:
+        source: a pack release directory — the directory holding
+            ``manifest.json``, ``dataset_schema.json``, and the product schema
+            JSONs.
+        force: re-install even if a pack of the same ``(url, version)`` is
+            registered, overwriting both the on-disk copy and the registry entry.
+
+    Returns:
+        the registered :class:`~vocal.utils.registry.Pack`.
+
+    Raises:
+        CannotRegisterPackError: a pack of the same ``(url, version)`` is already
+            registered and ``force`` is False.
+        PackInconsistent: a source named ``v{Y}/`` disagrees with its manifest's
+            version; raised before any existing install or registry entry is
+            touched.
+        InvalidManifest, UnsupportedManifestVersion: ``source`` is not a valid
+            pack; raised before any existing install or registry entry is touched.
+    """
+    manifest = load_manifest(os.path.join(source, MANIFEST_FILENAME))
+
+    registry = load_registry()
+
+    # Gate on the registry key — the source of truth for "is it installed". A
+    # leftover on-disk directory without a matching entry is not gated; the
+    # atomic swap below overwrites it, so drift self-heals.
+    pack = Pack(manifest=manifest, local_path="")
+    if pack.key in registry.packs and not force:
+        raise CannotRegisterPackError(
+            f"Pack '{pack.url}' version {pack.version} is already registered. "
+            "Use --force to override."
+        )
+
+    dest = pack_install_dir(manifest)
+
+    def validate(staging: str) -> None:
+        # Re-load the byte-identical staging manifest, so a broken source aborts
+        # the install before any existing dest is torn down. The staging
+        # directory is not named ``v{Y}/``, so this revalidates structure only —
+        # the source directory-name consistency check already ran above.
+        load_manifest(os.path.join(staging, MANIFEST_FILENAME))
+
+    staged_install(source, dest, ignore=DEFAULT_IGNORE, validate=validate)
+
+    pack.local_path = dest
+    registry.add_pack(pack, force=force)
+    save_registry(registry)
+    return pack
+
+
 def register_pack(
     pack_path: str,
     force: bool = False,
 ) -> None:
-    """Register a vocal pack globally.
+    """Register a vocal pack globally by installing an owned copy.
 
-    ``pack_path`` is a pack release directory — the directory holding
-    ``manifest.json``, ``dataset_schema.json``, and the product schema JSONs.
-    The pack's identity (base ``url`` and ``version``) is read from its
-    ``manifest.json``; loading enforces the ``v{Y}/`` directory-name vs
-    ``manifest.json:version`` equality check and raises ``PackInconsistent`` on
-    drift.
+    Thin wrapper over :func:`install_pack`: ``pack_path`` is a pack release
+    directory — the directory holding ``manifest.json``, ``dataset_schema.json``,
+    and the product schema JSONs. Its contents are copied into
+    ``~/.vocal/packs/{slug}/v{Y}`` and that owned copy is what the registry
+    records, so the registration survives the source being moved or deleted.
 
     Args:
         pack_path: path to the pack release directory.
@@ -192,22 +271,7 @@ def register_pack(
     """
 
     print(f"Registering pack {pack_path} in userspace")
-
-    manifest = load_manifest(os.path.join(pack_path, MANIFEST_FILENAME))
-
-    registry = load_registry()
-
-    pack = Pack(manifest=manifest, local_path=pack_path)
-
-    try:
-        registry.add_pack(pack, force=force)
-    except ValueError:
-        raise CannotRegisterPackError(
-            f"Pack '{pack.url}' version {pack.version} is already registered. "
-            "Use --force to override."
-        )
-
-    save_registry(registry)
+    install_pack(pack_path, force=force)
 
 
 def load_registry() -> Registry:

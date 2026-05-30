@@ -10,8 +10,9 @@ inspected directly.
 import json
 import os
 import shutil
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -208,11 +209,29 @@ class TestFetchDispatch:
 
 
 class TestFetchPack:
-    def _patch_packs_dir(self, tmp_path: Path) -> Any:
-        return patch(
-            "vocal.application.fetch.get_packs_dir",
-            return_value=str(tmp_path / "cache" / "packs"),
-        )
+    @contextmanager
+    def _patch_packs_dir(self, tmp_path: Path) -> Iterator[None]:
+        """Redirect both the fetch download dir and the install root to ``tmp``.
+
+        ``register_pack`` now installs an owned copy under ``cache_dir()``, so
+        the install root must be sandboxed alongside fetch's download dir;
+        pointing both at the same ``tmp/cache`` keeps the owned copy where the
+        fetch flow downloaded it.
+        """
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch(
+                    "vocal.application.fetch.get_packs_dir",
+                    return_value=str(tmp_path / "cache" / "packs"),
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "vocal.application.install.cache_dir",
+                    return_value=str(tmp_path / "cache"),
+                )
+            )
+            yield
 
     def test_fetch_latest_caches_and_registers(
         self, tmp_path: Path, registers_into: dict

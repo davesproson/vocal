@@ -26,7 +26,7 @@ from vocal.application.register import (
     register_resource,
 )
 from vocal.conventions_file import ConventionsFile, MissingProjectExport
-from vocal.manifest import PackInconsistent
+from vocal.manifest import InvalidManifest, PackInconsistent
 from vocal.utils.registry import Registry, project_key
 
 
@@ -51,17 +51,6 @@ def _fill_in_module(repo: Path, module_name: str, *, filecodec: bool = True) -> 
     )
     (mod / "models.py").write_text(
         "from pydantic import BaseModel\n\n\nclass Dataset(BaseModel):\n    pass\n"
-    )
-
-
-def _registers_into(captured: dict):
-    """Patch register's registry I/O to use an in-memory registry."""
-    registry = Registry(projects={})
-    captured["registry"] = registry
-    return patch.multiple(
-        "vocal.application.register",
-        load_registry=lambda: registry,
-        save_registry=lambda r: captured.__setitem__("registry", r),
     )
 
 
@@ -334,13 +323,16 @@ class TestRegisterAutoDetect:
         pack_dir = _make_pack_dir(tmp_path, "v3", version=3)
 
         captured: dict = {}
-        with _registers_into(captured):
+        with _install_env(tmp_path, captured) as vocal_root:
             register_resource(str(pack_dir))
 
         registry = captured["registry"]
         pack = registry.find_pack("https://host/packs", 3)
         assert pack is not None
-        assert pack.local_path == str(pack_dir)
+        # local_path is the owned copy under ~/.vocal, not the source directory.
+        owned = os.path.join(vocal_root, "packs", "host-packs", "v3")
+        assert pack.local_path == owned
+        assert pack.local_path != str(pack_dir)
 
     def test_path_with_no_marker_raises(self, tmp_path: Path) -> None:
         bare = tmp_path / "bare"
@@ -350,25 +342,99 @@ class TestRegisterAutoDetect:
 
 
 class TestRegisterPack:
+    """Integration coverage for ``register`` installing an owned pack copy.
+
+    Driven through the public ``register_pack`` entry point; assertions are on
+    externally observable state — what lands under ``~/.vocal`` and what the
+    registry records — not on private helpers.
+    """
+
     def test_inconsistent_version_raises(self, tmp_path: Path) -> None:
         # v99/ directory whose manifest declares version 3.
         pack_dir = _make_pack_dir(tmp_path, "v99", version=99, manifest_version=3)
 
         captured: dict = {}
-        with _registers_into(captured):
+        with _install_env(tmp_path, captured) as vocal_root:
             with pytest.raises(PackInconsistent):
                 register_pack(str(pack_dir))
 
-        # Nothing was registered.
+        # Nothing was registered, and no owned copy was left behind.
         assert captured["registry"].packs == {}
+        assert not (Path(vocal_root) / "packs" / "host-packs").exists()
 
-    def test_already_registered_raises_without_force(self, tmp_path: Path) -> None:
+    def test_copies_owned_copy_and_applies_denylist(self, tmp_path: Path) -> None:
+        pack_dir = _make_pack_dir(tmp_path, "v3", version=3)
+        # Cruft the install must normalise away.
+        (pack_dir / ".git").mkdir()
+        (pack_dir / ".git" / "config").write_text("x")
+        (pack_dir / "tests").mkdir()
+        (pack_dir / "tests" / "test_x.py").write_text("x")
+
+        captured: dict = {}
+        with _install_env(tmp_path, captured) as vocal_root:
+            register_pack(str(pack_dir))
+
+        owned = Path(vocal_root) / "packs" / "host-packs" / "v3"
+        snap = _snapshot(owned)
+        # Denylisted entries are gone...
+        assert ".git/config" not in snap
+        assert "tests/test_x.py" not in snap
+        # ...while the pack's own files survive.
+        assert snap["manifest.json"]
+        assert snap["dataset_schema.json"]
+        assert snap["alpha.json"]
+
+    def test_placed_canonically_regardless_of_source_dir_name(
+        self, tmp_path: Path
+    ) -> None:
+        # A source directory not named v{Y}; load trusts the manifest's version.
+        pack_dir = _make_pack_dir(tmp_path, "release", version=3)
+
+        captured: dict = {}
+        with _install_env(tmp_path, captured) as vocal_root:
+            register_pack(str(pack_dir))
+
+        registered = captured["registry"].find_pack("https://host/packs", 3)
+        owned = os.path.join(vocal_root, "packs", "host-packs", "v3")
+        assert registered is not None
+        assert registered.local_path == owned
+        assert (Path(owned) / "manifest.json").is_file()
+
+    def test_already_registered_raises_and_keeps_install(
+        self, tmp_path: Path
+    ) -> None:
         pack_dir = _make_pack_dir(tmp_path, "v3", version=3)
 
         captured: dict = {}
-        with _registers_into(captured):
+        with _install_env(tmp_path, captured) as vocal_root:
             register_pack(str(pack_dir))
+            owned = Path(vocal_root) / "packs" / "host-packs" / "v3"
+            before = _snapshot(owned)
             with pytest.raises(CannotRegisterPackError):
                 register_pack(str(pack_dir))
-            # force re-registers cleanly.
+            # The existing install is untouched.
+            assert _snapshot(owned) == before
+            # force re-registers cleanly, overwriting copy + entry.
             register_pack(str(pack_dir), force=True)
+        assert (
+            captured["registry"].find_pack("https://host/packs", 3) is not None
+        )
+
+    def test_broken_force_reinstall_preserves_good_install(
+        self, tmp_path: Path
+    ) -> None:
+        pack_dir = _make_pack_dir(tmp_path, "v3", version=3)
+
+        captured: dict = {}
+        with _install_env(tmp_path, captured) as vocal_root:
+            register_pack(str(pack_dir))
+            owned = Path(vocal_root) / "packs" / "host-packs" / "v3"
+            before = _snapshot(owned)
+
+            # Corrupt the source manifest, then force-reinstall.
+            (pack_dir / "manifest.json").write_text("{ not valid json")
+            with pytest.raises(InvalidManifest):
+                register_pack(str(pack_dir), force=True)
+
+            # The good install survived byte-for-byte.
+            assert _snapshot(owned) == before
