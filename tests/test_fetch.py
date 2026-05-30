@@ -3,16 +3,23 @@ Tests for vocal/application/fetch.py.
 
 Strategy
 --------
-Each helper is tested in isolation. Network and subprocess calls are mocked
-via ``unittest.mock.patch``; filesystem state uses ``tmp_path``. The full
-``fetch_http`` end-to-end path (download + extract a real zip) is not
-covered here — its individual pieces (``get_latest_release``, atomic
-cleanup) are tested separately.
+The network/subprocess helpers (``get_latest_release``, ``fetch_with_git``,
+``convert_github_repo_to_api_url``) are tested in isolation with mocks.
+
+``fetch_project`` is now a thin shell over the shared install primitive: it
+downloads to a temporary location, then hands off to ``install_project``. Its
+tests therefore patch only the download step and drive the real
+``install_project`` against an isolated ``~/.vocal`` + in-memory registry,
+asserting externally observable state — what lands under ``~/.vocal``, what the
+registry records, and which errors are raised — rather than implementation
+details. A dedicated test pins the convergence guarantee: ``fetch`` and
+``register`` reach identical on-disk + registry state for an equivalent source.
 """
 
 import os
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -26,7 +33,6 @@ from vocal.application.fetch import (
     NoReleasesFound,
     NotAGitHubRepo,
     ProjectAlreadyFetched,
-    ProjectIdentityChanged,
     ProjectNotFetched,
     RateLimited,
     RepoNotFound,
@@ -36,7 +42,13 @@ from vocal.application.fetch import (
     fetch_with_git,
     get_latest_release,
 )
-from vocal.conventions_file import InvalidConventionsFile
+from vocal.application.register import register_project
+from vocal.conventions_file import (
+    ConventionsFile,
+    InvalidConventionsFile,
+    MissingProjectExport,
+)
+from vocal.utils.registry import Registry
 
 
 # ---------------------------------------------------------------------------
@@ -60,16 +72,91 @@ def _write_conventions_yaml(root: Path, body: Any) -> None:
         yaml.dump(body, f)
 
 
-def _make_valid_project(root: Path) -> None:
-    """Materialise a minimal but valid fetched-project tree under ``root``."""
-    os.makedirs(root / "src", exist_ok=True)
+def _materialise_project(
+    root: Any,
+    *,
+    name: str = "STD",
+    major: int = 1,
+    minor: int = 0,
+    module: str = "stdmod",
+    filecodec: bool = True,
+) -> None:
+    """Materialise a minimal but importable, contract-satisfying project tree.
+
+    The tree carries a ``conventions.yaml`` and a Python package exposing
+    ``defaults``, ``models.Dataset``, and (unless ``filecodec`` is False)
+    ``filecodec`` — everything ``install_project``'s validate step requires.
+    """
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
     _write_conventions_yaml(
         root,
         {
-            "conventions": {"name": "STD", "major": 1, "minor": 0},
-            "layout": {"project_directory": "src"},
+            "conventions": {"name": name, "major": major, "minor": minor},
+            "layout": {"project_directory": module},
         },
     )
+    mod = root / module
+    mod.mkdir(parents=True, exist_ok=True)
+    init_lines = ["from . import defaults", "from . import models"]
+    if filecodec:
+        init_lines.append("filecodec = {}")
+    (mod / "__init__.py").write_text("\n".join(init_lines) + "\n")
+    (mod / "defaults.py").write_text(
+        "default_global_attrs = {}\n"
+        "default_group_attrs = {}\n"
+        "default_variable_attrs = {}\n"
+    )
+    (mod / "models.py").write_text(
+        "from pydantic import BaseModel\n\n\nclass Dataset(BaseModel):\n    pass\n"
+    )
+
+
+def _fake_download(**project_kwargs: Any) -> Any:
+    """Return a ``(url, target)`` download stub that drops a valid project.
+
+    Stands in for ``fetch_http`` / ``fetch_with_git``: it materialises a project
+    tree at the download ``target`` the real downloader would have produced.
+    """
+
+    def _dl(url: str, target: str) -> None:
+        _materialise_project(target, **project_kwargs)
+
+    return _dl
+
+
+def _snapshot(root: Path) -> dict[str, str]:
+    """Return ``{relative_path: contents}`` for every file under ``root``."""
+    out: dict[str, str] = {}
+    for path in sorted(root.rglob("*")):
+        if path.is_file():
+            out[str(path.relative_to(root))] = path.read_text()
+    return out
+
+
+@contextmanager
+def _fetch_env(tmp_path: Path, captured: dict) -> Iterator[str]:
+    """Isolate a fetch/register: in-memory registry + a tmp ``~/.vocal`` root.
+
+    Both ``fetch`` and ``install_project`` (via ``register``) read and write the
+    registry; all three name bindings are patched to share one in-memory
+    ``Registry`` so the install gate sees prior state. ``install``'s
+    ``cache_dir`` is redirected so the owned copy lands under the tmp root.
+    Yields the vocal root.
+    """
+    registry = Registry(projects={})
+    captured["registry"] = registry
+    vocal_root = str(tmp_path / "vocalroot")
+    with patch.multiple(
+        "vocal.application.register",
+        load_registry=lambda: captured["registry"],
+        save_registry=lambda r: captured.__setitem__("registry", r),
+    ), patch(
+        "vocal.application.fetch.load_registry", lambda: captured["registry"]
+    ), patch(
+        "vocal.application.install.cache_dir", return_value=vocal_root
+    ):
+        yield vocal_root
 
 
 # ---------------------------------------------------------------------------
@@ -213,118 +300,41 @@ class TestFetchWithGit:
 
 
 # ---------------------------------------------------------------------------
-# fetch_project — pre-flight flag logic and atomic cleanup
+# fetch_project — thin shell over the shared install primitive
 # ---------------------------------------------------------------------------
 
 
-class TestFetchProjectFlags:
-    """Tests for the --update / --force pre-flight logic.
+class TestFetchProjectInstall:
+    """fetch downloads to a temp location, then installs via install_project.
 
-    The fetch path itself is patched out — these tests verify only that the
-    pre-flight raises the correct exception or correctly deletes the existing
-    target before calling into the download function.
+    The download is patched out; the real install_project runs against an
+    isolated ``~/.vocal`` + in-memory registry.
     """
 
-    def _patch_projects_dir(self, tmp_path: Path) -> Any:
-        return patch(
-            "vocal.application.fetch.get_projects_dir", return_value=str(tmp_path)
-        )
-
-    def _patch_download_and_register(self) -> Any:
-        """Patch out both download helpers and the registry side-effect."""
-        return patch.multiple(
+    def test_installs_owned_copy_under_vocal(self, tmp_path: Path) -> None:
+        captured: dict = {}
+        with _fetch_env(tmp_path, captured) as vocal_root, patch.multiple(
             "vocal.application.fetch",
-            fetch_with_git=MagicMock(),
-            fetch_http=MagicMock(),
-            register_project=MagicMock(),
-        )
-
-    def test_exists_no_flag_raises_already_fetched(self, tmp_path: Path) -> None:
-        target = tmp_path / "r"
-        _make_valid_project(target)
-
-        with self._patch_projects_dir(tmp_path), self._patch_download_and_register():
-            with pytest.raises(ProjectAlreadyFetched) as exc_info:
-                fetch_project("https://github.com/u/r")
-        assert exc_info.value.hint is not None
-        assert "--update" in exc_info.value.hint
-        # And the existing dir wasn't touched.
-        assert target.exists()
-
-    def test_missing_with_update_raises_not_fetched(self, tmp_path: Path) -> None:
-        with self._patch_projects_dir(tmp_path), self._patch_download_and_register():
-            with pytest.raises(ProjectNotFetched) as exc_info:
-                fetch_project("https://github.com/u/r", update=True)
-        assert "vocal fetch" in (exc_info.value.hint or "")
-
-    def test_exists_with_update_deletes_before_download(self, tmp_path: Path) -> None:
-        target = tmp_path / "r"
-        _make_valid_project(target)
-        marker = target / "marker.txt"
-        marker.write_text("pre-existing")
-
-        # The mocked fetch leaves a fresh, valid project in place.
-        def fake_fetch(url: str, tgt: str) -> None:
-            os.makedirs(tgt, exist_ok=True)
-            _make_valid_project(Path(tgt))
-
-        with self._patch_projects_dir(tmp_path), patch.multiple(
-            "vocal.application.fetch",
-            fetch_http=MagicMock(side_effect=fake_fetch),
-            register_project=MagicMock(),
+            fetch_http=MagicMock(side_effect=_fake_download(name="STD", major=1)),
         ):
-            fetch_project("https://github.com/u/r", update=True)
+            fetch_project("https://github.com/u/r")
 
-        # The pre-existing marker must be gone (proves the old dir was deleted).
-        assert not marker.exists()
-        assert target.exists()
-
-    def test_exists_with_force_deletes_before_download(self, tmp_path: Path) -> None:
-        target = tmp_path / "r"
-        _make_valid_project(target)
-        marker = target / "marker.txt"
-        marker.write_text("pre-existing")
-
-        def fake_fetch(url: str, tgt: str) -> None:
-            os.makedirs(tgt, exist_ok=True)
-            _make_valid_project(Path(tgt))
-
-        with self._patch_projects_dir(tmp_path), patch.multiple(
-            "vocal.application.fetch",
-            fetch_http=MagicMock(side_effect=fake_fetch),
-            register_project=MagicMock(),
-        ):
-            fetch_project("https://github.com/u/r", force=True)
-
-        assert not marker.exists()
-        assert target.exists()
-
-    def test_missing_with_force_proceeds(self, tmp_path: Path) -> None:
-        def fake_fetch(url: str, tgt: str) -> None:
-            os.makedirs(tgt, exist_ok=True)
-            _make_valid_project(Path(tgt))
-
-        with self._patch_projects_dir(tmp_path), patch.multiple(
-            "vocal.application.fetch",
-            fetch_http=MagicMock(side_effect=fake_fetch),
-            register_project=MagicMock(),
-        ):
-            fetch_project("https://github.com/u/r", force=True)
-
-        assert (tmp_path / "r").exists()
+        owned = Path(vocal_root) / "projects" / "STD-1"
+        assert (owned / "conventions.yaml").is_file()
+        assert (owned / "stdmod" / "__init__.py").is_file()
+        # The registry records the owned copy, not a temp download location.
+        registered = captured["registry"].projects["STD-1"]
+        assert registered.local_path == str(owned)
+        assert os.path.isabs(registered.local_path)
 
     def test_git_flag_routes_to_git_helper(self, tmp_path: Path) -> None:
-        def fake_fetch(url: str, tgt: str) -> None:
-            os.makedirs(tgt, exist_ok=True)
-            _make_valid_project(Path(tgt))
-
-        git_mock = MagicMock(side_effect=fake_fetch)
-        http_mock = MagicMock(side_effect=fake_fetch)
-        with self._patch_projects_dir(tmp_path), patch.multiple(
+        git_mock = MagicMock(side_effect=_fake_download())
+        http_mock = MagicMock(side_effect=_fake_download())
+        captured: dict = {}
+        with _fetch_env(tmp_path, captured), patch.multiple(
             "vocal.application.fetch",
             fetch_with_git=git_mock,
             fetch_http=http_mock,
-            register_project=MagicMock(),
         ):
             fetch_project("https://github.com/u/r", git=True)
 
@@ -332,108 +342,179 @@ class TestFetchProjectFlags:
         http_mock.assert_not_called()
 
 
-class TestFetchProjectUpdateIdentity:
-    """--update guards against re-registering a different {name}-{major}."""
+class TestFetchProjectGating:
+    """The already-fetched / not-fetched / refresh gating, post-download."""
 
-    def _patch_projects_dir(self, tmp_path: Path) -> Any:
-        return patch(
-            "vocal.application.fetch.get_projects_dir", return_value=str(tmp_path)
-        )
-
-    def test_update_same_identity_reregisters(self, tmp_path: Path) -> None:
-        target = tmp_path / "r"
-        _make_valid_project(target)  # STD-1
-
-        def fake_fetch(url: str, tgt: str) -> None:
-            os.makedirs(tgt, exist_ok=True)
-            _make_valid_project(Path(tgt))  # same STD-1
-
-        register_mock = MagicMock()
-        with self._patch_projects_dir(tmp_path), patch.multiple(
-            "vocal.application.fetch",
-            fetch_http=MagicMock(side_effect=fake_fetch),
-            register_project=register_mock,
+    def test_already_installed_reports_already_fetched_after_download(
+        self, tmp_path: Path
+    ) -> None:
+        download = MagicMock(side_effect=_fake_download())
+        captured: dict = {}
+        with _fetch_env(tmp_path, captured), patch.multiple(
+            "vocal.application.fetch", fetch_http=download
         ):
-            fetch_project("https://github.com/u/r", update=True)
+            fetch_project("https://github.com/u/r")
+            with pytest.raises(ProjectAlreadyFetched) as exc_info:
+                fetch_project("https://github.com/u/r")
 
-        register_mock.assert_called_once()
-        # Re-registers the refreshed cache dir.
-        assert register_mock.call_args[0][0] == str(target)
+        assert "--update" in (exc_info.value.hint or "")
+        # The gate runs *after* download: the redundant fetch still downloaded.
+        assert download.call_count == 2
 
-    def test_update_changed_major_raises(self, tmp_path: Path) -> None:
-        target = tmp_path / "r"
-        _make_valid_project(target)  # STD-1
+    def test_force_overwrites_existing_install(self, tmp_path: Path) -> None:
+        captured: dict = {}
+        with _fetch_env(tmp_path, captured) as vocal_root:
+            with patch.multiple(
+                "vocal.application.fetch",
+                fetch_http=MagicMock(side_effect=_fake_download(minor=0)),
+            ):
+                fetch_project("https://github.com/u/r")
+            with patch.multiple(
+                "vocal.application.fetch",
+                fetch_http=MagicMock(side_effect=_fake_download(minor=5)),
+            ):
+                fetch_project("https://github.com/u/r", force=True)
 
-        def fake_fetch(url: str, tgt: str) -> None:
-            os.makedirs(tgt, exist_ok=True)
-            os.makedirs(Path(tgt) / "src", exist_ok=True)
-            _write_conventions_yaml(
-                Path(tgt),
-                {
-                    "conventions": {"name": "STD", "major": 2, "minor": 0},
-                    "layout": {"project_directory": "src"},
-                },
-            )
+        assert captured["registry"].projects["STD-1"].minor == 5
+        owned = Path(vocal_root) / "projects" / "STD-1"
+        assert ConventionsFile.load(str(owned)).minor == 5
 
-        register_mock = MagicMock()
-        with self._patch_projects_dir(tmp_path), patch.multiple(
-            "vocal.application.fetch",
-            fetch_http=MagicMock(side_effect=fake_fetch),
-            register_project=register_mock,
+    def test_update_missing_raises_not_fetched(self, tmp_path: Path) -> None:
+        captured: dict = {}
+        with _fetch_env(tmp_path, captured), patch.multiple(
+            "vocal.application.fetch", fetch_http=MagicMock(side_effect=_fake_download())
         ):
-            with pytest.raises(ProjectIdentityChanged):
+            with pytest.raises(ProjectNotFetched) as exc_info:
+                fetch_project("https://github.com/u/r", update=True)
+        assert "vocal fetch" in (exc_info.value.hint or "")
+
+    def test_update_refreshes_existing(self, tmp_path: Path) -> None:
+        captured: dict = {}
+        with _fetch_env(tmp_path, captured):
+            with patch.multiple(
+                "vocal.application.fetch",
+                fetch_http=MagicMock(side_effect=_fake_download(minor=0)),
+            ):
+                fetch_project("https://github.com/u/r")
+            with patch.multiple(
+                "vocal.application.fetch",
+                fetch_http=MagicMock(side_effect=_fake_download(minor=9)),
+            ):
                 fetch_project("https://github.com/u/r", update=True)
 
-        # Refused before registering under the new key.
-        register_mock.assert_not_called()
+        assert captured["registry"].projects["STD-1"].minor == 9
+
+    def test_update_changed_major_is_not_fetched(self, tmp_path: Path) -> None:
+        """A re-fetch whose major changed is a different identity: cleanly
+        "not currently fetched" under --update, not a special identity error."""
+        captured: dict = {}
+        with _fetch_env(tmp_path, captured):
+            with patch.multiple(
+                "vocal.application.fetch",
+                fetch_http=MagicMock(side_effect=_fake_download(major=1)),
+            ):
+                fetch_project("https://github.com/u/r")
+            with patch.multiple(
+                "vocal.application.fetch",
+                fetch_http=MagicMock(side_effect=_fake_download(major=2)),
+            ):
+                with pytest.raises(ProjectNotFetched):
+                    fetch_project("https://github.com/u/r", update=True)
+
+        # The original major-1 install is the only thing registered.
+        assert "STD-1" in captured["registry"].projects
+        assert "STD-2" not in captured["registry"].projects
 
 
-class TestFetchProjectCleanup:
-    """Atomic cleanup of the target dir on post-download failure."""
+class TestFetchProjectFailureSafety:
+    """A broken download never destroys a good install or leaves drift."""
 
-    def test_missing_conventions_cleans_up(self, tmp_path: Path) -> None:
-        target = tmp_path / "r"
+    def test_missing_conventions_installs_nothing(self, tmp_path: Path) -> None:
+        def bad_download(url: str, target: str) -> None:
+            # A tree that is not a vocal project (no conventions.yaml).
+            os.makedirs(target, exist_ok=True)
 
-        def fake_fetch(url: str, tgt: str) -> None:
-            # Materialise a directory that will fail validation (no
-            # conventions.yaml).
-            os.makedirs(tgt, exist_ok=True)
-
-        with patch(
-            "vocal.application.fetch.get_projects_dir", return_value=str(tmp_path)
-        ), patch.multiple(
-            "vocal.application.fetch",
-            fetch_http=MagicMock(side_effect=fake_fetch),
-            register_project=MagicMock(),
+        captured: dict = {}
+        with _fetch_env(tmp_path, captured) as vocal_root, patch.multiple(
+            "vocal.application.fetch", fetch_http=MagicMock(side_effect=bad_download)
         ):
             with pytest.raises(InvalidConventionsFile):
                 fetch_project("https://github.com/u/r")
 
-        assert not target.exists()
+        assert captured["registry"].projects == {}
+        assert not (Path(vocal_root) / "projects" / "STD-1").exists()
 
-    def test_register_failure_cleans_up(self, tmp_path: Path) -> None:
-        from vocal.application.register import CannotRegisterProjectError
+    def test_broken_force_reinstall_preserves_good_install(
+        self, tmp_path: Path
+    ) -> None:
+        captured: dict = {}
+        with _fetch_env(tmp_path, captured) as vocal_root:
+            with patch.multiple(
+                "vocal.application.fetch",
+                fetch_http=MagicMock(side_effect=_fake_download(filecodec=True)),
+            ):
+                fetch_project("https://github.com/u/r")
+            owned = Path(vocal_root) / "projects" / "STD-1"
+            before = _snapshot(owned)
 
-        target = tmp_path / "r"
+            # Re-fetch the same identity but with a broken package.
+            with patch.multiple(
+                "vocal.application.fetch",
+                fetch_http=MagicMock(side_effect=_fake_download(filecodec=False)),
+            ):
+                with pytest.raises(MissingProjectExport):
+                    fetch_project("https://github.com/u/r", force=True)
 
-        def fake_fetch(url: str, tgt: str) -> None:
-            os.makedirs(tgt, exist_ok=True)
-            _make_valid_project(Path(tgt))
+            # The good install survived byte-for-byte.
+            assert _snapshot(owned) == before
 
-        with patch(
-            "vocal.application.fetch.get_projects_dir", return_value=str(tmp_path)
-        ), patch.multiple(
+
+class TestFetchRegisterConvergence:
+    """fetch and register reach identical on-disk + registry state."""
+
+    def test_equivalent_source_reaches_identical_state(self, tmp_path: Path) -> None:
+        # register installs from a local source tree...
+        source = tmp_path / "src_repo"
+        _materialise_project(
+            source, name="CONV", major=1, minor=2, module="convmod"
+        )
+        reg_captured: dict = {}
+        with _fetch_env(tmp_path / "reg", reg_captured) as reg_root:
+            register_project(str(source))
+
+        # ...fetch installs from an equivalent downloaded tree.
+        fetch_captured: dict = {}
+        with _fetch_env(tmp_path / "fet", fetch_captured) as fet_root, patch.multiple(
             "vocal.application.fetch",
-            fetch_http=MagicMock(side_effect=fake_fetch),
-            register_project=MagicMock(
-                side_effect=CannotRegisterProjectError("boom")
+            fetch_http=MagicMock(
+                side_effect=_fake_download(
+                    name="CONV", major=1, minor=2, module="convmod"
+                )
             ),
         ):
-            with pytest.raises(FetchError) as exc_info:
-                fetch_project("https://github.com/u/r")
+            fetch_project("https://github.com/u/r")
 
-        assert "Failed to register project" in exc_info.value.message
-        assert not target.exists()
+        reg_owned = Path(reg_root) / "projects" / "CONV-1"
+        fet_owned = Path(fet_root) / "projects" / "CONV-1"
+        # Identical on-disk shape (relative to each owned root).
+        assert _snapshot(reg_owned) == _snapshot(fet_owned)
+
+        # Identical registry record (modulo the root each is installed under).
+        reg_rec = reg_captured["registry"].projects["CONV-1"]
+        fet_rec = fetch_captured["registry"].projects["CONV-1"]
+        assert (
+            reg_rec.name,
+            reg_rec.major,
+            reg_rec.minor,
+            reg_rec.project_directory,
+        ) == (
+            fet_rec.name,
+            fet_rec.major,
+            fet_rec.minor,
+            fet_rec.project_directory,
+        )
+        assert reg_rec.local_path == str(reg_owned)
+        assert fet_rec.local_path == str(fet_owned)
 
 
 # ---------------------------------------------------------------------------

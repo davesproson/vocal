@@ -23,11 +23,11 @@ import requests
 
 from vocal.application.install import derive_url_slug
 from vocal.application.register import (
+    install_project,
+    load_registry,
     register_pack,
-    register_project,
-    CannotRegisterProjectError,
 )
-from vocal.conventions_file import ConventionsFile, InvalidConventionsFile
+from vocal.conventions_file import ConventionsFile
 from vocal.exceptions import VocalError
 from vocal.manifest import (
     Manifest,
@@ -83,26 +83,8 @@ class ProjectNotFetched(FetchError):
     pass
 
 
-class ProjectIdentityChanged(FetchError):
-    """Raised when a re-fetched project's ``{name}-{major}`` differs from the
-    one previously registered at the same local cache directory."""
-
-
 class PackAlreadyFetched(FetchError):
     pass
-
-
-def get_projects_dir() -> str:
-    """
-    Get the directory where projects are stored. On Unix systems, this is
-    `~/.vocal/projects`. Creates the directory if it does not exist.
-
-    Returns:
-        str: The path to the projects directory.
-    """
-    projects_dir = os.path.join(cache_dir(), "projects")
-    os.makedirs(projects_dir, exist_ok=True)
-    return projects_dir
 
 
 def derive_repo_name(url: str) -> str:
@@ -274,8 +256,11 @@ def fetch_http(url: str, target: str) -> None:
 
     print(f"Fetching release {tag_name}")
 
-    projects_dir = get_projects_dir()
-    zip_path = os.path.join(projects_dir, f".{os.path.basename(target)}.zip")
+    # Extract into the target's parent (a caller-owned temp directory), so the
+    # download is self-contained and never touches the install location.
+    work_dir = os.path.dirname(os.path.abspath(target))
+    os.makedirs(work_dir, exist_ok=True)
+    zip_path = os.path.join(work_dir, f".{os.path.basename(target)}.zip")
 
     try:
         try:
@@ -293,12 +278,12 @@ def fetch_http(url: str, target: str) -> None:
                 if not names:
                     raise FetchError("Downloaded release archive is empty.")
                 extracted_root = names[0].split("/")[0]
-                with flip_to_dir(projects_dir):
+                with flip_to_dir(work_dir):
                     zip_ref.extractall(".")
         except zipfile.BadZipFile as e:
             raise FetchError(f"Downloaded release archive is not a valid zip: {e}")
 
-        extracted_path = os.path.join(projects_dir, extracted_root)
+        extracted_path = os.path.join(work_dir, extracted_root)
         if extracted_path != target:
             os.rename(extracted_path, target)
     finally:
@@ -313,7 +298,24 @@ def fetch_project(
     force: bool = False,
 ) -> None:
     """
-    Download a project from a git repository and register it with Vocal.
+    Download a project and install an owned copy under ``~/.vocal``.
+
+    A thin shell over the shared install primitive: the project is downloaded
+    (git clone or release-zip extract) into a temporary location, then handed to
+    :func:`~vocal.application.register.install_project`, which normalises and
+    atomically installs it under ``~/.vocal/projects/{name}-{major}``.
+
+    Because a project's identity is only known *after* the download, the
+    already-fetched / not-fetched gating happens post-download, against the
+    registry — the source of truth for "is it installed":
+
+    - default: install only if the identity is not already registered, else
+      :class:`ProjectAlreadyFetched`;
+    - ``--force``: overwrite any existing install;
+    - ``--update``: require the identity to already be registered (else
+      :class:`ProjectNotFetched`), then refresh it. A re-fetch whose major has
+      changed is a *different* identity, so it is simply "not currently fetched"
+      under ``--update`` rather than a special identity-changed error.
 
     Args:
         url: The URL of the git repository.
@@ -325,66 +327,37 @@ def fetch_project(
     if not repo_name:
         raise FetchError(f"Could not derive a project name from URL: {url}")
 
-    projects_dir = get_projects_dir()
-    target = os.path.join(projects_dir, repo_name)
-    exists = os.path.exists(target)
-
-    if update and not exists:
-        raise ProjectNotFetched(
-            f"Cannot update '{repo_name}': not currently fetched.",
-            hint=f"Run 'vocal fetch {url}' to fetch it for the first time.",
-        )
-
-    if exists and not (update or force):
-        raise ProjectAlreadyFetched(
-            f"Project already fetched at {target}.",
-            hint="Pass --update to refresh it, or --force to overwrite.",
-        )
-
-    # On --update, remember the project's prior identity so we can refuse to
-    # silently re-register a different {name}-{major} under the same cache dir.
-    prior_key: Optional[str] = None
-    if exists and update:
-        try:
-            prior = ConventionsFile.load(target)
-            prior_key = project_key(prior.name, prior.major)
-        except InvalidConventionsFile:
-            prior_key = None
-
-    if exists:
-        shutil.rmtree(target)
-
-    if git:
-        fetch_with_git(url, target)
-    else:
-        fetch_http(url, target)
-
+    tmp_root = tempfile.mkdtemp(prefix="vocal-fetch-")
     try:
-        # Validate that the fetched tree looks like a vocal project before
-        # registering. ConventionsFile.load raises InvalidConventionsFile when
-        # conventions.yaml is missing or malformed.
-        conventions = ConventionsFile.load(target)
+        download = os.path.join(tmp_root, repo_name)
 
-        if prior_key is not None:
-            new_key = project_key(conventions.name, conventions.major)
-            if new_key != prior_key:
-                raise ProjectIdentityChanged(
-                    f"Re-fetched project is '{new_key}', but '{prior_key}' was "
-                    f"registered at {target}.",
-                    hint=(
-                        "A new major is a new project: fetch it to a fresh URL "
-                        "and register it under its own key rather than updating "
-                        "in place."
-                    ),
-                )
+        if git:
+            fetch_with_git(url, download)
+        else:
+            fetch_http(url, download)
 
-        register_project(target, force=True)
-    except CannotRegisterProjectError as e:
-        shutil.rmtree(target, ignore_errors=True)
-        raise FetchError(f"Failed to register project: {e}")
-    except Exception:
-        shutil.rmtree(target, ignore_errors=True)
-        raise
+        # Identity is only known post-download. ConventionsFile.load raises
+        # InvalidConventionsFile when conventions.yaml is missing or malformed;
+        # that aborts before install_project is reached, with no install touched.
+        conventions = ConventionsFile.load(download)
+        key = project_key(conventions.name, conventions.major)
+        installed = key in load_registry().projects
+
+        if update and not installed:
+            raise ProjectNotFetched(
+                f"Cannot update '{key}': not currently fetched.",
+                hint=f"Run 'vocal fetch {url}' to fetch it for the first time.",
+            )
+
+        if installed and not (update or force):
+            raise ProjectAlreadyFetched(
+                f"Project '{key}' is already fetched.",
+                hint="Pass --update to refresh it, or --force to overwrite.",
+            )
+
+        install_project(download, force=update or force)
+    finally:
+        shutil.rmtree(tmp_root, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
