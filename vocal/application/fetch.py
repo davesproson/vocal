@@ -21,6 +21,7 @@ from urllib.parse import urlsplit, urlunsplit
 import typer
 import requests
 
+from vocal.application.install import derive_url_slug
 from vocal.application.register import (
     register_pack,
     register_project,
@@ -32,7 +33,6 @@ from vocal.manifest import (
     Manifest,
     MANIFEST_FILENAME,
     PackInconsistent,
-    normalize_pack_url,
     versioned_dirname,
 )
 from vocal.utils import cache_dir, flip_to_dir, Printer, TextStyles
@@ -402,20 +402,6 @@ def get_packs_dir() -> str:
     packs_dir = os.path.join(cache_dir(), "packs")
     os.makedirs(packs_dir, exist_ok=True)
     return packs_dir
-
-
-def derive_url_slug(base_url: str) -> str:
-    """Derive a stable, filesystem-safe slug from a pack's base URL.
-
-    The slug is the normalised URL's host plus path, lowercased, with runs of
-    non-alphanumeric characters collapsed to a single ``-``. Packs fetched from
-    the same base URL share a slug directory; their versions coexist as
-    ``v{Y}/`` siblings within it.
-    """
-    parts = urlsplit(normalize_pack_url(base_url))
-    raw = f"{parts.netloc}{parts.path}"
-    slug = re.sub(r"[^a-z0-9]+", "-", raw.lower()).strip("-")
-    return slug or "pack"
 
 
 def parse_pack_url(url: str) -> tuple[str, str, str, Optional[int]]:
