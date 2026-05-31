@@ -1,29 +1,25 @@
-"""Fetch a vocal project or pack and register it.
+"""Fetch a vocal project or pack from GitHub and register it.
 
-``vocal fetch <url>`` auto-detects whether ``<url>`` refers to a project or a
-pack by inspecting the resource's marker file: a downloaded git repo carrying a
-``conventions.yaml`` is a project; a URL serving a ``manifest.json`` is a pack.
+``vocal fetch <url>`` acquires a GitHub repository's tree — the latest release's
+source zipball by default, or a ``git clone`` with ``--git`` — and then
+*inspects the downloaded tree* to decide what it got: a ``conventions.yaml`` at
+the root is a project; a ``latest/manifest.json`` is a pack; neither is a typed
+error. There is no pre-download probe and no version selector in the URL: a pack
+repository is a multi-version monorepo, so one fetch retrieves and registers
+*every* ``v{Y}`` release it contains.
 
-Pack URL grammar carries the version in the path: ``vocal fetch <base>`` fetches
-``<base>/latest/``; ``vocal fetch <base>/v{Y}`` fetches that pinned version.
-There is no ``--version`` flag.
-
-The GitHub source-acquisition mechanics (release lookup, zipball
-download/extract, clone, and their typed errors) live in
-:mod:`vocal.application.github_source` behind :func:`materialize_repo`; this
-module orchestrates the download-then-install flow on top of it. The acquisition
-errors are re-exported here for callers that catch them by name.
+Both kinds acquire their source through the one boundary in
+:mod:`vocal.application.github_source` (:func:`materialize_repo`) and install via
+the shared primitives in :mod:`vocal.application.register`, so project and pack
+fetch cannot drift apart. The acquisition and classification errors are
+re-exported here for callers that catch them by name.
 """
 
 import os
-import re
 import shutil
 import tempfile
-from typing import Optional
-from urllib.parse import urlsplit, urlunsplit
 
 import typer
-import requests
 
 from vocal.application.github_source import (
     FetchError,
@@ -47,16 +43,17 @@ from vocal.application.register import (
     install_project,
     load_registry,
 )
+from vocal.application.resource import (
+    NotAVocalResource,
+    ResourceKind,
+    classify_resource,
+    discover_pack_versions,
+)
 from vocal.conventions_file import ConventionsFile
 from vocal.exceptions import VocalError
-from vocal.manifest import (
-    Manifest,
-    MANIFEST_FILENAME,
-    PackInconsistent,
-    versioned_dirname,
-)
+from vocal.manifest import normalize_pack_url
 from vocal.utils import Printer, TextStyles
-from vocal.utils.registry import Pack, project_key
+from vocal.utils.registry import project_key
 
 
 TS = TextStyles()
@@ -79,23 +76,23 @@ class PackNotFetched(FetchError):
     pass
 
 
-def fetch_project(
+# ---------------------------------------------------------------------------
+# Per-kind install of a downloaded tree
+# ---------------------------------------------------------------------------
+
+
+def _install_project_tree(
+    download: str,
     url: str,
-    git: bool = False,
+    *,
     update: bool = False,
     force: bool = False,
 ) -> None:
-    """
-    Download a project and install an owned copy under ``~/.vocal``.
+    """Install the project tree at ``download`` under ``~/.vocal``, with gating.
 
-    A thin shell over the shared install primitive: the project is downloaded
-    (git clone or release-zip extract) into a temporary location, then handed to
-    :func:`~vocal.application.register.install_project`, which normalises and
-    atomically installs it under ``~/.vocal/projects/{name}-{major}``.
-
-    Because a project's identity is only known *after* the download, the
-    already-fetched / not-fetched gating happens post-download, against the
-    registry — the source of truth for "is it installed":
+    A project's identity is only known after the download, so the
+    already-fetched / not-fetched gating runs here, against the registry — the
+    source of truth for "is it installed":
 
     - default: install only if the identity is not already registered, else
       :class:`ProjectAlreadyFetched`;
@@ -104,12 +101,105 @@ def fetch_project(
       :class:`ProjectNotFetched`), then refresh it. A re-fetch whose major has
       changed is a *different* identity, so it is simply "not currently fetched"
       under ``--update`` rather than a special identity-changed error.
+    """
+    # Identity is only known post-download. ConventionsFile.load raises
+    # InvalidConventionsFile when conventions.yaml is missing or malformed;
+    # that aborts before install_project is reached, with no install touched.
+    conventions = ConventionsFile.load(download)
+    key = project_key(conventions.name, conventions.major)
+    installed = key in load_registry().projects
+
+    if update and not installed:
+        raise ProjectNotFetched(
+            f"Cannot update '{key}': not currently fetched.",
+            hint=f"Run 'vocal fetch {url}' to fetch it for the first time.",
+        )
+
+    if installed and not (update or force):
+        raise ProjectAlreadyFetched(
+            f"Project '{key}' is already fetched.",
+            hint="Pass --update to refresh it, or --force to overwrite.",
+        )
+
+    install_project(download, force=update or force)
+
+
+def _install_pack_tree(
+    download: str,
+    url: str,
+    *,
+    update: bool = False,
+    force: bool = False,
+) -> None:
+    """Install every version in the pack tree at ``download`` under ``~/.vocal``.
+
+    A pack repository is a multi-version monorepo: :func:`discover_pack_versions`
+    enumerates its ``v{Y}/`` release directories (``latest/`` excluded) and each
+    is installed and registered independently by looping the shared
+    :func:`~vocal.application.register.install_pack` primitive — one atomic swap
+    and registry add per version, keyed on the manifest's ``(url, version)``.
+    Per-``v{Y}`` manifest consistency is enforced inside ``install_pack`` (a
+    ``v{Y}/`` whose manifest disagrees raises :class:`PackInconsistent`).
+
+    Gating is per-repo-URL — any registered version of the URL counts as
+    "fetched". This slice implements the default path only; ``--update`` /
+    ``--force`` semantics are completed separately:
+
+    - default: install all versions if the URL has no registered versions, else
+      :class:`PackAlreadyFetched`.
+
+    Raises:
+        FetchError: the pack contains no ``v{Y}/`` release directories.
+        PackAlreadyFetched: the URL already has a registered version and neither
+            ``--update`` nor ``--force`` was given.
+        PackInconsistent: a ``v{Y}/`` directory disagrees with its manifest's
+            version (from ``install_pack``).
+    """
+    versions = discover_pack_versions(download)
+    if not versions:
+        raise FetchError(
+            f"Pack at {url} contains no versioned (v{{Y}}) release directories.",
+            hint="The pack repository should hold one or more 'v{Y}/' directories.",
+        )
+
+    normalized = normalize_pack_url(url)
+    registered = any(u == normalized for (u, _) in load_registry().packs)
+
+    if registered and not (update or force):
+        raise PackAlreadyFetched(
+            f"Pack {normalized} is already fetched.",
+            hint="Pass --update to fetch newly released versions, or --force to "
+            "re-install every version.",
+        )
+
+    for _version, version_dir in versions:
+        install_pack(version_dir, force=update or force)
+
+
+# ---------------------------------------------------------------------------
+# Per-kind fetch (download + install)
+# ---------------------------------------------------------------------------
+
+
+def fetch_project(
+    url: str,
+    git: bool = False,
+    update: bool = False,
+    force: bool = False,
+) -> None:
+    """Download a project and install an owned copy under ``~/.vocal``.
+
+    A thin shell over the shared install primitive: the project is downloaded
+    (release-zip extract or ``--git`` clone) into a temporary location via
+    :func:`materialize_repo`, then handed to :func:`_install_project_tree`, which
+    applies the registry gating and installs an owned copy under
+    ``~/.vocal/projects/{name}-{major}``.
 
     Args:
-        url: The URL of the git repository.
-        git: Whether to use git to clone (rather than HTTPS release download).
-        update: Require the project to already exist; refresh it in place.
-        force: Overwrite any existing fetched copy.
+        url: the URL of the git repository.
+        git: clone via git rather than downloading the latest release.
+        update: require the project to already exist; refresh it in place.
+        force: overwrite any existing fetched copy.
     """
     repo_name = derive_repo_name(url)
     if not repo_name:
@@ -118,210 +208,43 @@ def fetch_project(
     tmp_root = tempfile.mkdtemp(prefix="vocal-fetch-")
     try:
         download = os.path.join(tmp_root, repo_name)
-
         materialize_repo(url, download, git=git)
-
-        # Identity is only known post-download. ConventionsFile.load raises
-        # InvalidConventionsFile when conventions.yaml is missing or malformed;
-        # that aborts before install_project is reached, with no install touched.
-        conventions = ConventionsFile.load(download)
-        key = project_key(conventions.name, conventions.major)
-        installed = key in load_registry().projects
-
-        if update and not installed:
-            raise ProjectNotFetched(
-                f"Cannot update '{key}': not currently fetched.",
-                hint=f"Run 'vocal fetch {url}' to fetch it for the first time.",
-            )
-
-        if installed and not (update or force):
-            raise ProjectAlreadyFetched(
-                f"Project '{key}' is already fetched.",
-                hint="Pass --update to refresh it, or --force to overwrite.",
-            )
-
-        install_project(download, force=update or force)
+        _install_project_tree(download, url, update=update, force=force)
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)
 
 
-# ---------------------------------------------------------------------------
-# Packs
-# ---------------------------------------------------------------------------
+def fetch_pack(
+    url: str,
+    git: bool = False,
+    update: bool = False,
+    force: bool = False,
+) -> None:
+    """Download a GitHub-hosted pack and register every version it contains.
 
-_PINNED_RE = re.compile(r"^v(\d+)$")
+    A thin shell over the shared install primitive: the pack repository is
+    downloaded (release-zip extract or ``--git`` clone) into a temporary location
+    via :func:`materialize_repo`, then handed to :func:`_install_pack_tree`,
+    which discovers the ``v{Y}/`` releases and installs an owned copy of each
+    under ``~/.vocal/packs/{slug}/v{Y}`` keyed by ``(url, version)``.
 
-
-def parse_pack_url(url: str) -> tuple[str, str, str, Optional[int]]:
-    """Split a pack fetch URL into its addressing components.
-
-    ``<base>`` resolves to the ``latest/`` release; ``<base>/v{Y}`` pins a
-    version. Returns ``(base_url, version_dir_url, manifest_url, pinned)`` where
-    ``pinned`` is the requested version for a ``v{Y}`` URL or ``None`` for a
-    bare base URL.
+    Args:
+        url: the pack's GitHub repository URL.
+        git: clone via git rather than downloading the latest release.
+        update: pick up newly released versions and refresh existing ones.
+        force: re-install every version regardless of what is registered.
     """
-    trimmed = url.strip().rstrip("/")
-    parts = urlsplit(trimmed)
-    segments = parts.path.split("/")
-    last = segments[-1] if segments else ""
-
-    match = _PINNED_RE.match(last)
-    if match:
-        pinned: Optional[int] = int(match.group(1))
-        base_path = "/".join(segments[:-1])
-        base_url = urlunsplit((parts.scheme, parts.netloc, base_path, "", ""))
-        version_dir_url = trimmed
-    else:
-        pinned = None
-        base_url = trimmed
-        version_dir_url = f"{trimmed}/latest"
-
-    manifest_url = f"{version_dir_url}/{MANIFEST_FILENAME}"
-    return base_url, version_dir_url, manifest_url, pinned
-
-
-def _http_get(url: str) -> requests.Response:
-    """GET ``url``, raising :class:`FetchError` on network or HTTP failure."""
-    try:
-        response = requests.get(url)
-    except requests.RequestException as e:
-        raise FetchError(f"Network error fetching {url}: {e}")
-    if not response.ok:
-        raise FetchError(
-            f"Failed to fetch {url}: HTTP {response.status_code}.",
-            hint="Check the pack URL is correct and the host is reachable.",
-        )
-    return response
-
-
-def _load_remote_manifest(manifest_url: str) -> Manifest:
-    """Download and parse a pack manifest from ``manifest_url``."""
-    response = _http_get(manifest_url)
-    try:
-        data = response.json()
-    except ValueError as e:
-        raise FetchError(f"Pack manifest at {manifest_url} is not valid JSON: {e}")
-    try:
-        return Manifest.from_dict(data)
-    except VocalError as e:
-        raise FetchError(
-            f"Invalid pack manifest at {manifest_url}: {e.message}", hint=e.hint
-        )
-
-
-def looks_like_pack(url: str) -> bool:
-    """Probe ``url`` for a pack manifest, returning whether one was found.
-
-    Used to auto-detect resource kind: a URL serving a valid ``manifest.json``
-    (at ``<base>/latest/`` or ``<base>/v{Y}/``) is a pack; anything else is
-    treated as a project git URL.
-    """
-    _, _, manifest_url, _ = parse_pack_url(url)
-    try:
-        response = requests.get(manifest_url)
-    except requests.RequestException:
-        return False
-    if not response.ok:
-        return False
-    try:
-        Manifest.from_dict(response.json())
-    except Exception:
-        return False
-    return True
-
-
-def fetch_pack(url: str, update: bool = False, force: bool = False) -> None:
-    """Download a pack and install an owned copy under ``~/.vocal``.
-
-    A thin shell over the shared install primitive: the pack's
-    ``manifest.json``, ``dataset_schema.json``, and product schema JSONs are
-    downloaded into a temporary location, then handed to
-    :func:`~vocal.application.register.install_pack`, which normalises and
-    atomically installs them under ``~/.vocal/packs/{slug}/v{Y}`` keyed by
-    ``(url, version)``.
-
-    The pinned-``v{Y}``-vs-manifest consistency check stays on this side: a
-    pinned URL *asserts* a version, so a manifest that disagrees is a hosting bug
-    worth surfacing before anything is downloaded for install. The remaining
-    gating mirrors :func:`fetch_project` and keys on the registry — the source of
-    truth for "is it installed":
-
-    - default: install only if ``(url, version)`` is not already registered, else
-      :class:`PackAlreadyFetched`;
-    - ``--force``: overwrite any existing install;
-    - ``--update``: require ``(url, version)`` to already be registered (else
-      :class:`PackNotFetched`), then refresh it.
-
-    Raises:
-        PackInconsistent: the pinned ``v{Y}`` URL disagrees with the manifest's
-            version.
-        PackAlreadyFetched: the version is already installed and neither
-            ``--update`` nor ``--force`` was given.
-        PackNotFetched: ``--update`` was given but the version is not installed.
-        FetchError: on a network/HTTP failure or a malformed manifest.
-    """
-    base_url, version_dir_url, manifest_url, pinned = parse_pack_url(url)
-
-    manifest = _load_remote_manifest(manifest_url)
-    version = manifest.version
-
-    if pinned is not None and pinned != version:
-        raise PackInconsistent(
-            f"Pack at {version_dir_url} declares version {version}, "
-            f"not v{pinned}.",
-            "The versioned directory name and manifest version must agree; "
-            "this is a hosting bug.",
-        )
-
-    # Gate on the registry key — the source of truth for "is it installed".
-    key = Pack(manifest=manifest, local_path="").key
-    installed = key in load_registry().packs
-
-    if update and not installed:
-        raise PackNotFetched(
-            f"Cannot update pack '{base_url}' version {version}: "
-            "not currently fetched.",
-            hint=f"Run 'vocal fetch {url}' to fetch it for the first time.",
-        )
-
-    if installed and not (update or force):
-        raise PackAlreadyFetched(
-            f"Pack {base_url} version {version} is already fetched.",
-            hint="Pack versions are immutable; pass --update to re-download it, "
-            "or --force to overwrite.",
-        )
+    repo_name = derive_repo_name(url)
+    if not repo_name:
+        raise FetchError(f"Could not derive a pack name from URL: {url}")
 
     tmp_root = tempfile.mkdtemp(prefix="vocal-fetch-pack-")
     try:
-        download = os.path.join(tmp_root, versioned_dirname(version))
-        _write_text(os.path.join(download, MANIFEST_FILENAME), manifest.to_json())
-        _download_file(
-            f"{version_dir_url}/dataset_schema.json",
-            os.path.join(download, "dataset_schema.json"),
-        )
-        for product in manifest.products:
-            _download_file(
-                f"{version_dir_url}/{product.schema}",
-                os.path.join(download, product.schema),
-            )
-
-        install_pack(download, force=update or force)
+        download = os.path.join(tmp_root, repo_name)
+        materialize_repo(url, download, git=git)
+        _install_pack_tree(download, url, update=update, force=force)
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)
-
-
-def _write_text(path: str, content: str) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        f.write(content)
-
-
-def _download_file(url: str, dest: str) -> None:
-    """Download ``url`` to ``dest``, creating parent directories as needed."""
-    response = _http_get(url)
-    os.makedirs(os.path.dirname(dest), exist_ok=True)
-    with open(dest, "wb") as f:
-        f.write(response.content)
 
 
 # ---------------------------------------------------------------------------
@@ -337,40 +260,58 @@ def fetch(
 ) -> None:
     """Fetch a project or pack from ``url``, auto-detecting the kind.
 
-    A URL serving a pack ``manifest.json`` is fetched as a pack; anything else
-    is fetched as a project git repository. ``--git`` forces the project path
-    (a git clone is always a project).
+    Acquires the repository tree once through :func:`materialize_repo`, then
+    classifies the downloaded tree (:func:`classify_resource`) and dispatches:
+    a ``conventions.yaml`` root is a project, a ``latest/manifest.json`` root is
+    a pack, and neither raises :class:`NotAVocalResource`. The classification is
+    a pure inspection of the tree — no pre-download probe.
+
+    Raises:
+        NotAVocalResource: the downloaded tree is neither a project nor a pack.
+        FetchError and subclasses: from acquisition (release lookup / clone) or
+            install.
     """
-    if not git and looks_like_pack(url):
-        fetch_pack(url, update=update, force=force)
-    else:
-        fetch_project(url, git=git, update=update, force=force)
+    repo_name = derive_repo_name(url)
+    if not repo_name:
+        raise FetchError(f"Could not derive a name from URL: {url}")
+
+    tmp_root = tempfile.mkdtemp(prefix="vocal-fetch-")
+    try:
+        download = os.path.join(tmp_root, repo_name)
+        materialize_repo(url, download, git=git)
+
+        kind = classify_resource(download)
+        if kind is ResourceKind.PROJECT:
+            _install_project_tree(download, url, update=update, force=force)
+        else:
+            _install_pack_tree(download, url, update=update, force=force)
+    finally:
+        shutil.rmtree(tmp_root, ignore_errors=True)
 
 
 def command(
     url: str = typer.Argument(
         help=(
-            "The resource to fetch: a project git URL, or a pack base URL "
-            "(<base> for the latest release, <base>/v{Y} for a pinned version). "
-            "The kind is auto-detected."
+            "The GitHub repository to fetch: a project repo or a pack repo. "
+            "The kind is auto-detected by inspecting the downloaded tree."
         )
     ),
     git: bool = typer.Option(
         False,
         "--git",
         help=(
-            "Use git to clone the repository. Requires git to be installed. "
-            "This is mandatory if using a repository other than GitHub, or "
-            "if the repository is private. Always fetches a project."
+            "Clone the repository with git rather than downloading its latest "
+            "release. Required for non-GitHub hosts, private repositories, or "
+            "repositories with no published release."
         ),
     ),
     update: bool = typer.Option(
         False,
         "--update",
         help=(
-            "Refresh a previously-fetched resource. For a project, re-clones "
-            "and re-registers it; for a pack, re-downloads the immutable "
-            "version. Fails if the resource is not already fetched."
+            "Refresh a previously-fetched resource. For a project, re-installs "
+            "it; for a pack, picks up newly released versions and refreshes "
+            "existing ones. Fails if the resource is not already fetched."
         ),
     ),
     force: bool = typer.Option(
