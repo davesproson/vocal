@@ -47,7 +47,7 @@ Once installed, the `vocal` command should be available in your `PATH`:
     ╭─ Commands ────────────────────────────────────────────────────────────────╮
     │ build      Create an example data file from a definition.                 │
     │ check      Check a netCDF file against standard and product definitions.  │
-    │ fetch      Fetch a vocal project from a git repository.                   │
+    │ fetch      Fetch a vocal project or pack from GitHub.                     │
     │ init       Initialise a vocal project.                                    │
     │ register   Register a vocal project globally.                             │
     │ release    Create versioned JSON product specifications.                  │
@@ -154,11 +154,53 @@ that the value may change between files. In this case, the `comment` attribute i
 
 The 'working' copy of a data product definition is typically stored in the `definitions` directory. However, it is possible that a data product definition may change over time. For example, a new version of a standard may be released, or a data product may be updated to include new variables. In this case, it is useful to be able to track the changes between versions of a data product definition.
 
-To create a versioned copy of a data product definition, use the `vocal release` command.
+To create a versioned release of a set of data product definitions, use the `vocal release` command:
 
-    $ vocal release <project_name> -v <version> -o <output_dir>
+    $ vocal release -p <project_path> -v <version> -u <pack_repo_url> -o <output_dir>
 
-This will create a directory named `<output_dir>/<version>` containing the versioned data product definition, as well as a `latest` directory containing a copy of the latest versions. The versioned data product definition is a JSON file, and is intended to be used with the `check` command. Additionally a `dataset_schema.json` file is created, which is a JSON Schema representation of the pydantic model for the dataset, minus any validators.
+This produces a **pack**: a self-describing, independently releasable catalogue of product definitions. The command writes a `v<version>/` directory containing the versioned product definitions, plus a byte-identical `latest/` directory holding a copy of the most recent release. Each product definition is a JSON file intended to be used with the `check` command, and each release directory carries a `manifest.json` recording the pack's identity and the standard it requires. Additionally a `dataset_schema.json` file is created, which is a JSON Schema representation of the pydantic model for the dataset, minus any validators.
+
+The `-u`/`--url` value is the pack's **GitHub repository URL** — the repository you will publish the pack from. It is recorded in every `manifest.json` and is the identity consumers fetch the pack by (see [Packs](#packs)). On the first release in a fresh output directory `--url` is required; on subsequent releases it falls back to the URL recorded in `<output>/latest/manifest.json`, and supplying a different URL is a deliberate, explicit operation.
+
+Publishing a pack is a normal git workflow: commit the `v<version>/` and `latest/` tree and cut a GitHub release from the repository. `vocal release` only produces the files locally; it does not create the GitHub release for you.
+
+## Packs
+
+A **pack** is a versioned, self-describing catalogue of product definitions, produced with `vocal release` (see [Versioning data product definitions](#versioning-data-product-definitions)). Where a *project* defines the standard, a *pack* holds the concrete product definitions authored against that standard, and is published and consumed independently of it.
+
+### Hosting a pack
+
+Packs are hosted on **GitHub**, exactly like projects. A pack repository is a multi-version monorepo: it keeps every release's `v{Y}/` directory plus a `latest/` copy, so a single repository carries the full version history. To publish, commit the tree produced by `vocal release` and cut a GitHub release from the repository — the release's source archive then contains every version.
+
+A pack's identity is its GitHub repository URL, recorded by `vocal release --url` into every `manifest.json`. There is no separate static-hosting URL; the repository *is* the pack.
+
+### Fetching a pack
+
+Obtain a pack with the same `fetch` command used for projects:
+
+    $ vocal fetch <pack-repo-url>
+
+By default this downloads the pack repository's **latest GitHub release** and registers it. For private repositories, non-GitHub hosts, or repositories with no published release, clone the repository directly with `--git`:
+
+    $ vocal fetch --git <pack-repo-url>
+
+`vocal fetch` auto-detects whether a URL points at a project or a pack by inspecting the downloaded tree (a `conventions.yaml` at the root is a project; a `latest/manifest.json` is a pack), so you never have to tell it which kind of resource you are fetching. If a fetched repository is neither, the command reports a clear error.
+
+A single fetch registers **every** version (`v{Y}`) the pack contains — you can then validate files authored against any historical version without re-fetching. The `latest/` directory is a hosting artifact only and is not registered separately; "latest" is simply the highest registered version.
+
+Fetching a pack that is already registered is gated to avoid silently clobbering what you have:
+
+- a plain `vocal fetch <pack-repo-url>` on an already-registered pack reports that it is already fetched and hints at `--update` / `--force`;
+- `vocal fetch --update <pack-repo-url>` picks up newly released versions and refreshes existing ones. Update is **additive** — it never removes a version you have already registered;
+- `vocal fetch --force <pack-repo-url>` re-installs every version in the latest release regardless of what is registered, repairing a corrupted or partial install.
+
+### How packs are used at check time
+
+When you check a file, *vocal* routes it to the right pack using two global attributes on the file: `vocal_definitions_url` (the pack's GitHub repository URL) and `vocal_definitions_version` (the `v{Y}` release the file was authored against). The pack must already be fetched; if the named URL or version is not registered, `vocal check` reports a `PackMissing` error hinting at the `vocal fetch <pack-repo-url>` you need to run.
+
+`vocal_definitions_version` is **optional**. When it is present, the file is checked against that exact registered version. When it is absent (but `vocal_definitions_url` is present), *vocal* falls back to the **highest registered version** for that pack.
+
+> **Latest-version caveat.** With `vocal_definitions_version` omitted, a file is validated against the locally newest registered version, which may differ from the version it was actually authored against. The version attribute is the precise pin; its absence means "latest". For reproducible checks, pin the version explicitly.
 
 ## Checking data products
 

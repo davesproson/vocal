@@ -12,7 +12,8 @@ product index used by ``vocal check`` to route a file to its schema.
 Persistent pack fields are sourced from CLI flags on the first release and fall
 back to the prior release's ``manifest.json`` on subsequent releases:
 
-- ``--url`` (the pack's base URL) falls back to ``<output>/latest/manifest.json``;
+- ``--url`` (the pack's GitHub repository URL) falls back to
+  ``<output>/latest/manifest.json``;
   the first release in a fresh output directory requires it explicitly. Supplying
   a ``--url`` that differs (after normalisation) from the prior release is a hard
   error — changing a pack's published URL must be done deliberately.
@@ -93,7 +94,8 @@ def _resolve_url(url: Optional[str], output_dir: str) -> str:
     if prior_url is None:
         raise FirstReleaseRequiresURL(
             "The first release in a fresh output directory requires --url.",
-            "Supply the pack's base URL, e.g. --url https://host/packs.",
+            "Supply the pack's GitHub repository URL, e.g. "
+            "--url https://github.com/owner/pack-repo.",
         )
     return prior_url
 
@@ -193,8 +195,10 @@ def command(
         "-u",
         "--url",
         help=(
-            "The pack's base URL. Falls back to <output>/latest/manifest.json; "
-            "the first release in a fresh output directory requires it."
+            "The pack's GitHub repository URL — the repo you publish the pack "
+            "from, and the identity consumers fetch it by. Falls back to "
+            "<output>/latest/manifest.json; the first release in a fresh output "
+            "directory requires it."
         ),
     ),
     min_minor: Optional[int] = typer.Option(
