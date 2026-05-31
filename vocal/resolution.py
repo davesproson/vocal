@@ -24,9 +24,10 @@ The six-step resolution flow (see the parent PRD's "Check resolution flow"):
 2. Look up a registered project with the matching ``{name, major}`` whose
    ``minor`` is at least the file's claimed minor — :class:`ProjectMissing` if
    absent, :class:`ProjectTooOld` if too old.
-3. If ``vocal_definitions_url`` + ``vocal_definitions_version`` are present,
-   look up the registered pack by normalised URL and version —
-   :class:`PackMissing` if absent.
+3. If ``vocal_definitions_url`` is present, look up the registered pack by
+   normalised URL: with ``vocal_definitions_version`` also present, the lookup
+   is by ``(url, version)``; with the version absent, it resolves to the highest
+   registered version for that URL — :class:`PackMissing` if none match.
 4. Verify the pack's ``requires_standard`` is satisfied by the registered
    project — :class:`PackIncompatible` otherwise, naming the failing sub-check.
 5. Match the file to a product by the manifest's ``file_pattern`` entries,
@@ -176,8 +177,10 @@ def resolve(
         return ResolvedTarget(project=project, schema_path=definition_override)
 
     # No pack reference and no override: resolve the project alone. The CLI
-    # layer requires -d in this case; the web layer rejects it.
-    if definitions_url is None or definitions_version is None:
+    # layer requires -d in this case; the web layer rejects it. A bare
+    # definitions version with no URL cannot name a pack, so it is treated the
+    # same way.
+    if definitions_url is None:
         return ResolvedTarget(project=project, schema_path=None)
 
     pack = _resolve_pack(registry, definitions_url, definitions_version)
@@ -263,15 +266,32 @@ def _select_version_token(conventions: Optional[str], registry: Registry) -> Ver
 
 
 def _resolve_pack(
-    registry: Registry, definitions_url: str, definitions_version: int
+    registry: Registry, definitions_url: str, definitions_version: Optional[int]
 ) -> Pack:
-    """Step 3: look up the registered pack by normalised URL and version."""
+    """Step 3: look up the registered pack for the file's declared URL.
+
+    With an explicit ``definitions_version``, look up ``(url, version)`` exactly.
+    With the version absent, resolve to the highest registered version for the
+    URL — the file carried no precise pin, so the newest local version is used.
+    Raises :class:`PackMissing` (hinting the repo-URL fetch form) when no
+    matching pack is registered.
+    """
+    normalized = normalize_pack_url(definitions_url)
+
+    if definitions_version is None:
+        pack = registry.find_latest_pack(definitions_url)
+        if pack is None:
+            raise PackMissing(
+                f"No pack registered for {normalized}",
+                f"Run 'vocal fetch {normalized}' to register it.",
+            )
+        return pack
+
     pack = registry.find_pack(definitions_url, definitions_version)
     if pack is None:
-        normalized = normalize_pack_url(definitions_url)
         raise PackMissing(
             f"No pack registered for {normalized} version {definitions_version}",
-            f"Run 'vocal fetch {normalized}/v{definitions_version}' to register it.",
+            f"Run 'vocal fetch {normalized}' to register it.",
         )
     return pack
 

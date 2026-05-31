@@ -217,7 +217,7 @@ class TestUploadPost:
             error=ResolverError(
                 code="pack_missing",
                 message="No pack registered for https://host/packs version 3",
-                hint="Run 'vocal fetch https://host/packs/v3' to register it.",
+                hint="Run 'vocal fetch https://host/packs' to register it.",
             )
         )
         with patch("vocal.web.api.check_upload", return_value=context):
@@ -231,7 +231,7 @@ class TestUploadPost:
         assert "No pack registered for https://host/packs version 3" in response.text
         # Apostrophes in the hint are HTML-escaped by the template; match the
         # stable parts of the hint that survive escaping.
-        assert "vocal fetch https://host/packs/v3" in response.text
+        assert "vocal fetch https://host/packs" in response.text
         assert "to register it." in response.text
 
     def test_unknown_check_failure_renders_error_page(
@@ -400,7 +400,7 @@ class TestCheckUploadResolution:
             in context.error.message
         )
         assert context.error.hint is not None
-        assert "vocal fetch https://host/packs/v3" in context.error.hint
+        assert "vocal fetch https://host/packs" in context.error.hint
 
     def test_pack_incompatible(self, tmp_path: Path) -> None:
         nc = _make_nc(

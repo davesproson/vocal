@@ -168,7 +168,7 @@ class TestResolverErrorsSurface:
 
         assert result.exit_code == 1
         assert "No pack registered for https://host/packs version 3" in result.output
-        assert "vocal fetch https://host/packs/v3" in result.output
+        assert "vocal fetch https://host/packs" in result.output
 
     def test_pack_incompatible(self, tmp_path: Path) -> None:
         nc = _make_nc(

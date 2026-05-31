@@ -147,6 +147,20 @@ class Registry:
         or ``None``."""
         return self.packs.get((normalize_pack_url(url), version))
 
+    def find_latest_pack(self, url: str) -> Optional[Pack]:
+        """Return the highest-version registered pack for the normalised ``url``,
+        or ``None`` when no pack at that URL is registered.
+
+        Used by the resolver when a file declares a ``vocal_definitions_url`` but
+        omits ``vocal_definitions_version``: with no precise pin, the file is
+        checked against the newest version held locally for that URL.
+        """
+        normalized = normalize_pack_url(url)
+        candidates = [pack for pack in self.packs.values() if pack.url == normalized]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda pack: pack.version)
+
     def add_project(self, project: Project, force: bool = False) -> None:
         """Add ``project`` to the registry, keyed by ``{name}-{major}``.
 

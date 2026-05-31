@@ -150,6 +150,69 @@ class TestHappyPath:
 
 
 # ---------------------------------------------------------------------------
+# Version-absent pack resolution (resolves to the latest registered version)
+# ---------------------------------------------------------------------------
+
+
+class TestVersionAbsentResolvesToLatest:
+    def test_version_present_resolves_exact_version(self) -> None:
+        # Both v3 and v4 registered; the file pins v3 and gets exactly that.
+        project = _project()
+        v3 = _pack(version=3, min_minor=3, local_path="/cache/packs/host/v3")
+        v4 = _pack(version=4, min_minor=3, local_path="/cache/packs/host/v4")
+        registry = _registry(project, v3)
+        registry.add_pack(v4)
+
+        target = resolve(
+            registry,
+            filename="foo_20260522.nc",
+            conventions="MYSTD-2.3",
+            definitions_url="https://host/packs",
+            definitions_version=3,
+            filecodec_loader=_codec,
+        )
+
+        assert target.pack is v3
+        assert target.schema_path == os.path.join(v3.local_path, "product_foo.json")
+
+    def test_version_absent_resolves_to_highest_registered(self) -> None:
+        # Both v3 and v4 registered; the file omits the version and gets v4.
+        project = _project()
+        v3 = _pack(version=3, min_minor=3, local_path="/cache/packs/host/v3")
+        v4 = _pack(version=4, min_minor=3, local_path="/cache/packs/host/v4")
+        registry = _registry(project, v3)
+        registry.add_pack(v4)
+
+        target = resolve(
+            registry,
+            filename="foo_20260522.nc",
+            conventions="MYSTD-2.3",
+            definitions_url="https://host/packs",
+            definitions_version=None,
+            filecodec_loader=_codec,
+        )
+
+        assert target.pack is v4
+        assert target.schema_path == os.path.join(v4.local_path, "product_foo.json")
+
+    def test_version_absent_single_registered_version(self) -> None:
+        project = _project()
+        pack = _pack(version=3)
+        registry = _registry(project, pack)
+
+        target = resolve(
+            registry,
+            filename="foo_20260522.nc",
+            conventions="MYSTD-2.3",
+            definitions_url="https://host/packs",
+            definitions_version=None,
+            filecodec_loader=_codec,
+        )
+
+        assert target.pack is pack
+
+
+# ---------------------------------------------------------------------------
 # Project resolution errors
 # ---------------------------------------------------------------------------
 
@@ -251,7 +314,7 @@ class TestPackMissing:
             )
 
         assert exc.value.message == "No pack registered for https://host/packs version 4"
-        assert exc.value.hint == "Run 'vocal fetch https://host/packs/v4' to register it."
+        assert exc.value.hint == "Run 'vocal fetch https://host/packs' to register it."
         assert exc.value.code == "pack_missing"
 
     def test_pack_missing_when_url_not_registered(self) -> None:
@@ -268,6 +331,26 @@ class TestPackMissing:
                 definitions_version=3,
                 filecodec_loader=_codec,
             )
+
+    def test_pack_missing_when_url_not_registered_and_version_absent(self) -> None:
+        # No version pin and the URL has nothing registered: a repo-URL hint.
+        project = _project()
+        pack = _pack(url="https://host/packs")
+        registry = _registry(project, pack)
+
+        with pytest.raises(PackMissing) as exc:
+            resolve(
+                registry,
+                filename="foo_20260522.nc",
+                conventions="MYSTD-2.3",
+                definitions_url="https://other/packs",
+                definitions_version=None,
+                filecodec_loader=_codec,
+            )
+
+        assert exc.value.message == "No pack registered for https://other/packs"
+        assert exc.value.hint == "Run 'vocal fetch https://other/packs' to register it."
+        assert exc.value.code == "pack_missing"
 
 
 class TestPackIncompatible:

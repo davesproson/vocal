@@ -199,6 +199,54 @@ class TestFindPack:
 
 
 # ---------------------------------------------------------------------------
+# find_latest_pack
+# ---------------------------------------------------------------------------
+
+
+class TestFindLatestPack:
+    def test_returns_highest_version_for_url(self) -> None:
+        reg = Registry()
+        reg.add_pack(_pack(url="https://host/packs", version=3))
+        reg.add_pack(_pack(url="https://host/packs", version=5))
+        reg.add_pack(_pack(url="https://host/packs", version=4))
+
+        latest = reg.find_latest_pack("https://host/packs")
+        assert latest is not None
+        assert latest.version == 5
+
+    def test_single_version_returned(self) -> None:
+        reg = Registry()
+        reg.add_pack(_pack(url="https://host/packs", version=2))
+        latest = reg.find_latest_pack("https://host/packs")
+        assert latest is not None
+        assert latest.version == 2
+
+    def test_isolates_by_url(self) -> None:
+        # Two URLs with different versions: the lookup never crosses URLs.
+        reg = Registry()
+        reg.add_pack(_pack(url="https://host/packs", version=3))
+        reg.add_pack(_pack(url="https://host/other", version=9))
+
+        assert reg.find_latest_pack("https://host/packs").version == 3
+        assert reg.find_latest_pack("https://host/other").version == 9
+
+    def test_url_normalised(self) -> None:
+        reg = Registry()
+        reg.add_pack(_pack(url="https://host/packs", version=3))
+        reg.add_pack(_pack(url="https://host/packs", version=4))
+
+        assert reg.find_latest_pack("https://HOST/packs/").version == 4
+
+    def test_none_when_url_absent(self) -> None:
+        reg = Registry()
+        reg.add_pack(_pack(url="https://host/packs", version=3))
+        assert reg.find_latest_pack("https://host/other") is None
+
+    def test_none_when_empty(self) -> None:
+        assert Registry().find_latest_pack("https://host/packs") is None
+
+
+# ---------------------------------------------------------------------------
 # load / save round-trip
 # ---------------------------------------------------------------------------
 
