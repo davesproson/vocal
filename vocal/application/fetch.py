@@ -142,16 +142,30 @@ def _install_pack_tree(
     ``v{Y}/`` whose manifest disagrees raises :class:`PackInconsistent`).
 
     Gating is per-repo-URL — any registered version of the URL counts as
-    "fetched". This slice implements the default path only; ``--update`` /
-    ``--force`` semantics are completed separately:
+    "fetched":
 
     - default: install all versions if the URL has no registered versions, else
-      :class:`PackAlreadyFetched`.
+      :class:`PackAlreadyFetched`;
+    - ``--update``: require the URL to already be registered (else
+      :class:`PackNotFetched`), then re-install every version in the latest
+      release — refreshing existing versions and adding newly released ones.
+      This is *additive*: a version registered locally but absent from this
+      release is simply not in ``versions``, so it is left untouched (no
+      pruning);
+    - ``--force``: re-install every version in the latest release regardless of
+      what is registered, repairing a corrupted or partial install.
+
+    Refresh and add reduce to the same operation: ``install_pack`` keyed on
+    ``(url, version)`` with ``force`` overwrites an existing version and creates
+    a new one, and never removes a version, so the additive guarantee holds for
+    both ``--update`` and ``--force``.
 
     Raises:
         FetchError: the pack contains no ``v{Y}/`` release directories.
         PackAlreadyFetched: the URL already has a registered version and neither
             ``--update`` nor ``--force`` was given.
+        PackNotFetched: ``--update`` was given but the URL has no registered
+            version to update.
         PackInconsistent: a ``v{Y}/`` directory disagrees with its manifest's
             version (from ``install_pack``).
     """
@@ -164,6 +178,12 @@ def _install_pack_tree(
 
     normalized = normalize_pack_url(url)
     registered = any(u == normalized for (u, _) in load_registry().packs)
+
+    if update and not registered:
+        raise PackNotFetched(
+            f"Cannot update pack {normalized}: not currently fetched.",
+            hint=f"Run 'vocal fetch {url}' to fetch it for the first time.",
+        )
 
     if registered and not (update or force):
         raise PackAlreadyFetched(

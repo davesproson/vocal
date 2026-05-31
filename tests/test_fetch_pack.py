@@ -24,6 +24,7 @@ import pytest
 
 from vocal.application.fetch import (
     PackAlreadyFetched,
+    PackNotFetched,
     derive_url_slug,
     fetch,
     fetch_pack,
@@ -402,6 +403,111 @@ class TestFetchPack:
         ):
             with pytest.raises(PackInconsistent):
                 fetch_pack(PACK_URL)
+
+
+class TestFetchPackUpdateForce:
+    """Per-URL ``--update`` / ``--force`` gating and additive update semantics."""
+
+    def test_update_on_unregistered_url_fails(
+        self, tmp_path: Path, registers_into: dict
+    ) -> None:
+        with _patch_cache(tmp_path), patch(
+            "vocal.application.fetch.materialize_repo",
+            MagicMock(side_effect=_fake_download(versions=[3])),
+        ):
+            with pytest.raises(PackNotFetched) as exc_info:
+                fetch_pack(PACK_URL, update=True)
+
+        # Nothing registered, and the hint points at a first-time fetch.
+        assert registers_into["registry"].packs == {}
+        assert PACK_URL in (exc_info.value.hint or "")
+
+    def test_update_picks_up_new_version(
+        self, tmp_path: Path, registers_into: dict
+    ) -> None:
+        registry = registers_into["registry"]
+        with _patch_cache(tmp_path):
+            with patch(
+                "vocal.application.fetch.materialize_repo",
+                MagicMock(side_effect=_fake_download(versions=[2])),
+            ):
+                fetch_pack(PACK_URL)
+            # A new release adds v3 alongside v2.
+            with patch(
+                "vocal.application.fetch.materialize_repo",
+                MagicMock(side_effect=_fake_download(versions=[2, 3])),
+            ):
+                fetch_pack(PACK_URL, update=True)
+
+        assert registry.find_pack(PACK_URL, 2) is not None
+        assert registry.find_pack(PACK_URL, 3) is not None
+
+    def test_update_refreshes_existing_version(
+        self, tmp_path: Path, registers_into: dict
+    ) -> None:
+        slug = derive_url_slug(PACK_URL)
+        installed = tmp_path / "cache" / "packs" / slug / "v3" / "alpha.json"
+        with _patch_cache(tmp_path), patch(
+            "vocal.application.fetch.materialize_repo",
+            MagicMock(side_effect=_fake_download(versions=[3])),
+        ):
+            fetch_pack(PACK_URL)
+            canonical = installed.read_text()
+            # Corrupt the owned copy, then update to refresh it back in place.
+            installed.write_text("TAMPERED")
+            fetch_pack(PACK_URL, update=True)
+
+        assert installed.read_text() == canonical
+
+    def test_update_is_additive_and_never_prunes(
+        self, tmp_path: Path, registers_into: dict
+    ) -> None:
+        registry = registers_into["registry"]
+        with _patch_cache(tmp_path):
+            with patch(
+                "vocal.application.fetch.materialize_repo",
+                MagicMock(side_effect=_fake_download(versions=[2, 3])),
+            ):
+                fetch_pack(PACK_URL)
+            # The latest release no longer ships v2; update must not prune it.
+            with patch(
+                "vocal.application.fetch.materialize_repo",
+                MagicMock(side_effect=_fake_download(versions=[3])),
+            ):
+                fetch_pack(PACK_URL, update=True)
+
+        assert registry.find_pack(PACK_URL, 2) is not None
+        assert registry.find_pack(PACK_URL, 3) is not None
+
+    def test_force_reinstalls_regardless_of_registration(
+        self, tmp_path: Path, registers_into: dict
+    ) -> None:
+        slug = derive_url_slug(PACK_URL)
+        installed = tmp_path / "cache" / "packs" / slug / "v3" / "alpha.json"
+        with _patch_cache(tmp_path), patch(
+            "vocal.application.fetch.materialize_repo",
+            MagicMock(side_effect=_fake_download(versions=[3])),
+        ):
+            fetch_pack(PACK_URL)
+            canonical = installed.read_text()
+            installed.write_text("TAMPERED")
+            # --force re-installs every version with no gating error.
+            fetch_pack(PACK_URL, force=True)
+
+        assert installed.read_text() == canonical
+        assert registers_into["registry"].find_pack(PACK_URL, 3) is not None
+
+    def test_force_on_unregistered_url_installs(
+        self, tmp_path: Path, registers_into: dict
+    ) -> None:
+        # --force does not require prior registration (unlike --update).
+        with _patch_cache(tmp_path), patch(
+            "vocal.application.fetch.materialize_repo",
+            MagicMock(side_effect=_fake_download(versions=[4])),
+        ):
+            fetch_pack(PACK_URL, force=True)
+
+        assert registers_into["registry"].find_pack(PACK_URL, 4) is not None
 
 
 class TestFetchNoReleases:
