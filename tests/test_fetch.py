@@ -113,13 +113,15 @@ def _materialise_project(
 
 
 def _fake_download(**project_kwargs: Any) -> Any:
-    """Return a ``(url, target)`` download stub that drops a valid project.
+    """Return a ``materialize_repo`` stub that drops a valid project.
 
-    Stands in for ``fetch_http`` / ``fetch_with_git``: it materialises a project
-    tree at the download ``target`` the real downloader would have produced.
+    Stands in for :func:`materialize_repo`: it materialises a project tree at the
+    download ``target`` the real acquisition would have produced. The ``git``
+    keyword is accepted (and ignored) so the stub matches the real signature
+    ``materialize_repo(url, target, *, git)``.
     """
 
-    def _dl(url: str, target: str) -> None:
+    def _dl(url: str, target: str, *, git: bool = False) -> None:
         _materialise_project(target, **project_kwargs)
 
     return _dl
@@ -315,7 +317,7 @@ class TestFetchProjectInstall:
         captured: dict = {}
         with _fetch_env(tmp_path, captured) as vocal_root, patch.multiple(
             "vocal.application.fetch",
-            fetch_http=MagicMock(side_effect=_fake_download(name="STD", major=1)),
+            materialize_repo=MagicMock(side_effect=_fake_download(name="STD", major=1)),
         ):
             fetch_project("https://github.com/u/r")
 
@@ -327,19 +329,19 @@ class TestFetchProjectInstall:
         assert registered.local_path == str(owned)
         assert os.path.isabs(registered.local_path)
 
-    def test_git_flag_routes_to_git_helper(self, tmp_path: Path) -> None:
-        git_mock = MagicMock(side_effect=_fake_download())
-        http_mock = MagicMock(side_effect=_fake_download())
+    def test_git_flag_forwarded_to_materialize_repo(self, tmp_path: Path) -> None:
+        materialize = MagicMock(side_effect=_fake_download())
         captured: dict = {}
         with _fetch_env(tmp_path, captured), patch.multiple(
             "vocal.application.fetch",
-            fetch_with_git=git_mock,
-            fetch_http=http_mock,
+            materialize_repo=materialize,
         ):
             fetch_project("https://github.com/u/r", git=True)
 
-        git_mock.assert_called_once()
-        http_mock.assert_not_called()
+        materialize.assert_called_once()
+        # fetch_project routes acquisition through the one materialize_repo seam,
+        # forwarding --git so it picks the clone path (asserted in its own tests).
+        assert materialize.call_args.kwargs["git"] is True
 
 
 class TestFetchProjectGating:
@@ -351,7 +353,7 @@ class TestFetchProjectGating:
         download = MagicMock(side_effect=_fake_download())
         captured: dict = {}
         with _fetch_env(tmp_path, captured), patch.multiple(
-            "vocal.application.fetch", fetch_http=download
+            "vocal.application.fetch", materialize_repo=download
         ):
             fetch_project("https://github.com/u/r")
             with pytest.raises(ProjectAlreadyFetched) as exc_info:
@@ -366,12 +368,12 @@ class TestFetchProjectGating:
         with _fetch_env(tmp_path, captured) as vocal_root:
             with patch.multiple(
                 "vocal.application.fetch",
-                fetch_http=MagicMock(side_effect=_fake_download(minor=0)),
+                materialize_repo=MagicMock(side_effect=_fake_download(minor=0)),
             ):
                 fetch_project("https://github.com/u/r")
             with patch.multiple(
                 "vocal.application.fetch",
-                fetch_http=MagicMock(side_effect=_fake_download(minor=5)),
+                materialize_repo=MagicMock(side_effect=_fake_download(minor=5)),
             ):
                 fetch_project("https://github.com/u/r", force=True)
 
@@ -382,7 +384,7 @@ class TestFetchProjectGating:
     def test_update_missing_raises_not_fetched(self, tmp_path: Path) -> None:
         captured: dict = {}
         with _fetch_env(tmp_path, captured), patch.multiple(
-            "vocal.application.fetch", fetch_http=MagicMock(side_effect=_fake_download())
+            "vocal.application.fetch", materialize_repo=MagicMock(side_effect=_fake_download())
         ):
             with pytest.raises(ProjectNotFetched) as exc_info:
                 fetch_project("https://github.com/u/r", update=True)
@@ -393,12 +395,12 @@ class TestFetchProjectGating:
         with _fetch_env(tmp_path, captured):
             with patch.multiple(
                 "vocal.application.fetch",
-                fetch_http=MagicMock(side_effect=_fake_download(minor=0)),
+                materialize_repo=MagicMock(side_effect=_fake_download(minor=0)),
             ):
                 fetch_project("https://github.com/u/r")
             with patch.multiple(
                 "vocal.application.fetch",
-                fetch_http=MagicMock(side_effect=_fake_download(minor=9)),
+                materialize_repo=MagicMock(side_effect=_fake_download(minor=9)),
             ):
                 fetch_project("https://github.com/u/r", update=True)
 
@@ -411,12 +413,12 @@ class TestFetchProjectGating:
         with _fetch_env(tmp_path, captured):
             with patch.multiple(
                 "vocal.application.fetch",
-                fetch_http=MagicMock(side_effect=_fake_download(major=1)),
+                materialize_repo=MagicMock(side_effect=_fake_download(major=1)),
             ):
                 fetch_project("https://github.com/u/r")
             with patch.multiple(
                 "vocal.application.fetch",
-                fetch_http=MagicMock(side_effect=_fake_download(major=2)),
+                materialize_repo=MagicMock(side_effect=_fake_download(major=2)),
             ):
                 with pytest.raises(ProjectNotFetched):
                     fetch_project("https://github.com/u/r", update=True)
@@ -430,13 +432,13 @@ class TestFetchProjectFailureSafety:
     """A broken download never destroys a good install or leaves drift."""
 
     def test_missing_conventions_installs_nothing(self, tmp_path: Path) -> None:
-        def bad_download(url: str, target: str) -> None:
+        def bad_download(url: str, target: str, *, git: bool = False) -> None:
             # A tree that is not a vocal project (no conventions.yaml).
             os.makedirs(target, exist_ok=True)
 
         captured: dict = {}
         with _fetch_env(tmp_path, captured) as vocal_root, patch.multiple(
-            "vocal.application.fetch", fetch_http=MagicMock(side_effect=bad_download)
+            "vocal.application.fetch", materialize_repo=MagicMock(side_effect=bad_download)
         ):
             with pytest.raises(InvalidConventionsFile):
                 fetch_project("https://github.com/u/r")
@@ -451,7 +453,7 @@ class TestFetchProjectFailureSafety:
         with _fetch_env(tmp_path, captured) as vocal_root:
             with patch.multiple(
                 "vocal.application.fetch",
-                fetch_http=MagicMock(side_effect=_fake_download(filecodec=True)),
+                materialize_repo=MagicMock(side_effect=_fake_download(filecodec=True)),
             ):
                 fetch_project("https://github.com/u/r")
             owned = Path(vocal_root) / "projects" / "STD-1"
@@ -460,7 +462,7 @@ class TestFetchProjectFailureSafety:
             # Re-fetch the same identity but with a broken package.
             with patch.multiple(
                 "vocal.application.fetch",
-                fetch_http=MagicMock(side_effect=_fake_download(filecodec=False)),
+                materialize_repo=MagicMock(side_effect=_fake_download(filecodec=False)),
             ):
                 with pytest.raises(MissingProjectExport):
                     fetch_project("https://github.com/u/r", force=True)
@@ -486,7 +488,7 @@ class TestFetchRegisterConvergence:
         fetch_captured: dict = {}
         with _fetch_env(tmp_path / "fet", fetch_captured) as fet_root, patch.multiple(
             "vocal.application.fetch",
-            fetch_http=MagicMock(
+            materialize_repo=MagicMock(
                 side_effect=_fake_download(
                     name="CONV", major=1, minor=2, module="convmod"
                 )
