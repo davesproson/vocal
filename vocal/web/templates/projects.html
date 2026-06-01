@@ -7,9 +7,9 @@
         <a class="btn btn-primary" href="/add">Add</a>
     </div>
 
-    {% for project_name, project in projects.items() %}
+    {% for project in library.projects %}
     <div class="card">
-        <h2>{{ project_name }}</h2>
+        <h2>{{ project.key }}</h2>
         <div class="card-meta">
             <span>
                 <span class="label">Version</span>
@@ -19,6 +19,21 @@
                 <span class="label">Local path</span>
                 <span class="code">{{ project.local_path }}</span>
             </span>
+        </div>
+        <div class="card-section">
+            <span class="label">Packs targeting this standard</span>
+            {% if project.packs %}
+            <ul class="pack-links">
+                {% for pack in project.packs %}
+                <li>
+                    <a href="/packs#{{ pack.anchor_id }}">{{ pack.url }}</a>
+                    <span class="code">{% for version in pack.versions %}v{{ version }}{% if not loop.last %}, {% endif %}{% endfor %}</span>
+                </li>
+                {% endfor %}
+            </ul>
+            {% else %}
+            <p class="muted">No packs target this standard.</p>
+            {% endif %}
         </div>
     </div>
     {% endfor %}

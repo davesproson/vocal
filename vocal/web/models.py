@@ -123,6 +123,37 @@ class PackView(BaseModel):
         return self.versions[0]
 
 
+class ProjectPackView(BaseModel):
+    """A pack targeting a project's exact standard, as shown on the Projects page.
+
+    Lists only the versions of this pack URL whose ``requires_standard`` matches
+    the project's exact ``{name}-{major}`` (a URL whose later version moved to a
+    different major appears here only for the versions that still target this
+    project). ``anchor_id`` matches the corresponding :class:`PackView`'s, so the
+    entry can deep-link to that pack's card on the Packs tab.
+    """
+
+    url: str
+    anchor_id: str
+    versions: list[int]
+
+
+class ProjectView(BaseModel):
+    """A registered project plus the packs that target its exact standard.
+
+    ``key`` is the registry key (``{name}-{major}``). ``packs`` lists the packs
+    targeting this project, grouped by URL (URLs sorted ascending) and filtered
+    to only the versions whose required standard matches ``key``.
+    """
+
+    key: str
+    name: str
+    major: int
+    minor: int
+    local_path: str
+    packs: list[ProjectPackView] = Field(default_factory=list)
+
+
 class LibraryView(BaseModel):
     """The pre-computed view of what has been fetched onto this machine.
 
@@ -132,6 +163,7 @@ class LibraryView(BaseModel):
     """
 
     packs: list[PackView] = Field(default_factory=list)
+    projects: list[ProjectView] = Field(default_factory=list)
 
 
 def _requirement_status(registry: Registry, pack: Pack) -> RequirementStatus:
@@ -181,4 +213,43 @@ def build_library_view(registry: Registry) -> LibraryView:
             PackView(url=url, anchor_id=derive_url_slug(url), versions=versions)
         )
 
-    return LibraryView(packs=pack_views)
+    return LibraryView(packs=pack_views, projects=_project_views(registry))
+
+
+def _project_views(registry: Registry) -> list[ProjectView]:
+    """Build the per-project view models, including the reverse pack links.
+
+    For each project (keyed ``{name}-{major}``), the packs targeting it are the
+    pack versions whose ``requires_standard`` resolves to that exact key. They
+    are grouped by URL (URLs sorted ascending), and within each group only the
+    matching versions are kept, sorted descending. A pack URL whose later
+    versions moved to a different major therefore appears under the old project
+    only for the versions that still target it.
+    """
+    project_views: list[ProjectView] = []
+    for key in sorted(registry.projects):
+        project = registry.projects[key]
+        by_url: dict[str, list[int]] = {}
+        for pack in registry.packs.values():
+            requires = pack.manifest.requires_standard
+            if project_key(requires.name, requires.major) == project.key:
+                by_url.setdefault(pack.url, []).append(pack.version)
+        pack_links = [
+            ProjectPackView(
+                url=url,
+                anchor_id=derive_url_slug(url),
+                versions=sorted(by_url[url], reverse=True),
+            )
+            for url in sorted(by_url)
+        ]
+        project_views.append(
+            ProjectView(
+                key=project.key,
+                name=project.name,
+                major=project.major,
+                minor=project.minor,
+                local_path=project.local_path,
+                packs=pack_links,
+            )
+        )
+    return project_views

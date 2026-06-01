@@ -6,6 +6,7 @@ grouping packs by URL and the descending version sort, and the three-state
 requirement status of each version against the registry's projects.
 """
 
+from vocal.application.install import derive_url_slug
 from vocal.manifest import build_manifest
 from vocal.utils.registry import Pack, Project, Registry
 from vocal.web.models import build_library_view
@@ -144,3 +145,70 @@ class TestRequirementStatus:
 
         assert version.requirement_status == "project_too_old"
         assert version.requirement_label == "Project too old"
+
+
+class TestProjectReverseLinks:
+    def _project_view(self, registry: Registry, key: str):
+        views = {p.key: p for p in build_library_view(registry).projects}
+        return views[key]
+
+    def test_project_lists_packs_targeting_its_standard(self) -> None:
+        registry = _registry(
+            _pack(url="https://host/widgets", version=1, name="MYSTD", major=2),
+            projects=(_project(name="MYSTD", major=2),),
+        )
+        project = self._project_view(registry, "MYSTD-2")
+
+        assert len(project.packs) == 1
+        assert project.packs[0].url == "https://host/widgets"
+        assert project.packs[0].versions == [1]
+
+    def test_project_with_no_targeting_packs_has_empty_list(self) -> None:
+        registry = _registry(
+            _pack(name="MYSTD", major=2),
+            projects=(_project(name="OTHER", major=1),),
+        )
+        project = self._project_view(registry, "OTHER-1")
+
+        assert project.packs == []
+
+    def test_packs_grouped_by_url_with_versions_descending(self) -> None:
+        registry = _registry(
+            _pack(url="https://host/widgets", version=1, name="MYSTD", major=2),
+            _pack(url="https://host/widgets", version=3, name="MYSTD", major=2),
+            _pack(url="https://host/widgets", version=2, name="MYSTD", major=2),
+            projects=(_project(name="MYSTD", major=2),),
+        )
+        project = self._project_view(registry, "MYSTD-2")
+
+        assert len(project.packs) == 1
+        assert project.packs[0].versions == [3, 2, 1]
+
+    def test_reverse_link_filters_to_matching_major_per_project(self) -> None:
+        # One pack URL whose later version moved to a different major: v1
+        # targets MYSTD-2, v2 targets MYSTD-3. Each project must see only the
+        # versions that target its exact {name}-{major}.
+        registry = _registry(
+            _pack(url="https://host/widgets", version=1, name="MYSTD", major=2),
+            _pack(url="https://host/widgets", version=2, name="MYSTD", major=3),
+            projects=(
+                _project(name="MYSTD", major=2),
+                _project(name="MYSTD", major=3),
+            ),
+        )
+
+        major2 = self._project_view(registry, "MYSTD-2")
+        major3 = self._project_view(registry, "MYSTD-3")
+
+        assert [p.versions for p in major2.packs] == [[1]]
+        assert [p.versions for p in major3.packs] == [[2]]
+
+    def test_pack_anchor_id_matches_pack_card_anchor(self) -> None:
+        url = "https://host/widgets"
+        registry = _registry(
+            _pack(url=url, version=1, name="MYSTD", major=2),
+            projects=(_project(name="MYSTD", major=2),),
+        )
+        project = self._project_view(registry, "MYSTD-2")
+
+        assert project.packs[0].anchor_id == derive_url_slug(url)

@@ -113,11 +113,14 @@ async def add_post(request: Request):
 
 @app.get("/projects", response_class=HTMLResponse)
 async def projects(request: Request) -> HTMLResponse:
-    with Registry.open() as registry:
-        projects = registry.projects
+    try:
+        with Registry.open() as registry:
+            library = build_library_view(registry)
+    except FileNotFoundError:
+        library = LibraryView()
 
     return templates.TemplateResponse(
-        request=request, name="projects.html", context={"projects": projects}
+        request=request, name="projects.html", context={"library": library}
     )
 
 

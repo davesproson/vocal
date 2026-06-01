@@ -37,6 +37,7 @@ from fastapi import UploadFile
 from fastapi.testclient import TestClient
 
 from vocal.application.fetch import FetchError
+from vocal.application.install import derive_url_slug
 from vocal.application.resource import ResourceKind
 from vocal.manifest import ManifestProduct, build_manifest
 from vocal.utils.registry import Pack, Project, Registry
@@ -182,6 +183,29 @@ class TestProjectsGet:
         ):
             response = client.get("/projects")
         assert "my_project" in response.text
+
+    def test_targeting_pack_links_to_packs_anchor(self, client: TestClient) -> None:
+        project = Project(
+            name="MYSTD",
+            major=2,
+            minor=5,
+            project_directory="mystd",
+            local_path="/tmp/mystd",
+        )
+        pack = _pack(url="https://host/widgets", version=1)
+
+        @contextmanager
+        def _open() -> Generator[Registry, None, None]:
+            registry = Registry(projects={project.key: project})
+            registry.add_pack(pack)
+            yield registry
+
+        with patch("vocal.web.api.Registry.open", _open):
+            response = client.get("/projects")
+
+        assert response.status_code == 200
+        assert "https://host/widgets" in response.text
+        assert f'/packs#{derive_url_slug("https://host/widgets")}' in response.text
 
 
 # ---------------------------------------------------------------------------
