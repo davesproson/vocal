@@ -1,8 +1,18 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from vocal.application.install import derive_url_slug
 from vocal.checking import CheckError, CheckComment, CheckWarning
-from vocal.utils.registry import Registry
+from vocal.utils.registry import Pack, Registry, project_key
+
+RequirementStatus = Literal["satisfied", "project_missing", "project_too_old"]
+
+REQUIREMENT_LABELS: dict[RequirementStatus, str] = {
+    "satisfied": "Satisfied",
+    "project_missing": "Project not fetched",
+    "project_too_old": "Project too old",
+}
 
 
 class ResolverError(BaseModel):
@@ -74,14 +84,26 @@ class PackVersionView(BaseModel):
     """One registered release of a pack, as shown on the Packs page.
 
     ``requires_standard`` is the ``{name}-{major}`` of the project standard the
-    version targets; ``requires_min_minor`` is the minimum minor it needs. The
-    three-state requirement status against the registry is added in a later
-    slice — here a version only states what it requires.
+    version targets; ``requires_min_minor`` is the minimum minor it needs.
+
+    ``requirement_status`` is the three-state status of that requirement against
+    the registry, mirroring the resolver's ``project_missing`` /
+    ``project_too_old`` distinction: ``satisfied`` when a ``{name}-{major}``
+    project exists with ``minor >= min_minor``, ``project_missing`` when no such
+    project is fetched, and ``project_too_old`` when it exists but its minor is
+    below the required minimum. It is informational only — it does not change
+    check gating.
     """
 
     version: int
     requires_standard: str
     requires_min_minor: int
+    requirement_status: RequirementStatus
+
+    @property
+    def requirement_label(self) -> str:
+        """The human-readable label for :attr:`requirement_status`."""
+        return REQUIREMENT_LABELS[self.requirement_status]
 
 
 class PackView(BaseModel):
@@ -112,11 +134,29 @@ class LibraryView(BaseModel):
     packs: list[PackView] = Field(default_factory=list)
 
 
+def _requirement_status(registry: Registry, pack: Pack) -> RequirementStatus:
+    """Return the three-state requirement status of ``pack`` against ``registry``.
+
+    Mirrors the resolver's ``_resolve_project`` lookup (``projects.get`` keyed by
+    ``{name}-{major}``, then a ``minor`` comparison) so the UI's notion of
+    compatibility matches the resolver's rather than inventing a parallel one.
+    """
+    requires = pack.manifest.requires_standard
+    project = registry.projects.get(project_key(requires.name, requires.major))
+    if project is None:
+        return "project_missing"
+    if project.minor < requires.min_minor:
+        return "project_too_old"
+    return "satisfied"
+
+
 def build_library_view(registry: Registry) -> LibraryView:
     """Build the :class:`LibraryView` for ``registry``.
 
     Packs are grouped by URL (URLs sorted ascending for a stable page order),
     and each group's versions are sorted descending so the latest release leads.
+    Each version's three-state requirement status is computed against
+    ``registry``'s projects, mirroring the resolver's project lookup.
     """
     by_url: dict[str, list] = {}
     for pack in registry.packs.values():
@@ -133,6 +173,7 @@ def build_library_view(registry: Registry) -> LibraryView:
                     f"-{pack.manifest.requires_standard.major}"
                 ),
                 requires_min_minor=pack.manifest.requires_standard.min_minor,
+                requirement_status=_requirement_status(registry, pack),
             )
             for pack in packs
         ]

@@ -26,6 +26,10 @@
                 <span class="label">Requires</span>
                 <span class="code">{{ version.requires_standard }}.{{ version.requires_min_minor }}+</span>
             </span>
+            <span>
+                <span class="label">Status</span>
+                <span class="status status-{{ version.requirement_status }}">{{ version.requirement_label }}</span>
+            </span>
         </div>
         {% endfor %}
     </div>

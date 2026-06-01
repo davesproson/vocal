@@ -537,6 +537,31 @@ input[type="submit"]:hover { background: #1a4d80; }
     word-break: break-all;
 }
 
+/* ── Pack requirement status pill ─────────────────────────────────── */
+.status {
+    display: inline-block;
+    font-size: 0.78rem;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+}
+.status-satisfied {
+    background: var(--success-bg);
+    border-color: var(--success-border);
+    color: var(--success);
+}
+.status-project_missing {
+    background: var(--info-bg);
+    border-color: var(--info-border);
+    color: var(--info);
+}
+.status-project_too_old {
+    background: var(--warning-bg);
+    border-color: var(--warning-border);
+    color: var(--warning);
+}
+
 /* ── Projects page header row ─────────────────────────────────────── */
 .page-header {
     display: flex;

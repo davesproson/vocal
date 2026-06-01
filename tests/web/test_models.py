@@ -2,12 +2,12 @@
 
 ``build_library_view`` is driven directly against in-memory ``Registry``
 objects, asserting the shape of the view models it returns. This slice covers
-grouping packs by URL and the descending version sort; the three-state
-requirement status is added (and tested) in a later slice.
+grouping packs by URL and the descending version sort, and the three-state
+requirement status of each version against the registry's projects.
 """
 
 from vocal.manifest import build_manifest
-from vocal.utils.registry import Pack, Registry
+from vocal.utils.registry import Pack, Project, Registry
 from vocal.web.models import build_library_view
 
 
@@ -29,8 +29,22 @@ def _pack(
     return Pack(manifest=manifest, local_path=f"/cache/{version}")
 
 
-def _registry(*packs: Pack) -> Registry:
+def _project(
+    name: str = "MYSTD", major: int = 2, minor: int = 3
+) -> Project:
+    return Project(
+        name=name,
+        major=major,
+        minor=minor,
+        project_directory=f"{name.lower()}_{major}",
+        local_path=f"/cache/{name}-{major}",
+    )
+
+
+def _registry(*packs: Pack, projects: tuple[Project, ...] = ()) -> Registry:
     registry = Registry()
+    for project in projects:
+        registry.add_project(project)
     for pack in packs:
         registry.add_pack(pack)
     return registry
@@ -83,3 +97,50 @@ class TestBuildLibraryView:
         version = view.packs[0].versions[0]
         assert version.requires_standard == "MYSTD-2"
         assert version.requires_min_minor == 4
+
+
+class TestRequirementStatus:
+    def test_satisfied_when_project_minor_meets_minimum(self) -> None:
+        registry = _registry(
+            _pack(name="MYSTD", major=2, min_minor=3),
+            projects=(_project(name="MYSTD", major=2, minor=3),),
+        )
+        version = build_library_view(registry).packs[0].versions[0]
+
+        assert version.requirement_status == "satisfied"
+        assert version.requirement_label == "Satisfied"
+
+    def test_satisfied_when_project_minor_exceeds_minimum(self) -> None:
+        registry = _registry(
+            _pack(name="MYSTD", major=2, min_minor=3),
+            projects=(_project(name="MYSTD", major=2, minor=5),),
+        )
+        version = build_library_view(registry).packs[0].versions[0]
+
+        assert version.requirement_status == "satisfied"
+
+    def test_project_missing_when_no_such_standard(self) -> None:
+        registry = _registry(_pack(name="MYSTD", major=2, min_minor=3))
+        version = build_library_view(registry).packs[0].versions[0]
+
+        assert version.requirement_status == "project_missing"
+        assert version.requirement_label == "Project not fetched"
+
+    def test_project_missing_when_only_other_major_fetched(self) -> None:
+        registry = _registry(
+            _pack(name="MYSTD", major=2, min_minor=3),
+            projects=(_project(name="MYSTD", major=1, minor=9),),
+        )
+        version = build_library_view(registry).packs[0].versions[0]
+
+        assert version.requirement_status == "project_missing"
+
+    def test_project_too_old_when_minor_below_minimum(self) -> None:
+        registry = _registry(
+            _pack(name="MYSTD", major=2, min_minor=3),
+            projects=(_project(name="MYSTD", major=2, minor=2),),
+        )
+        version = build_library_view(registry).packs[0].versions[0]
+
+        assert version.requirement_status == "project_too_old"
+        assert version.requirement_label == "Project too old"
