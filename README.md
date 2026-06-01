@@ -47,10 +47,10 @@ Once installed, the `vocal` command should be available in your `PATH`:
     ╭─ Commands ────────────────────────────────────────────────────────────────╮
     │ build      Create an example data file from a definition.                 │
     │ check      Check a netCDF file against standard and product definitions.  │
-    │ fetch      Fetch a vocal project or pack from GitHub.                     │
+    │ fetch      Fetch a vocal project or pack and register it.                 │
     │ init       Initialise a vocal project.                                    │
-    │ register   Register a vocal project globally.                             │
-    │ release    Create versioned JSON product specifications.                  │
+    │ register   Register a vocal project or pack globally.                     │
+    │ release    Produce a pack with a manifest, v{Y}/, and latest/.           │
     │ web        Launch a web-based checker GUI.                                │
     ╰───────────────────────────────────────────────────────────────────────────╯
 
@@ -77,40 +77,45 @@ repositories hosted outside of GitHub, pass the `--git` flag to use git directly
 
 ### Registering a vocal project
 
-Once fetched, a project can be registered globally so that *vocal* can automatically discover
-and use it when checking files:
+Fetching a project registers it automatically. To register a project (or pack) you already have
+on disk, point `register` at it:
 
-    $ vocal register <project_path> -c <conventions_string>
+    $ vocal register <path>
 
-The conventions string identifies which files the project applies to, e.g. `"MYSTD-[].[]"`.
+`register` auto-detects the kind of resource from its marker file — a `conventions.yaml` at the
+path is a project, a `manifest.json` is a pack — and registers it under the correct key. There is
+no conventions-string flag: a project's identity (its name and version, e.g. `MYSTD-1.0`) comes
+from its `conventions.yaml`. Pass `-f`/`--force` to overwrite an existing registration.
 
 ### Creating a new vocal project
 
-To create a new *vocal* project, simply type `vocal init -d <project_name>`. This will create a
-directory named `project_name` with the following structure:
+To create a new *vocal* project, type `vocal init -n <NAME>`, where `<NAME>` is the standard's
+name (e.g. `MYSTD`). By default the project is scaffolded in the current directory; pass
+`-d <directory>` to scaffold it elsewhere, and `--major` / `--minor` to set the standard's
+version (defaulting to `1` / `0`). This writes a `conventions.yaml` recording the standard's
+identity and module layout, plus an importable Python package named after the standard
+(lower-cased, or overridden with `-p`/`--project-directory`):
 
-    ./models
-    ./models/dimension.py
-    ./models/group.py
-    ./models/dataset.py
-    ./models/__init__.py
-    ./models/variable.py
-    ./attributes
-    ./attributes/variable_attributes.py
-    ./attributes/global_attributes.py
-    ./attributes/group_attributes.py
-    ./attributes/__init__.py
-    ./definitions
-    ./defaults.py
+    ./conventions.yaml
+    ./mystd/__init__.py
+    ./mystd/defaults.py
+    ./mystd/models/__init__.py
+    ./mystd/models/dimension.py
+    ./mystd/models/variable.py
+    ./mystd/models/group.py
+    ./mystd/models/dataset.py
+    ./mystd/attributes/__init__.py
+    ./mystd/attributes/global_attributes.py
+    ./mystd/attributes/group_attributes.py
+    ./mystd/attributes/variable_attributes.py
 
-The models directory contains the pydantic models which define the dataset,
-groups, dimensions and variables. The attributes directory contains the pydantic models
+The `models` directory contains the pydantic models which define the dataset,
+groups, dimensions and variables. The `attributes` directory contains the pydantic models
 for the attributes associated with the dataset (globals), groups and variables.
 
-The definitions directory is the standard location for the working copies of
-definitions of individual data products, though this location can be overridden at runtime.
-
-For more information on building *vocal* projects, see the section on [vocal projects](#vocal-projects-details).
+Product definitions are conventionally kept in a `definitions` directory alongside the project
+(see [Specifying data products](#specifying-data-products)), though this location can be
+overridden at runtime.
 
 ## Specifying data products
 
@@ -120,7 +125,7 @@ An simple example of a product definition may be
 
     meta:
         file_pattern: "example_data.nc"
-        canonical_name: "example_data"
+        short_name: "example_data"
         description: "An example data product"
         references:
             - ["Reference 1", "https://example.com"]
@@ -137,7 +142,7 @@ An simple example of a product definition may be
     variables:
         - meta:
             name: "example_variable"
-            data_type: "<float32>"
+            datatype: "<float32>"
             required: true
         attributes:
             long_name: "Example variable"
@@ -208,7 +213,7 @@ When you check a file, *vocal* routes it to the right pack using two global attr
 
     $ vocal check <file> -p <project_name> -d <definition>
 
-This will check the file against the project and definition specified. If the file is valid, the command will return with exit code 0. If the file is invalid, the command will return with exit code 1. When checking against a product definition, all of the checks will be printed to the console. You can limit the output to warnings and errors only by using the `-w` flag, to errors only by using the `-e` flag, or to no output by using the `-q` flag.
+This will check the file against the project and definition specified. If the file is valid, the command will return with exit code 0. If the file is invalid, the command will return with exit code 1. When checking against a product definition, all of the checks will be printed to the console. You can limit the output to warnings and errors only by using the `-w` flag, to errors only by using the `-e` flag, or to no output by using the `-q` flag. Comments are hidden by default; pass `-c`/`--comments` to show them. Use `--no-color` to disable coloured output.
 
 For example,
 
@@ -233,15 +238,18 @@ Any errors will be printed to the console, indicating where in the file the erro
     Checking example_data.nc against example_project standard... ERROR!
     ✗ root -> groups -> instrument_group_1 -> attributes -> instrument_name: field required
 
-If a registered project is found that matches the file's conventions string, the project and any
-matching product definitions will be used automatically without needing to pass `-p` or `-d`:
+If you omit `-p`, *vocal* resolves the project automatically from the file's `Conventions`
+attribute, matching it against the registered projects. When the file also carries the
+`vocal_definitions_url` (and optionally `vocal_definitions_version`) attributes, the matching
+product definition is resolved from the corresponding registered pack as well, so neither `-p`
+nor `-d` is needed (see [Packs](#packs)):
 
     $ vocal check example_data.nc
 
-    ✔ Found 1 registered project(s) for conventions MYSTD-1.0: example_project
-    ✔ Found matching definition: example_product.json
+    Checking example_data.nc against MYSTD-1 standard... OK!
 
-    Checking example_data.nc against example_project standard... OK!
+If no registered project matches the file's conventions, or the named pack/version is not
+fetched, `check` reports a typed error explaining what to fetch or register.
 
 ## Checking data products via the web interface
 
