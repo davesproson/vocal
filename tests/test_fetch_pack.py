@@ -262,11 +262,13 @@ class TestFetchDispatch:
         with _patch_cache(tmp_path), patch(
             "vocal.application.fetch.materialize_repo", download
         ):
-            fetch(PACK_URL)
+            kind = fetch(PACK_URL)
 
         registry = registers_into["registry"]
         assert registry.find_pack(PACK_URL, 2) is not None
         assert registry.find_pack(PACK_URL, 3) is not None
+        # fetch surfaces the kind it installed, threaded back from the dispatch.
+        assert kind is ResourceKind.PACK
         # Acquisition happened exactly once — no pre-download probe.
         download.assert_called_once()
 
@@ -279,13 +281,16 @@ class TestFetchDispatch:
             "vocal.application.fetch.materialize_repo",
             MagicMock(side_effect=_drop_project),
         ), patch(
-            "vocal.application.fetch._install_project_tree"
+            "vocal.application.fetch._install_project_tree",
+            return_value=ResourceKind.PROJECT,
         ) as project, patch(
             "vocal.application.fetch._install_pack_tree"
         ) as pack:
-            fetch(PACK_URL)
+            kind = fetch(PACK_URL)
         project.assert_called_once()
         pack.assert_not_called()
+        # fetch threads the project kind back from the dispatch branch.
+        assert kind is ResourceKind.PROJECT
 
     def test_neither_raises_not_a_vocal_resource(self, tmp_path: Path) -> None:
         def _drop_junk(url: str, target: str, *, git: bool = False) -> None:

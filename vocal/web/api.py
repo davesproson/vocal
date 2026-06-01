@@ -7,7 +7,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from vocal.utils.registry import Registry
-from vocal.application.fetch import fetch_project
+from vocal.application.fetch import fetch
+from vocal.application.resource import ResourceKind
 from vocal.exceptions import VocalError
 from vocal.web.models import LibraryView, build_library_view
 from vocal.web.utils import check_upload
@@ -24,6 +25,18 @@ app.mount(
 templates = Jinja2Templates(
     directory=os.path.join(os.path.dirname(__file__), "templates")
 )
+
+
+def _form_flag(value: object) -> bool:
+    """Interpret an optional form field as a boolean flag.
+
+    A checkbox/flag is "on" when present with a truthy string ("1", "true",
+    "on", "yes"); absent or any other value is off. Lets the URL-only Add form
+    coexist with a future pack "Update" affordance that posts these fields.
+    """
+    if not isinstance(value, str):
+        return False
+    return value.strip().lower() in {"1", "true", "on", "yes"}
 
 
 @app.exception_handler(VocalError)
@@ -55,35 +68,47 @@ async def about(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request=request, name="about.html")
 
 
-@app.get("/projects/add", response_class=HTMLResponse)
-async def add_project_get(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse(request=request, name="add-project.html")
+@app.get("/add", response_class=HTMLResponse)
+async def add_get(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(request=request, name="add.html")
 
 
-@app.post("/projects/add", response_class=HTMLResponse)
-async def add_project_post(request: Request):
+@app.post("/add", response_class=HTMLResponse)
+async def add_post(request: Request):
+    """Fetch whatever a URL points at — project or pack — and land on its tab.
+
+    The form is URL-only, but the handler accepts optional ``git`` / ``update``
+    / ``force`` flags (defaulting off) so a later pack "Update" affordance can
+    pass them without reshaping the route. ``fetch`` downloads once, classifies
+    the tree, and returns the :class:`ResourceKind` it installed; we redirect to
+    ``/projects`` for a project or ``/packs`` for a pack.
+    """
     form = await request.form()
     url = form.get("url")
+    git = _form_flag(form.get("git"))
+    update = _form_flag(form.get("update"))
+    force = _form_flag(form.get("force"))
 
     if not url or not isinstance(url, str):
         return templates.TemplateResponse(
             request=request,
-            name="add-project.html",
-            context={"error": "Please provide a project URL.", "url": url or ""},
+            name="add.html",
+            context={"error": "Please provide a project or pack URL.", "url": url or ""},
             status_code=status.HTTP_400_BAD_REQUEST,
         )
 
     try:
-        fetch_project(url, git=False)
+        kind = fetch(url, git=git, update=update, force=force)
     except VocalError as e:
         return templates.TemplateResponse(
             request=request,
-            name="add-project.html",
+            name="add.html",
             context={"error": e.message, "hint": e.hint, "url": url},
             status_code=e.status_code,
         )
 
-    return RedirectResponse(url="/", status_code=status.HTTP_302_FOUND)
+    target = "/packs" if kind is ResourceKind.PACK else "/projects"
+    return RedirectResponse(url=target, status_code=status.HTTP_302_FOUND)
 
 
 @app.get("/projects", response_class=HTMLResponse)

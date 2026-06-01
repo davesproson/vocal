@@ -263,7 +263,7 @@ a.a-plain.active { color: var(--text); }
 /* Nested check panel inside definition — tighter */
 .definition-body .check-panel { margin-bottom: 0; }
 
-/* ── Centered page (checker, add-project, no-projects) ────────────── */
+/* ── Centered page (checker, add, no-projects) ────────────── */
 .centered-page {
     position: fixed;
     inset: var(--nav-h) 0 var(--footer-h) 0;

@@ -17,7 +17,8 @@ Mocking conventions
 -------------------
 - ``vocal.web.api.Registry.open`` is replaced with a contextmanager function
   that yields a Registry with controlled contents.
-- ``vocal.web.api.fetch_project`` is replaced with a plain Mock/side_effect.
+- ``vocal.web.api.fetch`` is replaced with a plain Mock/side_effect (its
+  return value is a ``ResourceKind`` that drives the redirect target).
 - ``vocal.web.api.check_upload`` is an ``async def``; ``unittest.mock.patch``
   automatically uses AsyncMock for coroutine targets, so ``return_value`` and
   ``side_effect`` work as expected.
@@ -36,6 +37,7 @@ from fastapi import UploadFile
 from fastapi.testclient import TestClient
 
 from vocal.application.fetch import FetchError
+from vocal.application.resource import ResourceKind
 from vocal.manifest import ManifestProduct, build_manifest
 from vocal.utils.registry import Pack, Project, Registry
 from vocal.web.api import app
@@ -87,47 +89,61 @@ def client() -> TestClient:
 
 
 # ---------------------------------------------------------------------------
-# GET /projects/add
+# GET /add
 # ---------------------------------------------------------------------------
 
 
-class TestAddProjectGet:
+class TestAddGet:
     def test_returns_200(self, client: TestClient) -> None:
-        response = client.get("/projects/add")
+        response = client.get("/add")
         assert response.status_code == 200
 
     def test_returns_html(self, client: TestClient) -> None:
-        response = client.get("/projects/add")
+        response = client.get("/add")
         assert "text/html" in response.headers["content-type"]
 
+    def test_heading_is_kind_neutral(self, client: TestClient) -> None:
+        response = client.get("/add")
+        assert "Add project or pack" in response.text
+
 
 # ---------------------------------------------------------------------------
-# POST /projects/add
+# POST /add — the kind→redirect seam and error re-render
 # ---------------------------------------------------------------------------
 
 
-class TestAddProjectPost:
+class TestAddPost:
     def test_no_url_returns_400(self, client: TestClient) -> None:
-        response = client.post("/projects/add", data={})
+        response = client.post("/add", data={})
         assert response.status_code == 400
 
-    def test_successful_fetch_redirects_to_root(self, client: TestClient) -> None:
-        with patch("vocal.web.api.fetch_project"):
+    def test_project_redirects_to_projects(self, client: TestClient) -> None:
+        with patch("vocal.web.api.fetch", return_value=ResourceKind.PROJECT):
             response = client.post(
-                "/projects/add",
+                "/add",
                 data={"url": "https://example.com/project"},
                 follow_redirects=False,
             )
         assert response.status_code == 302
-        assert response.headers["location"] == "/"
+        assert response.headers["location"] == "/projects"
+
+    def test_pack_redirects_to_packs(self, client: TestClient) -> None:
+        with patch("vocal.web.api.fetch", return_value=ResourceKind.PACK):
+            response = client.post(
+                "/add",
+                data={"url": "https://example.com/pack"},
+                follow_redirects=False,
+            )
+        assert response.status_code == 302
+        assert response.headers["location"] == "/packs"
 
     def test_fetch_failure_rerenders_form_with_error(self, client: TestClient) -> None:
         with patch(
-            "vocal.web.api.fetch_project",
+            "vocal.web.api.fetch",
             side_effect=FetchError("unreachable host", hint="check your network"),
         ):
             response = client.post(
-                "/projects/add",
+                "/add",
                 data={"url": "https://example.com/bad"},
             )
         assert response.status_code == 422
@@ -138,11 +154,9 @@ class TestAddProjectPost:
 
     def test_unknown_failure_renders_error_page(self, client: TestClient) -> None:
         client_no_raise = TestClient(app, raise_server_exceptions=False)
-        with patch(
-            "vocal.web.api.fetch_project", side_effect=RuntimeError("kaboom")
-        ):
+        with patch("vocal.web.api.fetch", side_effect=RuntimeError("kaboom")):
             response = client_no_raise.post(
-                "/projects/add",
+                "/add",
                 data={"url": "https://example.com/bad"},
             )
         assert response.status_code == 500

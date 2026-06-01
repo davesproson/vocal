@@ -87,7 +87,7 @@ def _install_project_tree(
     *,
     update: bool = False,
     force: bool = False,
-) -> None:
+) -> ResourceKind:
     """Install the project tree at ``download`` under ``~/.vocal``, with gating.
 
     A project's identity is only known after the download, so the
@@ -101,6 +101,11 @@ def _install_project_tree(
       :class:`ProjectNotFetched`), then refresh it. A re-fetch whose major has
       changed is a *different* identity, so it is simply "not currently fetched"
       under ``--update`` rather than a special identity-changed error.
+
+    Returns:
+        :attr:`ResourceKind.PROJECT` — the kind the caller dispatched on, so it
+        can be threaded back out of :func:`fetch` to a caller (e.g. the web Add
+        handler) that needs to know what was installed.
     """
     # Identity is only known post-download. ConventionsFile.load raises
     # InvalidConventionsFile when conventions.yaml is missing or malformed;
@@ -122,6 +127,7 @@ def _install_project_tree(
         )
 
     install_project(download, force=update or force)
+    return ResourceKind.PROJECT
 
 
 def _install_pack_tree(
@@ -130,7 +136,7 @@ def _install_pack_tree(
     *,
     update: bool = False,
     force: bool = False,
-) -> None:
+) -> ResourceKind:
     """Install every version in the pack tree at ``download`` under ``~/.vocal``.
 
     A pack repository is a multi-version monorepo: :func:`discover_pack_versions`
@@ -159,6 +165,11 @@ def _install_pack_tree(
     ``(url, version)`` with ``force`` overwrites an existing version and creates
     a new one, and never removes a version, so the additive guarantee holds for
     both ``--update`` and ``--force``.
+
+    Returns:
+        :attr:`ResourceKind.PACK` — the kind the caller dispatched on, so it can
+        be threaded back out of :func:`fetch` to a caller (e.g. the web Add
+        handler) that needs to know what was installed.
 
     Raises:
         FetchError: the pack contains no ``v{Y}/`` release directories.
@@ -194,6 +205,7 @@ def _install_pack_tree(
 
     for _version, version_dir in versions:
         install_pack(version_dir, force=update or force)
+    return ResourceKind.PACK
 
 
 # ---------------------------------------------------------------------------
@@ -206,7 +218,7 @@ def fetch_project(
     git: bool = False,
     update: bool = False,
     force: bool = False,
-) -> None:
+) -> ResourceKind:
     """Download a project and install an owned copy under ``~/.vocal``.
 
     A thin shell over the shared install primitive: the project is downloaded
@@ -220,6 +232,9 @@ def fetch_project(
         git: clone via git rather than downloading the latest release.
         update: require the project to already exist; refresh it in place.
         force: overwrite any existing fetched copy.
+
+    Returns:
+        :attr:`ResourceKind.PROJECT`.
     """
     repo_name = derive_repo_name(url)
     if not repo_name:
@@ -229,7 +244,7 @@ def fetch_project(
     try:
         download = os.path.join(tmp_root, repo_name)
         materialize_repo(url, download, git=git)
-        _install_project_tree(download, url, update=update, force=force)
+        return _install_project_tree(download, url, update=update, force=force)
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)
 
@@ -239,7 +254,7 @@ def fetch_pack(
     git: bool = False,
     update: bool = False,
     force: bool = False,
-) -> None:
+) -> ResourceKind:
     """Download a GitHub-hosted pack and register every version it contains.
 
     A thin shell over the shared install primitive: the pack repository is
@@ -253,6 +268,9 @@ def fetch_pack(
         git: clone via git rather than downloading the latest release.
         update: pick up newly released versions and refresh existing ones.
         force: re-install every version regardless of what is registered.
+
+    Returns:
+        :attr:`ResourceKind.PACK`.
     """
     repo_name = derive_repo_name(url)
     if not repo_name:
@@ -262,7 +280,7 @@ def fetch_pack(
     try:
         download = os.path.join(tmp_root, repo_name)
         materialize_repo(url, download, git=git)
-        _install_pack_tree(download, url, update=update, force=force)
+        return _install_pack_tree(download, url, update=update, force=force)
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)
 
@@ -277,7 +295,7 @@ def fetch(
     git: bool = False,
     update: bool = False,
     force: bool = False,
-) -> None:
+) -> ResourceKind:
     """Fetch a project or pack from ``url``, auto-detecting the kind.
 
     Acquires the repository tree once through :func:`materialize_repo`, then
@@ -285,6 +303,12 @@ def fetch(
     a ``conventions.yaml`` root is a project, a ``latest/manifest.json`` root is
     a pack, and neither raises :class:`NotAVocalResource`. The classification is
     a pure inspection of the tree — no pre-download probe.
+
+    Returns:
+        the :class:`ResourceKind` that was installed, threaded back from the
+        install-dispatch helper. Callers that need to know what a URL pointed at
+        (e.g. the web Add handler, to land the user on the right tab) read it
+        here rather than re-inspecting the tree.
 
     Raises:
         NotAVocalResource: the downloaded tree is neither a project nor a pack.
@@ -302,9 +326,8 @@ def fetch(
 
         kind = classify_resource(download)
         if kind is ResourceKind.PROJECT:
-            _install_project_tree(download, url, update=update, force=force)
-        else:
-            _install_pack_tree(download, url, update=update, force=force)
+            return _install_project_tree(download, url, update=update, force=force)
+        return _install_pack_tree(download, url, update=update, force=force)
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)
 
