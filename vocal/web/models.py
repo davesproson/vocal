@@ -1,6 +1,8 @@
 from pydantic import BaseModel, Field
 
+from vocal.application.install import derive_url_slug
 from vocal.checking import CheckError, CheckComment, CheckWarning
+from vocal.utils.registry import Registry
 
 
 class ResolverError(BaseModel):
@@ -66,3 +68,76 @@ class CheckContext(BaseModel):
     projects: dict[str, CheckProject] = Field(default_factory=dict)
     definitions: dict[str, CheckDefinition] = Field(default_factory=dict)
     error: ResolverError | None = None
+
+
+class PackVersionView(BaseModel):
+    """One registered release of a pack, as shown on the Packs page.
+
+    ``requires_standard`` is the ``{name}-{major}`` of the project standard the
+    version targets; ``requires_min_minor`` is the minimum minor it needs. The
+    three-state requirement status against the registry is added in a later
+    slice — here a version only states what it requires.
+    """
+
+    version: int
+    requires_standard: str
+    requires_min_minor: int
+
+
+class PackView(BaseModel):
+    """All registered releases of one pack URL, newest first.
+
+    ``anchor_id`` is a stable, URL-derived slug used as an ``id`` so the
+    Projects page can deep-link to a pack's card.
+    """
+
+    url: str
+    anchor_id: str
+    versions: list[PackVersionView]
+
+    @property
+    def latest(self) -> PackVersionView:
+        """The highest-version release (``versions`` is sorted descending)."""
+        return self.versions[0]
+
+
+class LibraryView(BaseModel):
+    """The pre-computed view of what has been fetched onto this machine.
+
+    Built by :func:`build_library_view` from a :class:`~vocal.utils.registry.Registry`
+    so templates receive ready-to-render objects rather than the raw,
+    tuple-keyed packs mapping that Jinja cannot cleanly iterate.
+    """
+
+    packs: list[PackView] = Field(default_factory=list)
+
+
+def build_library_view(registry: Registry) -> LibraryView:
+    """Build the :class:`LibraryView` for ``registry``.
+
+    Packs are grouped by URL (URLs sorted ascending for a stable page order),
+    and each group's versions are sorted descending so the latest release leads.
+    """
+    by_url: dict[str, list] = {}
+    for pack in registry.packs.values():
+        by_url.setdefault(pack.url, []).append(pack)
+
+    pack_views: list[PackView] = []
+    for url in sorted(by_url):
+        packs = sorted(by_url[url], key=lambda pack: pack.version, reverse=True)
+        versions = [
+            PackVersionView(
+                version=pack.version,
+                requires_standard=(
+                    f"{pack.manifest.requires_standard.name}"
+                    f"-{pack.manifest.requires_standard.major}"
+                ),
+                requires_min_minor=pack.manifest.requires_standard.min_minor,
+            )
+            for pack in packs
+        ]
+        pack_views.append(
+            PackView(url=url, anchor_id=derive_url_slug(url), versions=versions)
+        )
+
+    return LibraryView(packs=pack_views)

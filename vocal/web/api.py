@@ -9,6 +9,7 @@ from fastapi.templating import Jinja2Templates
 from vocal.utils.registry import Registry
 from vocal.application.fetch import fetch_project
 from vocal.exceptions import VocalError
+from vocal.web.models import LibraryView, build_library_view
 from vocal.web.utils import check_upload
 
 logger = logging.getLogger(__name__)
@@ -92,6 +93,22 @@ async def projects(request: Request) -> HTMLResponse:
 
     return templates.TemplateResponse(
         request=request, name="projects.html", context={"projects": projects}
+    )
+
+
+@app.get("/packs", response_class=HTMLResponse)
+async def packs(request: Request) -> HTMLResponse:
+    try:
+        with Registry.open() as registry:
+            library = build_library_view(registry)
+    except FileNotFoundError:
+        library = LibraryView()
+
+    if not library.packs:
+        return templates.TemplateResponse(request=request, name="no-packs.html")
+
+    return templates.TemplateResponse(
+        request=request, name="packs.html", context={"library": library}
     )
 
 

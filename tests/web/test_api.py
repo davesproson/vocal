@@ -54,6 +54,18 @@ def _open_registry(projects: dict[str, Project]) -> Generator[Registry, None, No
     yield Registry(projects=projects)
 
 
+@contextmanager
+def _open_registry_with_packs(
+    packs: list[Pack],
+) -> Generator[Registry, None, None]:
+    """Yields a Registry pre-populated with *packs* — used as a drop-in
+    replacement for Registry.open() in tests."""
+    registry = Registry()
+    for pack in packs:
+        registry.add_pack(pack)
+    yield registry
+
+
 def _make_project(name: str = "test_project") -> Project:
     return Project(
         name=name,
@@ -156,6 +168,37 @@ class TestProjectsGet:
         ):
             response = client.get("/projects")
         assert "my_project" in response.text
+
+
+# ---------------------------------------------------------------------------
+# GET /packs
+# ---------------------------------------------------------------------------
+
+
+class TestPacksGet:
+    def test_no_packs_returns_200(self, client: TestClient) -> None:
+        with patch(
+            "vocal.web.api.Registry.open", lambda: _open_registry_with_packs([])
+        ):
+            response = client.get("/packs")
+        assert response.status_code == 200
+
+    def test_no_packs_serves_empty_state(self, client: TestClient) -> None:
+        with patch(
+            "vocal.web.api.Registry.open", lambda: _open_registry_with_packs([])
+        ):
+            response = client.get("/packs")
+        assert "No packs registered" in response.text
+
+    def test_registered_pack_url_in_response(self, client: TestClient) -> None:
+        pack = _pack(url="https://host/widgets", version=2)
+        with patch(
+            "vocal.web.api.Registry.open",
+            lambda: _open_registry_with_packs([pack]),
+        ):
+            response = client.get("/packs")
+        assert response.status_code == 200
+        assert "https://host/widgets" in response.text
 
 
 # ---------------------------------------------------------------------------

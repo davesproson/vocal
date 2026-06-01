@@ -1,0 +1,34 @@
+{% extends "vocal.html" %}
+
+{% block content %}
+<div class="container">
+    <div class="page-header">
+        <h1>Packs</h1>
+        <a class="btn btn-primary" href="/projects/add">Add</a>
+    </div>
+
+    {% for pack in library.packs %}
+    <div class="card" id="{{ pack.anchor_id }}">
+        <h2>{{ pack.url }}</h2>
+        <div class="card-meta">
+            <span>
+                <span class="label">Latest version</span>
+                <span class="code">v{{ pack.latest.version }}</span>
+            </span>
+        </div>
+        {% for version in pack.versions %}
+        <div class="card-meta">
+            <span>
+                <span class="label">Version</span>
+                <span class="code">v{{ version.version }}</span>
+            </span>
+            <span>
+                <span class="label">Requires</span>
+                <span class="code">{{ version.requires_standard }}.{{ version.requires_min_minor }}+</span>
+            </span>
+        </div>
+        {% endfor %}
+    </div>
+    {% endfor %}
+</div>
+{% endblock %}
