@@ -18,6 +18,7 @@ re-exported here for callers that catch them by name.
 import os
 import shutil
 import tempfile
+import warnings
 from dataclasses import dataclass
 from typing import Optional
 
@@ -122,15 +123,25 @@ def fetch_for_file(
     """Fetch the resources a netCDF file declares about itself.
 
     Reads the file's vocal-managed global attributes and fetches the project it
-    references (``vocal_project_url``). ``vocal_project_url`` is the
+    references (``vocal_project_url``) and, if declared, the product-definition
+    pack it references (``vocal_definitions_url``). ``vocal_project_url`` is the
     prerequisite: with no project URL there is nothing to bootstrap, so this
-    raises :class:`MissingProjectURL`. The project URL is fetched via the
-    project fetch primitive directly — no auto-detection — so a wrong-kind URL
-    surfaces as a clear failure from the underlying install.
+    raises :class:`MissingProjectURL`. Each URL is fetched via its own fetch
+    primitive directly — no auto-detection — so a wrong-kind URL surfaces as a
+    clear failure from the underlying install.
 
-    Pack handling is not yet wired here: a declared pack (or a genuinely
-    pack-less file) is recorded as a ``none-declared`` outcome. The project is
-    fetched first so the common project-only case is handled before the pack.
+    The project is fetched first, then the pack: the common project-only case is
+    handled before the pack, and the pack's compatibility check is meaningful
+    only once the project is present. A failure on either fetch propagates
+    (fail-fast); anything already installed remains, so a re-run resumes from
+    where it stopped rather than starting over.
+
+    Pack handling: if ``vocal_definitions_url`` is present, the pack is fetched
+    and recorded as ``fetched``. If absent, the pack outcome is
+    ``none-declared`` ("no pack to fetch"). If a ``vocal_definitions_version`` is
+    present but its URL is absent — a likely authoring mistake — the project is
+    still fetched, the pack is ``none-declared``, and a warning about the
+    orphaned version is emitted.
 
     Args:
         filename: path to the netCDF file to read.
@@ -144,7 +155,7 @@ def fetch_for_file(
     Raises:
         UnreadableNetCDF: ``filename`` is not a readable netCDF file.
         MissingProjectURL: the file declares no ``vocal_project_url``.
-        FetchError and subclasses: from the underlying project fetch.
+        FetchError and subclasses: from the underlying project or pack fetch.
     """
     try:
         attrs = read_file_conventions(filename)
@@ -163,12 +174,26 @@ def fetch_for_file(
 
     outcomes: list[FetchOutcome] = []
 
+    # Project first, fail-fast: if this raises, nothing further is attempted and
+    # nothing already installed is rolled back.
     fetch_project(attrs.project_url, git=git, update=update, force=force)
     outcomes.append(FetchOutcome("project", attrs.project_url, "fetched"))
 
-    # Pack fetching is a later slice; for now a declared pack — or a genuinely
-    # pack-less file — is the same "no pack to fetch" outcome.
-    outcomes.append(FetchOutcome("pack", None, "none-declared"))
+    if attrs.definitions_url:
+        # Honour the attribute name as the declared kind: the pack URL is
+        # fetched via the pack primitive directly. A wrong-kind URL surfaces as
+        # a clear failure from the underlying install, which propagates here.
+        fetch_pack(attrs.definitions_url, git=git, update=update, force=force)
+        outcomes.append(FetchOutcome("pack", attrs.definitions_url, "fetched"))
+    else:
+        if attrs.definitions_version is not None:
+            warnings.warn(
+                f"File '{filename}' carries vocal_definitions_version="
+                f"{attrs.definitions_version} but no vocal_definitions_url; "
+                "the version is orphaned and no pack can be fetched.",
+                stacklevel=2,
+            )
+        outcomes.append(FetchOutcome("pack", None, "none-declared"))
 
     return outcomes
 

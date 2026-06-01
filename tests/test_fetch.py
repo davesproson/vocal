@@ -42,6 +42,7 @@ from vocal.application.fetch import (
     convert_github_repo_to_api_url,
     derive_repo_name,
     fetch_for_file,
+    fetch_pack,
     fetch_project,
     fetch_with_git,
     get_latest_release,
@@ -524,7 +525,7 @@ class TestFetchRegisterConvergence:
 
 
 # ---------------------------------------------------------------------------
-# fetch_for_file — file-driven fetch (project-only spine)
+# fetch_for_file — file-driven fetch (project + pack)
 # ---------------------------------------------------------------------------
 
 
@@ -598,6 +599,94 @@ class TestFetchForFile:
         fp.assert_called_once_with(
             "https://host/std.git", git=True, update=True, force=True
         )
+
+    def test_definitions_url_present_fetches_pack(self, tmp_path: Path) -> None:
+        nc = _write_nc(
+            tmp_path / "f.nc",
+            project_url="https://host/std.git",
+            definitions_url="https://host/pack.git",
+        )
+        with patch("vocal.application.fetch.fetch_project"):
+            with patch("vocal.application.fetch.fetch_pack") as fpk:
+                outcomes = fetch_for_file(nc)
+
+        fpk.assert_called_once_with(
+            "https://host/pack.git", git=False, update=False, force=False
+        )
+        pack = next(o for o in outcomes if o.role == "pack")
+        assert pack == FetchOutcome("pack", "https://host/pack.git", "fetched")
+
+    def test_project_fetched_before_pack_when_both_declared(
+        self, tmp_path: Path
+    ) -> None:
+        nc = _write_nc(
+            tmp_path / "f.nc",
+            project_url="https://host/std.git",
+            definitions_url="https://host/pack.git",
+        )
+        calls: list[str] = []
+        with patch(
+            "vocal.application.fetch.fetch_project",
+            side_effect=lambda *a, **k: calls.append("project"),
+        ):
+            with patch(
+                "vocal.application.fetch.fetch_pack",
+                side_effect=lambda *a, **k: calls.append("pack"),
+            ):
+                outcomes = fetch_for_file(nc)
+
+        assert calls == ["project", "pack"]
+        assert [o.role for o in outcomes] == ["project", "pack"]
+
+    def test_pack_fetch_failure_leaves_project_fetched(self, tmp_path: Path) -> None:
+        nc = _write_nc(
+            tmp_path / "f.nc",
+            project_url="https://host/std.git",
+            definitions_url="https://host/pack.git",
+        )
+        with patch("vocal.application.fetch.fetch_project") as fp:
+            with patch(
+                "vocal.application.fetch.fetch_pack",
+                side_effect=FetchError("pack boom"),
+            ):
+                with pytest.raises(FetchError):
+                    fetch_for_file(nc)
+
+        # Project-first, fail-fast, no rollback: the project fetch ran (and on a
+        # re-run the idempotent project install would resume from there).
+        fp.assert_called_once()
+
+    def test_flags_forwarded_to_pack_fetch(self, tmp_path: Path) -> None:
+        nc = _write_nc(
+            tmp_path / "f.nc",
+            project_url="https://host/std.git",
+            definitions_url="https://host/pack.git",
+        )
+        with patch("vocal.application.fetch.fetch_project"):
+            with patch("vocal.application.fetch.fetch_pack") as fpk:
+                fetch_for_file(nc, git=True, update=True, force=True)
+
+        fpk.assert_called_once_with(
+            "https://host/pack.git", git=True, update=True, force=True
+        )
+
+    def test_orphan_definitions_version_warns_and_fetches_project_only(
+        self, tmp_path: Path
+    ) -> None:
+        nc = _write_nc(
+            tmp_path / "f.nc",
+            project_url="https://host/std.git",
+            definitions_version=3,  # no definitions_url
+        )
+        with patch("vocal.application.fetch.fetch_project") as fp:
+            with patch("vocal.application.fetch.fetch_pack") as fpk:
+                with pytest.warns(UserWarning, match="orphaned"):
+                    outcomes = fetch_for_file(nc)
+
+        fp.assert_called_once()
+        fpk.assert_not_called()
+        pack = next(o for o in outcomes if o.role == "pack")
+        assert pack.outcome == "none-declared"
 
 
 # ---------------------------------------------------------------------------
