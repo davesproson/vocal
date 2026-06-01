@@ -349,3 +349,98 @@ class TestManualMode:
             result = runner.invoke(_app(), [nc, "-p", "/some/project"])
 
         assert result.exit_code == 1
+
+
+class TestFetchFlag:
+    """``vocal check <file> --fetch`` runs the fetch pre-step, then checks."""
+
+    def test_fetch_plus_p_errors(self, tmp_path: Path) -> None:
+        """--fetch and -p are opposed modes and cannot be combined."""
+        nc = _make_nc(tmp_path, conventions="MYSTD-2.3")
+        with (
+            patch("vocal.application.check.fetch_for_file") as fetch_mock,
+            patch("vocal.application.check.resolve") as resolve_mock,
+        ):
+            result = runner.invoke(_app(), [nc, "--fetch", "-p", "/some/project"])
+
+        assert result.exit_code == 1
+        assert "--fetch cannot be combined with -p" in result.output
+        fetch_mock.assert_not_called()
+        resolve_mock.assert_not_called()
+
+    def test_fetch_runs_prestep_then_checks(self, tmp_path: Path) -> None:
+        """The fetch pre-step runs, then the normal resolved check proceeds."""
+        nc = _make_nc(
+            tmp_path,
+            name="foo_20260522.nc",
+            conventions="MYSTD-2.3",
+            project_url="https://host/mystd.git",
+            definitions_url="https://host/packs",
+            definitions_version=3,
+        )
+        spec_check = Mock(return_value=True)
+        with (
+            patch("vocal.application.check.fetch_for_file") as fetch_mock,
+            patch(
+                "vocal.application.check.Registry.load",
+                return_value=_registry(project=_project(), pack=_pack()),
+            ),
+            patch(
+                "vocal.application.check.import_project_package",
+                return_value=_fake_project_module(),
+            ),
+            patch("vocal.application.check.check_against_standard", return_value=True),
+            patch("vocal.application.check.check_against_specification", spec_check),
+        ):
+            result = runner.invoke(_app(), [nc, "--fetch"])
+
+        assert result.exit_code == 0
+        fetch_mock.assert_called_once_with(nc)
+        # The resolver still routed the file to the pack's product schema.
+        spec_check.assert_called_once_with(
+            nc, "/cache/packs/host-packs/v3/product_foo.json"
+        )
+
+    def test_fetch_plus_d_allowed_and_overrides_product(self, tmp_path: Path) -> None:
+        """--fetch + -d: the pre-step still runs and -d overrides the product."""
+        nc = _make_nc(
+            tmp_path,
+            conventions="MYSTD-2.3",
+            project_url="https://host/mystd.git",
+            definitions_url="https://host/packs",
+            definitions_version=3,
+        )
+        spec_check = Mock(return_value=True)
+        # No pack registered: with -d the resolver must not raise PackMissing.
+        with (
+            patch("vocal.application.check.fetch_for_file") as fetch_mock,
+            patch(
+                "vocal.application.check.Registry.load",
+                return_value=_registry(project=_project()),
+            ),
+            patch(
+                "vocal.application.check.import_project_package",
+                return_value=_fake_project_module(),
+            ),
+            patch("vocal.application.check.check_against_standard", return_value=True),
+            patch("vocal.application.check.check_against_specification", spec_check),
+        ):
+            result = runner.invoke(_app(), [nc, "--fetch", "-d", "/my/override.json"])
+
+        assert result.exit_code == 0
+        # The pre-step fetches everything the file declares, independent of -d.
+        fetch_mock.assert_called_once_with(nc)
+        spec_check.assert_called_once_with(nc, "/my/override.json")
+
+    def test_fetch_missing_project_url_errors_before_check(
+        self, tmp_path: Path
+    ) -> None:
+        """A file with no vocal_project_url surfaces the typed error pre-check."""
+        nc = _make_nc(tmp_path)  # no vocal_project_url
+        with patch("vocal.application.check.resolve") as resolve_mock:
+            result = runner.invoke(_app(), [nc, "--fetch"])
+
+        assert result.exit_code == 1
+        assert "nothing to fetch" in result.output
+        # The error is raised before the check flow is reached.
+        resolve_mock.assert_not_called()

@@ -19,6 +19,13 @@ substitute for missing file attributes:
   ``vocal_definitions_url`` / ``_version`` are present) the pack. An explicit
   ``-d`` overrides the file's declared pack. When the file declares no pack and
   no ``-d`` is given, the run is incomplete and ``-d`` is required.
+
+``--fetch`` bootstraps the file's declared sources before checking: it runs
+:func:`vocal.application.fetch.fetch_for_file` (idempotently) as a pre-step and
+then falls through into the resolve-and-check flow unchanged. It is opposed to
+``-p`` (derive-from-file vs supply-paths) and so cannot be combined with it; it
+*is* compatible with ``-d``, which still only overrides the product at check
+time.
 """
 
 import os
@@ -28,6 +35,7 @@ import typer
 from pydantic import BaseModel
 from pydantic import ValidationError
 
+from vocal.application.fetch import fetch_for_file
 from vocal.conventions_file import import_project_package
 from vocal.exceptions import VocalError
 from vocal.resolution import ResolutionError, resolve
@@ -302,6 +310,17 @@ def command(
         "--warnings",
         help="Only print warnings and errors.",
     ),
+    fetch: bool = typer.Option(
+        False,
+        "--fetch",
+        help=(
+            "Before checking, ensure the resources the file declares about "
+            "itself (its vocal_project_url and any vocal_definitions_url) are "
+            "fetched, then check in one step. Idempotent — resources already "
+            "present are skipped. Cannot be combined with -p (opposed modes: "
+            "derive-from-file vs supply-paths)."
+        ),
+    ),
     quiet: bool = typer.Option(False, "-q", "--quiet", help="Do not print any output."),
     comments: bool = typer.Option(False, "-c", "--comments", help="Print comments."),
     no_color: bool = typer.Option(
@@ -321,6 +340,30 @@ def command(
 
     if no_color:
         TS.enabled = False
+
+    if fetch and project:
+        # Opposed modes: --fetch derives the sources from the file, while -p
+        # supplies them by hand. They cannot be combined.
+        p.print_err(
+            f"\n{TS.BOLD}{TS.FAIL}✗{TS.ENDC} --fetch cannot be combined with -p."
+        )
+        p.print_err(
+            "  --fetch derives the project (and pack) from the file; -p supplies "
+            "a project path manually. Use one or the other.\n"
+        )
+        raise typer.Exit(code=1)
+
+    if fetch:
+        # Ensure the file's declared resources are present, then fall through
+        # into the normal resolve-and-check flow below. The fetch is idempotent
+        # (already-present resources are skipped). -d is unaffected here: the
+        # file's declared pack is still fetched, and -d only overrides the
+        # product at check time.
+        try:
+            fetch_for_file(filename)
+        except VocalError as e:
+            _print_error(e)
+            raise typer.Exit(code=1)
 
     if project:
         ok = _run_manual_checks(filename, project, definition)
