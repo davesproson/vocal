@@ -34,6 +34,7 @@ from vocal.application.fetch import (
     MissingProjectURL,
     NoReleasesFound,
     NotAGitHubRepo,
+    PackAlreadyFetched,
     ProjectAlreadyFetched,
     ProjectNotFetched,
     RateLimited,
@@ -687,6 +688,64 @@ class TestFetchForFile:
         fpk.assert_not_called()
         pack = next(o for o in outcomes if o.role == "pack")
         assert pack.outcome == "none-declared"
+
+    def test_already_fetched_project_records_already_present(
+        self, tmp_path: Path
+    ) -> None:
+        nc = _write_nc(tmp_path / "f.nc", project_url="https://host/std.git")
+        with patch(
+            "vocal.application.fetch.fetch_project",
+            side_effect=ProjectAlreadyFetched("already there"),
+        ):
+            outcomes = fetch_for_file(nc)
+
+        project = next(o for o in outcomes if o.role == "project")
+        assert project == FetchOutcome(
+            "project", "https://host/std.git", "already-present"
+        )
+
+    def test_already_fetched_pack_records_already_present(
+        self, tmp_path: Path
+    ) -> None:
+        nc = _write_nc(
+            tmp_path / "f.nc",
+            project_url="https://host/std.git",
+            definitions_url="https://host/pack.git",
+        )
+        with patch("vocal.application.fetch.fetch_project"):
+            with patch(
+                "vocal.application.fetch.fetch_pack",
+                side_effect=PackAlreadyFetched("already there"),
+            ):
+                outcomes = fetch_for_file(nc)
+
+        pack = next(o for o in outcomes if o.role == "pack")
+        assert pack == FetchOutcome(
+            "pack", "https://host/pack.git", "already-present"
+        )
+
+    def test_already_present_project_still_fetches_missing_pack(
+        self, tmp_path: Path
+    ) -> None:
+        # Re-run safety: an already-present project does not stop the still-missing
+        # pack from being fetched.
+        nc = _write_nc(
+            tmp_path / "f.nc",
+            project_url="https://host/std.git",
+            definitions_url="https://host/pack.git",
+        )
+        with patch(
+            "vocal.application.fetch.fetch_project",
+            side_effect=ProjectAlreadyFetched("already there"),
+        ):
+            with patch("vocal.application.fetch.fetch_pack") as fpk:
+                outcomes = fetch_for_file(nc)
+
+        fpk.assert_called_once()
+        project = next(o for o in outcomes if o.role == "project")
+        pack = next(o for o in outcomes if o.role == "pack")
+        assert project.outcome == "already-present"
+        assert pack.outcome == "fetched"
 
 
 # ---------------------------------------------------------------------------

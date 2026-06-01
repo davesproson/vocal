@@ -143,6 +143,13 @@ def fetch_for_file(
     still fetched, the pack is ``none-declared``, and a warning about the
     orphaned version is emitted.
 
+    Idempotent skip: a resource already present is reported as
+    ``already-present`` rather than erroring. The underlying
+    :class:`ProjectAlreadyFetched` / :class:`PackAlreadyFetched` errors are
+    caught and converted to that outcome, so both interfaces are safe to re-run
+    — only the missing pieces are fetched. The ``fetch_project`` / ``fetch_pack``
+    primitives keep their strict already-fetched gating unchanged.
+
     Args:
         filename: path to the netCDF file to read.
         git: clone the referenced repos rather than downloading releases.
@@ -175,16 +182,28 @@ def fetch_for_file(
     outcomes: list[FetchOutcome] = []
 
     # Project first, fail-fast: if this raises, nothing further is attempted and
-    # nothing already installed is rolled back.
-    fetch_project(attrs.project_url, git=git, update=update, force=force)
-    outcomes.append(FetchOutcome("project", attrs.project_url, "fetched"))
+    # nothing already installed is rolled back. An already-present project is an
+    # idempotent skip, not an error.
+    try:
+        fetch_project(attrs.project_url, git=git, update=update, force=force)
+        outcomes.append(FetchOutcome("project", attrs.project_url, "fetched"))
+    except ProjectAlreadyFetched:
+        outcomes.append(
+            FetchOutcome("project", attrs.project_url, "already-present")
+        )
 
     if attrs.definitions_url:
         # Honour the attribute name as the declared kind: the pack URL is
         # fetched via the pack primitive directly. A wrong-kind URL surfaces as
         # a clear failure from the underlying install, which propagates here.
-        fetch_pack(attrs.definitions_url, git=git, update=update, force=force)
-        outcomes.append(FetchOutcome("pack", attrs.definitions_url, "fetched"))
+        # An already-present pack is an idempotent skip, not an error.
+        try:
+            fetch_pack(attrs.definitions_url, git=git, update=update, force=force)
+            outcomes.append(FetchOutcome("pack", attrs.definitions_url, "fetched"))
+        except PackAlreadyFetched:
+            outcomes.append(
+                FetchOutcome("pack", attrs.definitions_url, "already-present")
+            )
     else:
         if attrs.definitions_version is not None:
             warnings.warn(

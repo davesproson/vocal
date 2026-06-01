@@ -80,6 +80,21 @@ class TestFetchForFile:
         assert "fetched" in result.output
         assert "no pack to fetch" in result.output
 
+    def test_already_present_rendered_distinctly_from_fetched(
+        self, tmp_path: Path
+    ) -> None:
+        nc = _make_nc(tmp_path, project_url="https://host/std.git")
+        outcomes = [
+            FetchOutcome("project", "https://host/std.git", "already-present"),
+            FetchOutcome("pack", "https://host/pack.git", "fetched"),
+        ]
+        with patch("vocal.application.fetch.fetch_for_file", return_value=outcomes):
+            result = runner.invoke(_app(), ["--for", nc])
+
+        assert result.exit_code == 0
+        assert "already present" in result.output
+        assert "fetched" in result.output
+
     def test_flags_forwarded_to_fetch_for_file(self, tmp_path: Path) -> None:
         nc = _make_nc(tmp_path, project_url="https://host/std.git")
         with patch(
