@@ -38,7 +38,12 @@ from pydantic import ValidationError
 from vocal.application.fetch import fetch_for_file
 from vocal.conventions_file import import_project_package
 from vocal.exceptions import VocalError
-from vocal.resolution import ResolutionError, resolve
+from vocal.resolution import (
+    PackMissing,
+    ProjectMissing,
+    ResolutionError,
+    resolve,
+)
 from vocal.utils.registry import Project, Registry
 from ..checking import ProductChecker
 from ..netcdf import NetCDFReader
@@ -228,14 +233,45 @@ def _run_manual_checks(
     return ok
 
 
+def _print_fetch_nudge() -> None:
+    """Layer a "re-run with --fetch" suggestion onto a missing-resource error.
+
+    Additive to the resolver's own ``vocal fetch <url>`` hint: when the file
+    carries the URL needed to fetch the missing project/pack, the one-step
+    ``--fetch`` path is available, so point the user at it.
+    """
+    p.print_err(
+        "  Or re-run with --fetch to fetch the resources the file declares and "
+        "check in one step.\n"
+    )
+
+
+def _carries_missing_url(error: ResolutionError, attrs) -> bool:
+    """Whether the file carries the URL needed to fetch the missing resource.
+
+    The ``--fetch`` nudge only helps when the failure is a missing project or
+    pack *and* the file actually declares the URL ``fetch_for_file`` would use
+    to fetch it.
+    """
+    if isinstance(error, ProjectMissing):
+        return attrs.project_url is not None
+    if isinstance(error, PackMissing):
+        return attrs.definitions_url is not None
+    return False
+
+
 def _run_resolved_checks(
-    filename: str, attrs, definitions: Optional[list[str]]
+    filename: str, attrs, definitions: Optional[list[str]], *, fetched: bool = False
 ) -> bool:
     """Resolver mode: drive :func:`vocal.resolution.resolve` and render results.
 
     ``-d`` (the first definition, if any) becomes the resolver's
     ``definition_override``, short-circuiting pack resolution. Typed resolver
     errors are rendered with their locked message and hint.
+
+    ``fetched`` records whether the ``--fetch`` pre-step already ran: when it
+    did, re-suggesting ``--fetch`` on a missing-resource failure would be
+    unhelpful, so the nudge is suppressed.
     """
     override = definitions[0] if definitions else None
 
@@ -257,6 +293,10 @@ def _run_resolved_checks(
         )
     except ResolutionError as e:
         _print_error(e)
+        # On a missing project/pack the file itself can fetch, point the user at
+        # the one-step --fetch path — unless --fetch already ran.
+        if not fetched and _carries_missing_url(e, attrs):
+            _print_fetch_nudge()
         return False
 
     try:
@@ -369,7 +409,7 @@ def command(
         ok = _run_manual_checks(filename, project, definition)
     else:
         attrs = read_file_conventions(filename)
-        ok = _run_resolved_checks(filename, attrs, definition)
+        ok = _run_resolved_checks(filename, attrs, definition, fetched=fetch)
 
     if not ok:
         raise typer.Exit(code=1)

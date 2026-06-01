@@ -444,3 +444,89 @@ class TestFetchFlag:
         assert "nothing to fetch" in result.output
         # The error is raised before the check flow is reached.
         resolve_mock.assert_not_called()
+
+
+class TestFetchNudge:
+    """A plain ``vocal check`` nudges toward ``--fetch`` on a missing-resource
+    failure when the file carries the URL needed to fetch it."""
+
+    def test_nudge_on_project_missing_with_url(self, tmp_path: Path) -> None:
+        nc = _make_nc(
+            tmp_path,
+            conventions="MYSTD-2.3",
+            project_url="https://host/mystd.git",
+        )
+        result = _invoke([nc], _registry())
+
+        assert result.exit_code == 1
+        # The resolver's own hint is intact (additive nudge).
+        assert "vocal fetch https://host/mystd.git" in result.output
+        assert "re-run with --fetch" in result.output
+
+    def test_nudge_on_pack_missing_with_url(self, tmp_path: Path) -> None:
+        nc = _make_nc(
+            tmp_path,
+            conventions="MYSTD-2.3",
+            definitions_url="https://host/packs",
+            definitions_version=3,
+        )
+        result = _invoke([nc], _registry(project=_project()))
+
+        assert result.exit_code == 1
+        assert "vocal fetch https://host/packs" in result.output
+        assert "re-run with --fetch" in result.output
+
+    def test_no_nudge_on_project_missing_without_url(self, tmp_path: Path) -> None:
+        """No vocal_project_url on the file: nothing for --fetch to fetch."""
+        nc = _make_nc(tmp_path, conventions="MYSTD-2.3")
+        result = _invoke([nc], _registry())
+
+        assert result.exit_code == 1
+        assert "No project registered for MYSTD-2" in result.output
+        assert "re-run with --fetch" not in result.output
+
+    def test_no_nudge_on_success(self, tmp_path: Path) -> None:
+        nc = _make_nc(
+            tmp_path,
+            name="foo_20260522.nc",
+            conventions="MYSTD-2.3",
+            definitions_url="https://host/packs",
+            definitions_version=3,
+        )
+        with (
+            patch(
+                "vocal.application.check.Registry.load",
+                return_value=_registry(project=_project(), pack=_pack()),
+            ),
+            patch(
+                "vocal.application.check.import_project_package",
+                return_value=_fake_project_module(),
+            ),
+            patch("vocal.application.check.check_against_standard", return_value=True),
+            patch("vocal.application.check.check_against_specification", Mock(return_value=True)),
+        ):
+            result = runner.invoke(_app(), [nc])
+
+        assert result.exit_code == 0
+        assert "re-run with --fetch" not in result.output
+
+    def test_no_nudge_when_fetch_already_ran(self, tmp_path: Path) -> None:
+        """If --fetch ran and the resource is still missing, don't re-suggest it."""
+        nc = _make_nc(
+            tmp_path,
+            conventions="MYSTD-2.3",
+            project_url="https://host/mystd.git",
+        )
+        with (
+            patch("vocal.application.check.fetch_for_file"),
+            patch("vocal.application.check.Registry.load", return_value=_registry()),
+            patch(
+                "vocal.application.check.import_project_package",
+                return_value=_fake_project_module(),
+            ),
+        ):
+            result = runner.invoke(_app(), [nc, "--fetch"])
+
+        assert result.exit_code == 1
+        assert "No project registered for MYSTD-2" in result.output
+        assert "re-run with --fetch" not in result.output
