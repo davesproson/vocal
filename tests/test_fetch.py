@@ -27,17 +27,21 @@ import yaml
 
 from vocal.application.fetch import (
     FetchError,
+    FetchOutcome,
     GitCloneFailed,
     GitHubAPIError,
     GitNotInstalled,
+    MissingProjectURL,
     NoReleasesFound,
     NotAGitHubRepo,
     ProjectAlreadyFetched,
     ProjectNotFetched,
     RateLimited,
     RepoNotFound,
+    UnreadableNetCDF,
     convert_github_repo_to_api_url,
     derive_repo_name,
+    fetch_for_file,
     fetch_project,
     fetch_with_git,
     get_latest_release,
@@ -517,6 +521,83 @@ class TestFetchRegisterConvergence:
         )
         assert reg_rec.local_path == str(reg_owned)
         assert fet_rec.local_path == str(fet_owned)
+
+
+# ---------------------------------------------------------------------------
+# fetch_for_file — file-driven fetch (project-only spine)
+# ---------------------------------------------------------------------------
+
+
+def _write_nc(
+    path: Path,
+    *,
+    project_url: str | None = None,
+    definitions_url: str | None = None,
+    definitions_version: int | None = None,
+) -> str:
+    """Write a minimal netCDF file carrying the given vocal-managed attributes."""
+    import netCDF4
+
+    with netCDF4.Dataset(str(path), "w") as nc:
+        if project_url is not None:
+            nc.vocal_project_url = project_url
+        if definitions_url is not None:
+            nc.vocal_definitions_url = definitions_url
+        if definitions_version is not None:
+            nc.vocal_definitions_version = definitions_version
+    return str(path)
+
+
+class TestFetchForFile:
+    def test_missing_project_url_raises(self, tmp_path: Path) -> None:
+        nc = _write_nc(tmp_path / "f.nc")  # no vocal_project_url
+        with patch("vocal.application.fetch.fetch_project") as fp:
+            with pytest.raises(MissingProjectURL) as exc_info:
+                fetch_for_file(nc)
+        assert exc_info.value.hint is not None
+        fp.assert_not_called()
+
+    def test_unreadable_path_raises_typed_error(self, tmp_path: Path) -> None:
+        bogus = str(tmp_path / "not-a-netcdf.nc")
+        (tmp_path / "not-a-netcdf.nc").write_text("definitely not netCDF")
+        with pytest.raises(UnreadableNetCDF) as exc_info:
+            fetch_for_file(bogus)
+        assert exc_info.value.hint is not None
+
+    def test_project_url_present_fetches_project(self, tmp_path: Path) -> None:
+        nc = _write_nc(tmp_path / "f.nc", project_url="https://host/std.git")
+        with patch("vocal.application.fetch.fetch_project") as fp:
+            outcomes = fetch_for_file(nc)
+
+        fp.assert_called_once_with(
+            "https://host/std.git", git=False, update=False, force=False
+        )
+        project = next(o for o in outcomes if o.role == "project")
+        assert project == FetchOutcome("project", "https://host/std.git", "fetched")
+
+    def test_no_definitions_url_records_none_declared_pack(self, tmp_path: Path) -> None:
+        nc = _write_nc(tmp_path / "f.nc", project_url="https://host/std.git")
+        with patch("vocal.application.fetch.fetch_project"):
+            outcomes = fetch_for_file(nc)
+
+        pack = next(o for o in outcomes if o.role == "pack")
+        assert pack.outcome == "none-declared"
+
+    def test_project_fetched_before_pack(self, tmp_path: Path) -> None:
+        nc = _write_nc(tmp_path / "f.nc", project_url="https://host/std.git")
+        with patch("vocal.application.fetch.fetch_project"):
+            outcomes = fetch_for_file(nc)
+
+        assert [o.role for o in outcomes] == ["project", "pack"]
+
+    def test_flags_forwarded_to_project_fetch(self, tmp_path: Path) -> None:
+        nc = _write_nc(tmp_path / "f.nc", project_url="https://host/std.git")
+        with patch("vocal.application.fetch.fetch_project") as fp:
+            fetch_for_file(nc, git=True, update=True, force=True)
+
+        fp.assert_called_once_with(
+            "https://host/std.git", git=True, update=True, force=True
+        )
 
 
 # ---------------------------------------------------------------------------

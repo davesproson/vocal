@@ -18,6 +18,8 @@ re-exported here for callers that catch them by name.
 import os
 import shutil
 import tempfile
+from dataclasses import dataclass
+from typing import Optional
 
 import typer
 
@@ -53,6 +55,7 @@ from vocal.conventions_file import ConventionsFile
 from vocal.exceptions import VocalError
 from vocal.manifest import normalize_pack_url
 from vocal.utils import Printer, TextStyles
+from vocal.utils.conventions import read_file_conventions
 from vocal.utils.registry import project_key
 
 
@@ -74,6 +77,100 @@ class PackAlreadyFetched(FetchError):
 
 class PackNotFetched(FetchError):
     pass
+
+
+class MissingProjectURL(FetchError):
+    """The file declares no ``vocal_project_url`` — nothing to bootstrap."""
+
+    pass
+
+
+class UnreadableNetCDF(FetchError):
+    """The path is not a readable netCDF file (open failed before any fetch)."""
+
+    pass
+
+
+# ---------------------------------------------------------------------------
+# File-driven fetch
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class FetchOutcome:
+    """One resource's outcome from a file-driven fetch.
+
+    ``role`` is the part the resource plays for the file (``"project"`` or
+    ``"pack"``); ``url`` is the declared URL (``None`` when nothing was
+    declared); ``outcome`` is one of ``"fetched"`` (newly installed),
+    ``"already-present"`` (idempotent skip), or ``"none-declared"`` (the file
+    declared no such resource).
+    """
+
+    role: str
+    url: Optional[str]
+    outcome: str
+
+
+def fetch_for_file(
+    filename: str,
+    *,
+    git: bool = False,
+    update: bool = False,
+    force: bool = False,
+) -> list[FetchOutcome]:
+    """Fetch the resources a netCDF file declares about itself.
+
+    Reads the file's vocal-managed global attributes and fetches the project it
+    references (``vocal_project_url``). ``vocal_project_url`` is the
+    prerequisite: with no project URL there is nothing to bootstrap, so this
+    raises :class:`MissingProjectURL`. The project URL is fetched via the
+    project fetch primitive directly — no auto-detection — so a wrong-kind URL
+    surfaces as a clear failure from the underlying install.
+
+    Pack handling is not yet wired here: a declared pack (or a genuinely
+    pack-less file) is recorded as a ``none-declared`` outcome. The project is
+    fetched first so the common project-only case is handled before the pack.
+
+    Args:
+        filename: path to the netCDF file to read.
+        git: clone the referenced repos rather than downloading releases.
+        update: refresh a previously-fetched resource.
+        force: overwrite any existing fetched copy.
+
+    Returns:
+        a per-resource list of :class:`FetchOutcome`, project first.
+
+    Raises:
+        UnreadableNetCDF: ``filename`` is not a readable netCDF file.
+        MissingProjectURL: the file declares no ``vocal_project_url``.
+        FetchError and subclasses: from the underlying project fetch.
+    """
+    try:
+        attrs = read_file_conventions(filename)
+    except (OSError, FileNotFoundError) as e:
+        raise UnreadableNetCDF(
+            f"Could not read '{filename}' as a netCDF file.",
+            hint="Pass the path to a readable vocal-managed netCDF file.",
+        ) from e
+
+    if not attrs.project_url:
+        raise MissingProjectURL(
+            f"File '{filename}' declares no vocal_project_url; nothing to fetch.",
+            hint="The file is not self-describing — supply sources manually with "
+            "'vocal fetch <url>'.",
+        )
+
+    outcomes: list[FetchOutcome] = []
+
+    fetch_project(attrs.project_url, git=git, update=update, force=force)
+    outcomes.append(FetchOutcome("project", attrs.project_url, "fetched"))
+
+    # Pack fetching is a later slice; for now a declared pack — or a genuinely
+    # pack-less file — is the same "no pack to fetch" outcome.
+    outcomes.append(FetchOutcome("pack", None, "none-declared"))
+
+    return outcomes
 
 
 # ---------------------------------------------------------------------------
@@ -332,12 +429,36 @@ def fetch(
         shutil.rmtree(tmp_root, ignore_errors=True)
 
 
+def _summarise_outcomes(outcomes: list[FetchOutcome]) -> None:
+    """Print a per-resource summary of a file-driven fetch to stdout."""
+    labels = {
+        "fetched": f"{TS.OKGREEN}fetched{TS.ENDC}",
+        "already-present": f"{TS.OKBLUE}already present{TS.ENDC}",
+        "none-declared": "no pack to fetch",
+    }
+    for outcome in outcomes:
+        label = labels.get(outcome.outcome, outcome.outcome)
+        target = f" {outcome.url}" if outcome.url else ""
+        p.print(f"  {outcome.role}:{target} — {label}")
+
+
 def command(
-    url: str = typer.Argument(
+    url: Optional[str] = typer.Argument(
+        None,
         help=(
             "The GitHub repository to fetch: a project repo or a pack repo. "
-            "The kind is auto-detected by inspecting the downloaded tree."
-        )
+            "The kind is auto-detected by inspecting the downloaded tree. "
+            "Mutually exclusive with --for."
+        ),
+    ),
+    for_file: Optional[str] = typer.Option(
+        None,
+        "--for",
+        metavar="FILE",
+        help=(
+            "Fetch the resources a netCDF file declares about itself "
+            "(its vocal_project_url). Mutually exclusive with the URL argument."
+        ),
     ),
     git: bool = typer.Option(
         False,
@@ -364,8 +485,23 @@ def command(
     ),
 ) -> None:
     """Fetch a vocal project or pack and register it."""
+    if (url is None) == (for_file is None):
+        p.print_err(
+            f"{TS.BOLD}{TS.FAIL}✗{TS.ENDC} Provide exactly one of a repository "
+            f"URL or --for <file>."
+        )
+        p.print_err(
+            "  Pass a URL to fetch a single resource, or --for <file> to fetch "
+            "what a file declares."
+        )
+        raise typer.Exit(code=1)
+
     try:
-        fetch(url, git=git, update=update, force=force)
+        if for_file is not None:
+            outcomes = fetch_for_file(for_file, git=git, update=update, force=force)
+            _summarise_outcomes(outcomes)
+        else:
+            fetch(url, git=git, update=update, force=force)
     except VocalError as e:
         p.print_err(f"{TS.BOLD}{TS.FAIL}✗{TS.ENDC} {e.message}")
         if e.hint:
