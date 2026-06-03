@@ -25,10 +25,10 @@ import pytest
 from vocal.application.fetch import (
     PackAlreadyFetched,
     PackNotFetched,
-    derive_url_slug,
     fetch,
     fetch_pack,
 )
+from vocal.application.install import derive_url_slug
 from vocal.application.register import register_pack
 from vocal.application.resource import (
     NotAVocalResource,

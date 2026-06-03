@@ -253,6 +253,7 @@ class TestProjectErrors:
             )
 
         assert exc.value.message == "No project registered for MYSTD-2"
+        assert exc.value.hint is not None
         assert "https://github.com/org/mystd" in exc.value.hint
 
     def test_project_too_old_when_registered_minor_below_claim(self) -> None:
@@ -453,6 +454,7 @@ class TestProductNotFound:
         assert exc.value.message == (
             "File 'baz_20260522.nc' did not match any product pattern in pack"
         )
+        assert exc.value.hint is not None
         assert "foo_{date}" in exc.value.hint
         assert "bar_{date}" in exc.value.hint
         assert exc.value.code == "product_not_found"

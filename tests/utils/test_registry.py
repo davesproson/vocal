@@ -227,15 +227,20 @@ class TestFindLatestPack:
         reg.add_pack(_pack(url="https://host/packs", version=3))
         reg.add_pack(_pack(url="https://host/other", version=9))
 
-        assert reg.find_latest_pack("https://host/packs").version == 3
-        assert reg.find_latest_pack("https://host/other").version == 9
+        packs = reg.find_latest_pack("https://host/packs")
+        other = reg.find_latest_pack("https://host/other")
+        assert packs is not None and other is not None
+        assert packs.version == 3
+        assert other.version == 9
 
     def test_url_normalised(self) -> None:
         reg = Registry()
         reg.add_pack(_pack(url="https://host/packs", version=3))
         reg.add_pack(_pack(url="https://host/packs", version=4))
 
-        assert reg.find_latest_pack("https://HOST/packs/").version == 4
+        latest = reg.find_latest_pack("https://HOST/packs/")
+        assert latest is not None
+        assert latest.version == 4
 
     def test_none_when_url_absent(self) -> None:
         reg = Registry()

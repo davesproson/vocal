@@ -35,7 +35,7 @@ def _write(root: Path, body) -> None:
         yaml.dump(body, f)
 
 
-VALID = {
+VALID: dict[str, dict[str, object]] = {
     "conventions": {"name": "MYSTD", "major": 1, "minor": 2},
     "layout": {"project_directory": "mystd"},
 }
@@ -182,7 +182,7 @@ class TestValidateProjectContract:
             models=SimpleNamespace(Dataset=object()),
             filecodec={},
         )
-        validate_project_contract(module)  # does not raise
+        validate_project_contract(module)  # type: ignore[arg-type]  # does not raise
 
     @pytest.mark.parametrize("missing", ["defaults", "models", "filecodec"])
     def test_missing_top_level_export_named(self, missing: str) -> None:
@@ -194,7 +194,7 @@ class TestValidateProjectContract:
         del attrs[missing]
         module = SimpleNamespace(**attrs)
         with pytest.raises(MissingProjectExport) as exc:
-            validate_project_contract(module)
+            validate_project_contract(module)  # type: ignore[arg-type]
         assert missing in exc.value.message
 
     def test_missing_dataset_named(self) -> None:
@@ -204,5 +204,5 @@ class TestValidateProjectContract:
             filecodec={},
         )
         with pytest.raises(MissingProjectExport) as exc:
-            validate_project_contract(module)
+            validate_project_contract(module)  # type: ignore[arg-type]
         assert "models.Dataset" in exc.value.message

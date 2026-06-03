@@ -192,13 +192,13 @@ class TestPathHelpers:
     def test_project_install_dir(self) -> None:
         from vocal.utils import cache_dir
 
-        result = project_install_dir(_Conventions("MYSTD", 2))
+        result = project_install_dir(_Conventions("MYSTD", 2))  # type: ignore[arg-type]
         assert result == os.path.join(cache_dir(), "projects", "MYSTD-2")
 
     def test_pack_install_dir(self) -> None:
         from vocal.utils import cache_dir
 
-        result = pack_install_dir(_Manifest("https://host/packs", 3))
+        result = pack_install_dir(_Manifest("https://host/packs", 3))  # type: ignore[arg-type]
         assert result == os.path.join(
             cache_dir(), "packs", "host-packs", "v3"
         )

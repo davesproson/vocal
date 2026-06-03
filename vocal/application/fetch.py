@@ -26,28 +26,15 @@ import typer
 
 from vocal.application.github_source import (
     FetchError,
-    GitCloneFailed,
-    GitHubAPIError,
-    GitNotInstalled,
-    NoReleasesFound,
-    NotAGitHubRepo,
-    RateLimited,
-    RepoNotFound,
-    convert_github_repo_to_api_url,
     derive_repo_name,
-    fetch_http,
-    fetch_with_git,
-    get_latest_release,
     materialize_repo,
 )
-from vocal.application.install import derive_url_slug
 from vocal.application.register import (
     install_pack,
     install_project,
     load_registry,
 )
 from vocal.application.resource import (
-    NotAVocalResource,
     ResourceKind,
     classify_resource,
     discover_pack_versions,
@@ -188,9 +175,7 @@ def fetch_for_file(
         fetch_project(attrs.project_url, git=git, update=update, force=force)
         outcomes.append(FetchOutcome("project", attrs.project_url, "fetched"))
     except ProjectAlreadyFetched:
-        outcomes.append(
-            FetchOutcome("project", attrs.project_url, "already-present")
-        )
+        outcomes.append(FetchOutcome("project", attrs.project_url, "already-present"))
 
     if attrs.definitions_url:
         # Honour the attribute name as the declared kind: the pack URL is
@@ -545,6 +530,7 @@ def command(
             outcomes = fetch_for_file(for_file, git=git, update=update, force=force)
             _summarise_outcomes(outcomes)
         else:
+            assert url is not None  # guaranteed by the guard above
             fetch(url, git=git, update=update, force=force)
     except VocalError as e:
         p.print_err(f"{TS.BOLD}{TS.FAIL}✗{TS.ENDC} {e.message}")

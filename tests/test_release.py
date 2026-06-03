@@ -11,6 +11,7 @@ import filecmp
 import json
 import os
 from pathlib import Path
+from typing import Any
 
 import pytest
 from typer.testing import CliRunner
@@ -175,7 +176,7 @@ class TestLayout:
         self, project: str, definitions: str, tmp_path: Path
     ) -> None:
         output = tmp_path / "out"
-        common = dict(
+        common: dict[str, Any] = dict(
             project_path=project, definitions=definitions, output_dir=str(output)
         )
         release(version=1, url="https://host/packs", **common)
@@ -257,7 +258,7 @@ class TestURLResolution:
         self, project: str, definitions: str, tmp_path: Path
     ) -> None:
         output = tmp_path / "out"
-        common = dict(
+        common: dict[str, Any] = dict(
             project_path=project, definitions=definitions, output_dir=str(output)
         )
         release(version=1, url="https://host/packs", **common)
@@ -281,7 +282,7 @@ class TestURLResolution:
         self, project: str, definitions: str, tmp_path: Path
     ) -> None:
         output = tmp_path / "out"
-        common = dict(
+        common: dict[str, Any] = dict(
             project_path=project, definitions=definitions, output_dir=str(output)
         )
         release(version=1, url="https://host/packs", **common)
@@ -292,7 +293,7 @@ class TestURLResolution:
         self, project: str, definitions: str, tmp_path: Path
     ) -> None:
         output = tmp_path / "out"
-        common = dict(
+        common: dict[str, Any] = dict(
             project_path=project, definitions=definitions, output_dir=str(output)
         )
         release(version=1, url="https://host/packs", **common)
@@ -311,7 +312,7 @@ class TestReleaseExists:
         self, project: str, definitions: str, tmp_path: Path
     ) -> None:
         output = tmp_path / "out"
-        common = dict(
+        common: dict[str, Any] = dict(
             project_path=project,
             definitions=definitions,
             output_dir=str(output),
@@ -325,7 +326,7 @@ class TestReleaseExists:
         self, project: str, definitions: str, tmp_path: Path
     ) -> None:
         output = tmp_path / "out"
-        common = dict(
+        common: dict[str, Any] = dict(
             project_path=project,
             definitions=definitions,
             output_dir=str(output),
