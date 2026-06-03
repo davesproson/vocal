@@ -271,3 +271,49 @@ The host and port can be configured with the `--host` and `--port` options.
     $ vocal build -p <project_name> -d <definition> -o <output_file>
 
 This will create a netCDF file with sinusoidal data for each variable in the data product definition.
+
+## Using vocal from Python
+
+As well as the `vocal` command, the `vocal.utils` module exposes a small
+programmatic API for loading a project and pulling a product definition out of a
+fetched pack from your own code. This is useful when you want to work with a
+product definition as a [pydantic](https://docs.pydantic.dev/) model rather than
+checking a file from the command line.
+
+```python
+from vocal.utils import import_project, get_product
+
+# Import a fetched project package by the path to its importable module
+# (the project_directory inside the repo root, e.g. ~/.vocal/projects/FAAM-0/faam).
+project = import_project("/home/dave/.vocal/projects/FAAM-0/faam")
+
+# A fetched pack's product_root is the directory holding its v{Y}/ release
+# directories (e.g. ~/.vocal/packs/<slug>).
+pack_dir = "/home/dave/.vocal/packs/github-com-davesproson-faam-data-products-0"
+
+# Resolve a product by its meta.short_name. The version may be a specific
+# integer (e.g. 1) or "latest", which selects the highest-numbered v{Y}/.
+product = get_product("core_1hz", project, "latest", pack_dir)
+```
+
+The functions are:
+
+- **`import_project(path)`** — import a project package from the path to its
+  importable module (the `project_directory` inside the repo root) and return
+  the imported module. The module exposes the project contract: `models.Dataset`,
+  `filecodec`, and `defaults`.
+- **`get_spec(short_name, project, version="latest", product_root=None)`** —
+  return the raw product definition (as a `dict`) whose `meta.short_name`
+  matches `short_name`, or `None` if no product matches. `version` is a pack
+  release number or `"latest"`; `product_root` is the pack directory holding the
+  `v{Y}/` release directories. When `product_root` is omitted it defaults to the
+  project's repo root (useful only when the definitions are colocated with the
+  project).
+- **`get_product(short_name, project, version="latest", product_root=None)`** —
+  as `get_spec`, but returns the definition validated against the project's
+  `models.Dataset` pydantic model rather than a raw `dict`.
+
+> **Note.** Resolving `"latest"` selects the highest-numbered `v{Y}/` directory
+> present under `product_root`, which is the locally newest fetched release. As
+> with the `Conventions`/`vocal_definitions_*` resolution used by `vocal check`,
+> pass an explicit `version` for reproducible results (see [Packs](#packs)).

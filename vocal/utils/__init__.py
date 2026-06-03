@@ -27,7 +27,7 @@ def cache_dir() -> str:
     return os.path.join(os.path.expanduser("~"), ".vocal")
 
 
-def _resolve_version(version: str, product_root: str) -> str:
+def _resolve_version(version: str | int, product_root: str) -> str:
     """
     Resolve the version of a dataset.
 
@@ -39,7 +39,18 @@ def _resolve_version(version: str, product_root: str) -> str:
         the resolved version
     """
     if version == "latest":
-        return os.path.join(product_root, "products", "latest")
+        version_dirs = glob.glob(os.path.join(product_root, "v*/"))
+        version_dirs = [d for d in version_dirs if os.path.isdir(d)]
+        if not version_dirs:
+            raise ValueError("No version directories found in product root")
+
+        def sort_key(x: str) -> int:
+            match = re.search(r"v(\d+)", x)
+            if not match:
+                raise ValueError(f"Invalid version directory: {x}")
+            return int(match.group(1))
+
+        return sorted(version_dirs, key=sort_key)[-1]
     else:
         return os.path.join(product_root, f"v{version}")
 
@@ -78,7 +89,7 @@ def regexify_file_pattern(file_pattern: str, filecodec: dict) -> str:
 def get_product(
     short_name: str,
     project: ModuleType | None = None,
-    version: str = "latest",
+    version: str | int = "latest",
     product_root=None,
 ) -> dict | None:
 
@@ -97,7 +108,7 @@ def get_product(
 def get_spec(
     short_name: str,
     project: ModuleType | None = None,
-    version: str = "latest",
+    version: str | int = "latest",
     product_root: str | None = None,
 ) -> dict | None:
 

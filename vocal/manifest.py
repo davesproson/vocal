@@ -125,7 +125,9 @@ class ManifestProduct:
     file_pattern: str
     schema: str
 
-    def matches(self, filename: str, filecodec: Mapping[str, Mapping[str, Any]]) -> bool:
+    def matches(
+        self, filename: str, filecodec: Mapping[str, Mapping[str, Any]]
+    ) -> bool:
         """Return whether ``filename`` matches this product's ``file_pattern``.
 
         The ``file_pattern`` is a template; the project's ``filecodec`` supplies
@@ -308,8 +310,7 @@ def _require(data: Mapping[str, Any], key: str, type_: type) -> Any:
     # bool is a subclass of int; reject it where an int is expected.
     if type_ is int and isinstance(value, bool):
         raise InvalidManifest(
-            f"Manifest field '{key}' must be of type {type_.__name__}, "
-            f"got bool."
+            f"Manifest field '{key}' must be of type {type_.__name__}, got bool."
         )
     if not isinstance(value, type_):
         raise InvalidManifest(
