@@ -1,6 +1,5 @@
 import enum
 import json
-import re
 import numpy as np
 
 from dataclasses import dataclass, field
@@ -8,14 +7,9 @@ from typing import Any, Iterable, Optional, Union
 
 from vocal.netcdf import NetCDFReader
 from vocal.types import UnknownDataType, type_from_spec
-
-
-PLACEHOLDER_RE = (
-    r"<(?P<container>Array)?"
-    r"\[?(?P<dtype>[a-z0-9]+)\]?"
-    r": derived_from_file"
-    r"\s?"
-    r"(?P<additional>.*)>"
+from vocal.utils.placeholder import (
+    get_type_from_placeholder,
+    get_attribute_props_from_placeholder,
 )
 
 
@@ -23,12 +17,6 @@ class ElementStatus(enum.Enum):
     EXISTS = enum.auto()
     DOES_NOT_EXIST_AND_REQUIRED = enum.auto()
     DOES_NOT_EXIST_AND_NOT_REQUIRED = enum.auto()
-
-
-@dataclass
-class AttributeProperties:
-    optional: bool = False
-    regex: Optional[str] = None
 
 
 class CheckException(Exception):
@@ -47,12 +35,6 @@ class NotCheckedError(Exception):
 class ElementDoesNotExist(Exception):
     """
     Raised when an non existant variable is requested by name
-    """
-
-
-class InvalidPlaceholder(Exception):
-    """
-    Raised when an invalid placeholder is used in a check
     """
 
 
@@ -198,56 +180,6 @@ class ProductChecker:
         self.checks.append(check)
         return check
 
-    def get_type_from_placeholder(self, placeholder: str) -> tuple[np.dtype[Any], str]:
-        """
-        Returns the type from a placeholder string.
-
-        Args:
-            placeholder: the placeholder string
-
-        Returns:
-            An info type, for example <str>, <float32>
-        """
-
-        rex = re.compile(PLACEHOLDER_RE)
-        matches = rex.search(placeholder)
-        if not matches:
-            raise ValueError("Unable to get type from placeholder")
-
-        dtype = f"{matches['dtype']}"
-        container = matches["container"]
-
-        return np.dtype(dtype), container
-
-    def get_attribute_props_from_placeholder(
-        self, placeholder: str
-    ) -> AttributeProperties:
-        """
-        Returns additional attributes from a placeholder string.
-
-        Args:
-            placeholder: the placeholder string
-
-        Returns:
-            Additional placeholder info, in the form of an AttributeProperties object.
-        """
-
-        rex = re.compile(PLACEHOLDER_RE)
-        matches = rex.search(placeholder)
-        if matches is None:
-            raise InvalidPlaceholder(f"Invalid placeholder: {placeholder}")
-
-        additional = matches["additional"]
-        additional_rex = re.compile("(?P<optional>optional)?,?((regex=)(?P<regex>.+))?")
-        matches = additional_rex.search(additional)
-        if matches is None:
-            raise InvalidPlaceholder(f"Invalid placeholder: {placeholder}")
-
-        optional = matches["optional"] == "optional"
-        regex = matches["regex"]
-
-        return AttributeProperties(optional=optional, regex=regex)
-
     def check_attribute_type(self, d: Any, f: Any, path: str = "") -> None:
         """
         Checks the type of an attribute is correct, given a placeholder string
@@ -266,7 +198,7 @@ class ProductChecker:
 
         check = self._check(description=f"Checking attribute {path} type is correct")
 
-        expected_type, container = self.get_type_from_placeholder(d)
+        expected_type, container = get_type_from_placeholder(d)
         actual_type = type(f)
 
         if expected_type == actual_type:
@@ -354,7 +286,7 @@ class ProductChecker:
 
             if def_key not in f:
                 if isinstance(def_value, str) and def_value.startswith("<"):
-                    attr_props = self.get_attribute_props_from_placeholder(def_value)
+                    attr_props = get_attribute_props_from_placeholder(def_value)
                     if attr_props.optional:
                         continue
 
