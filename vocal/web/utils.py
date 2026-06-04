@@ -113,11 +113,11 @@ def _check_against_definition(
     context.definitions[def_name] = result
 
     pc = ProductChecker(schema_path)
-    pc.check(file_path)
+    report = pc.check(file_path)
 
-    result.passed = all(check.passed for check in pc.checks)
+    result.passed = all(check.passed for check in report.checks)
 
-    for check in pc.checks:
+    for check in report.checks:
         _check = Check(description=check.description)
 
         if check.passed:

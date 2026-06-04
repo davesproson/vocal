@@ -6,13 +6,45 @@ import numpy as np
 import pytest
 
 from vocal.checking import (
+    Check,
     CheckError,
     CheckWarning,
     DimensionCollector,
     ElementDoesNotExist,
     NotCheckedError,
     ProductChecker,
+    CheckReport,
 )
+from vocal.checking.core import (
+    check_attribute_value,
+    check_variable_dtype,
+    compare_attributes,
+    compare_container,
+)
+from vocal.checking.utils import get_element
+
+
+# ---------------------------------------------------------------------------
+# Helpers: the comparison functions now return a list[Check]; these mirror the
+# ProductChecker property accessors so individual rules can be asserted on
+# directly, without constructing a checker.
+# ---------------------------------------------------------------------------
+
+
+def _passing(checks: list[Check]) -> bool:
+    return all(c.passed for c in checks)
+
+
+def _errors(checks: list[Check]) -> list[CheckError]:
+    return [c.error for c in checks if not c.passed and c.error]
+
+
+def _warnings(checks: list[Check]) -> list[CheckWarning]:
+    return [c.warning for c in checks if c.warning]
+
+
+def _comments(checks: list[Check]) -> list[Any]:
+    return [c.comment for c in checks if c.comment]
 
 
 # ---------------------------------------------------------------------------
@@ -20,50 +52,61 @@ from vocal.checking import (
 # ---------------------------------------------------------------------------
 
 
-class TestProductCheckerProperties:
-    def setup_method(self) -> None:
-        self.checker = ProductChecker(definition="")
-
+class TestCheckReportProperties:
     def test_passing_raises_before_checks(self) -> None:
         with pytest.raises(NotCheckedError):
-            _ = self.checker.passing
+            _ = CheckReport(checks=[]).passing
 
     def test_errors_raises_before_checks(self) -> None:
         with pytest.raises(NotCheckedError):
-            _ = self.checker.errors
+            _ = CheckReport(checks=[]).errors
 
     def test_warnings_raises_before_checks(self) -> None:
         with pytest.raises(NotCheckedError):
-            _ = self.checker.warnings
+            _ = CheckReport(checks=[]).warnings
 
     def test_comments_raises_before_checks(self) -> None:
         with pytest.raises(NotCheckedError):
-            _ = self.checker.comments
+            _ = CheckReport(checks=[]).comments
 
     def test_passing_true_when_all_pass(self) -> None:
-        self.checker._check("a check", passed=True)
-        assert self.checker.passing is True
+        report = CheckReport(checks=[Check("a check")])
+        assert report.passing is True
 
     def test_passing_false_when_any_fail(self) -> None:
-        self.checker._check("passes", passed=True)
-        self.checker._check("fails", passed=False, error=CheckError("oops", "/"))
-        assert self.checker.passing is False
+        report = CheckReport(
+            checks=[
+                Check("passes"),
+                Check("fails", error=CheckError("oops", "/")),
+            ]
+        )
+        assert report.passing is False
 
     def test_errors_only_includes_failed_checks(self) -> None:
-        self.checker._check("passes", passed=True)
         err = CheckError("bad value", "/title")
-        self.checker._check("fails", passed=False, error=err)
-        errors = self.checker.errors
+        report = CheckReport(
+            checks=[
+                Check("passes"),
+                Check("fails", error=err),
+            ]
+        )
+        errors = report.errors
         assert len(errors) == 1
         assert errors[0].message == "bad value"
 
     def test_warnings_only_includes_warned_checks(self) -> None:
-        self.checker._check("clean", passed=True)
-        warned = self.checker._check("warned", passed=True)
-        warned.has_warning = True
-        warned.warning = CheckWarning("heads up", "/extra")
-        assert len(self.checker.warnings) == 1
-        assert self.checker.warnings[0].path == "/extra"
+        report = CheckReport(
+            checks=[
+                Check("clean"),
+                Check(
+                    "warned",
+                    warning=CheckWarning("heads up", "/extra"),
+                ),
+            ]
+        )
+        warnings = report.warnings
+        assert len(warnings) == 1
+        assert warnings[0].path == "/extra" and warnings[0].message == "heads up"
 
 
 # ---------------------------------------------------------------------------
@@ -72,33 +115,28 @@ class TestProductCheckerProperties:
 
 
 class TestCheckAttributeValue:
-    def setup_method(self) -> None:
-        self.checker = ProductChecker(definition="")
-
     def test_matching_string_values_pass(self) -> None:
-        self.checker.check_attribute_value("CF-1.8", "CF-1.8", path="/Conventions")
-        assert self.checker.passing
+        checks = check_attribute_value("CF-1.8", "CF-1.8", path="/Conventions")
+        assert _passing(checks)
 
     def test_mismatched_string_values_fail(self) -> None:
-        self.checker.check_attribute_value("CF-1.8", "CF-1.6", path="/Conventions")
-        assert not self.checker.passing
+        checks = check_attribute_value("CF-1.8", "CF-1.6", path="/Conventions")
+        assert not _passing(checks)
 
     def test_matching_list_values_pass(self) -> None:
-        self.checker.check_attribute_value([1.0, 2.0], [1.0, 2.0], path="/coords")
-        assert self.checker.passing
+        checks = check_attribute_value([1.0, 2.0], [1.0, 2.0], path="/coords")
+        assert _passing(checks)
 
     def test_list_length_mismatch_fails(self) -> None:
-        self.checker.check_attribute_value([1.0, 2.0], [1.0], path="/coords")
-        assert not self.checker.passing
+        checks = check_attribute_value([1.0, 2.0], [1.0], path="/coords")
+        assert not _passing(checks)
 
     def test_placeholder_does_not_raise_value_mismatch(self) -> None:
         # A placeholder defers to type checking; the "value check" check itself passes.
-        self.checker.check_attribute_value(
+        checks = check_attribute_value(
             "<float32: derived_from_file>", np.float32(1.0), path="/fill"
         )
-        value_errors = [
-            e for e in self.checker.errors if "Unexpected value" in e.message
-        ]
+        value_errors = [e for e in _errors(checks) if "Unexpected value" in e.message]
         assert not value_errors
 
 
@@ -108,42 +146,40 @@ class TestCheckAttributeValue:
 
 
 class TestCompareAttributes:
-    def setup_method(self) -> None:
-        self.checker = ProductChecker(definition="")
-
     def test_matching_attributes_pass(self) -> None:
         d = {"title": "My Product", "version": "1.0"}
         f = {"title": "My Product", "version": "1.0"}
-        self.checker.compare_attributes(d, f)
-        assert self.checker.passing
-        assert not self.checker.warnings
+        checks = compare_attributes(d, f)
+        assert _passing(checks)
+        assert not _warnings(checks)
 
     def test_missing_required_attribute_fails(self) -> None:
         d = {"title": "My Product"}
         f: dict[str, Any] = {}
-        self.checker.compare_attributes(d, f)
-        assert not self.checker.passing
+        checks = compare_attributes(d, f)
+        assert not _passing(checks)
 
     def test_missing_optional_attribute_passes(self) -> None:
         d = {"comment": "<str: derived_from_file optional>"}
         f: dict[str, Any] = {}
-        self.checker.compare_attributes(d, f)
-        assert self.checker.passing
-        assert not self.checker.errors
+        checks = compare_attributes(d, f)
+        assert _passing(checks)
+        assert not _errors(checks)
 
     def test_extra_attribute_in_file_generates_warning(self) -> None:
         d = {"title": "My Product"}
         f = {"title": "My Product", "extra_attr": "unexpected"}
-        self.checker.compare_attributes(d, f)
-        assert self.checker.passing
-        assert len(self.checker.warnings) == 1
-        assert "extra_attr" in self.checker.warnings[0].message
+        checks = compare_attributes(d, f)
+        assert _passing(checks)
+        warnings = _warnings(checks)
+        assert len(warnings) == 1
+        assert "extra_attr" in warnings[0].message
 
     def test_wrong_attribute_value_fails(self) -> None:
         d = {"title": "Expected Title"}
         f = {"title": "Wrong Title"}
-        self.checker.compare_attributes(d, f)
-        assert not self.checker.passing
+        checks = compare_attributes(d, f)
+        assert not _passing(checks)
 
 
 # ---------------------------------------------------------------------------
@@ -152,30 +188,23 @@ class TestCompareAttributes:
 
 
 class TestCheckVariableDtype:
-    def setup_method(self) -> None:
-        self.checker = ProductChecker(definition="")
-
     def _var(self, datatype: str) -> dict[str, Any]:
         return {"meta": {"name": "v", "datatype": datatype}, "attributes": {}}
 
     def test_correct_dtype_passes(self) -> None:
-        self.checker.check_variable_dtype(
-            self._var("<float32>"), self._var("<float32>")
-        )
-        assert self.checker.passing
+        checks = check_variable_dtype(self._var("<float32>"), self._var("<float32>"))
+        assert _passing(checks)
 
     def test_wrong_dtype_fails(self) -> None:
-        self.checker.check_variable_dtype(
+        checks = check_variable_dtype(
             self._var("<float32>"), self._var("<float64>"), path="/temperature"
         )
-        assert not self.checker.passing
-        assert len(self.checker.errors) == 1
+        assert not _passing(checks)
+        assert len(_errors(checks)) == 1
 
     def test_identical_dtype_strings_add_no_comment(self) -> None:
-        self.checker.check_variable_dtype(
-            self._var("<float64>"), self._var("<float64>")
-        )
-        assert not self.checker.comments
+        checks = check_variable_dtype(self._var("<float64>"), self._var("<float64>"))
+        assert not _comments(checks)
 
 
 # ---------------------------------------------------------------------------
@@ -231,21 +260,18 @@ class TestDimensionCollector:
 
 
 class TestGetElement:
-    def setup_method(self) -> None:
-        self.checker = ProductChecker(definition="")
-
     def test_finds_existing_element(self) -> None:
         container = [
             {"meta": {"name": "time"}, "attributes": {}},
             {"meta": {"name": "lat"}, "attributes": {}},
         ]
-        elem = self.checker.get_element("time", container)
+        elem = get_element("time", container)
         assert elem["meta"]["name"] == "time"
 
     def test_raises_for_missing_element(self) -> None:
         container = [{"meta": {"name": "time"}, "attributes": {}}]
         with pytest.raises(ElementDoesNotExist):
-            self.checker.get_element("missing", container)
+            get_element("missing", container)
 
 
 # ---------------------------------------------------------------------------
@@ -254,9 +280,6 @@ class TestGetElement:
 
 
 class TestCompareContainerIntegration:
-    def setup_method(self) -> None:
-        self.checker = ProductChecker(definition="")
-
     def test_fully_matching_container_passes(
         self, simple_definition_dict: dict[str, Any]
     ) -> None:
@@ -272,8 +295,8 @@ class TestCompareContainerIntegration:
                 }
             ],
         }
-        self.checker.compare_container(simple_definition_dict, file_dict)
-        assert self.checker.passing
+        checks = compare_container(simple_definition_dict, file_dict)
+        assert _passing(checks)
 
     def test_missing_required_variable_fails(self) -> None:
         definition: dict[str, Any] = {
@@ -291,8 +314,8 @@ class TestCompareContainerIntegration:
             ],
         }
         file_dict: dict[str, Any] = {"attributes": {}, "variables": []}
-        self.checker.compare_container(definition, file_dict)
-        assert not self.checker.passing
+        checks = compare_container(definition, file_dict)
+        assert not _passing(checks)
 
     def test_missing_optional_variable_passes(self) -> None:
         definition: dict[str, Any] = {
@@ -310,8 +333,8 @@ class TestCompareContainerIntegration:
             ],
         }
         file_dict: dict[str, Any] = {"attributes": {}, "variables": []}
-        self.checker.compare_container(definition, file_dict)
-        assert self.checker.passing
+        checks = compare_container(definition, file_dict)
+        assert _passing(checks)
 
     def test_extra_variable_in_file_fails(self) -> None:
         # Unlike extra attributes (which only warn), extra variables not in the
@@ -327,8 +350,8 @@ class TestCompareContainerIntegration:
                 }
             ],
         }
-        self.checker.compare_container(definition, file_dict)
-        assert not self.checker.passing
+        checks = compare_container(definition, file_dict)
+        assert not _passing(checks)
 
     def test_fixed_size_dimension_mismatch_fails(self) -> None:
         definition: dict[str, Any] = {
@@ -341,8 +364,8 @@ class TestCompareContainerIntegration:
             "dimensions": [{"name": "sps32", "size": 16}],  # wrong size
             "variables": [],
         }
-        self.checker.compare_container(definition, file_dict)
-        assert not self.checker.passing
+        checks = compare_container(definition, file_dict)
+        assert not _passing(checks)
 
     def test_missing_required_group_fails(self) -> None:
         definition: dict[str, Any] = {
@@ -357,8 +380,8 @@ class TestCompareContainerIntegration:
             ],
         }
         file_dict: dict[str, Any] = {"attributes": {}, "variables": [], "groups": []}
-        self.checker.compare_container(definition, file_dict)
-        assert not self.checker.passing
+        checks = compare_container(definition, file_dict)
+        assert not _passing(checks)
 
     def test_missing_optional_group_passes(self) -> None:
         definition: dict[str, Any] = {
@@ -373,8 +396,8 @@ class TestCompareContainerIntegration:
             ],
         }
         file_dict: dict[str, Any] = {"attributes": {}, "variables": [], "groups": []}
-        self.checker.compare_container(definition, file_dict)
-        assert self.checker.passing
+        checks = compare_container(definition, file_dict)
+        assert _passing(checks)
 
 
 # ---------------------------------------------------------------------------
@@ -387,8 +410,8 @@ class TestProductCheckerCheckFile:
         self, simple_nc_file: str, simple_definition_file: str
     ) -> None:
         checker = ProductChecker(definition=simple_definition_file)
-        checker.check(simple_nc_file)
-        assert checker.passing
+        result = checker.check(simple_nc_file)
+        assert result.passing
 
     def test_wrong_attribute_value_fails(
         self, tmp_path: Path, simple_definition_file: str
@@ -401,8 +424,8 @@ class TestProductCheckerCheckFile:
             tv.units = "seconds since 1970-01-01"
 
         checker = ProductChecker(definition=simple_definition_file)
-        checker.check(path)
-        assert not checker.passing
+        result = checker.check(path)
+        assert not result.passing
 
     def test_missing_required_attribute_fails(
         self, tmp_path: Path, simple_definition_file: str
@@ -414,8 +437,8 @@ class TestProductCheckerCheckFile:
             tv.units = "seconds since 1970-01-01"
 
         checker = ProductChecker(definition=simple_definition_file)
-        checker.check(path)
-        assert not checker.passing
+        result = checker.check(path)
+        assert not result.passing
 
     def test_extra_attribute_passes_with_warning(
         self, tmp_path: Path, simple_definition_file: str
@@ -429,9 +452,9 @@ class TestProductCheckerCheckFile:
             tv.units = "seconds since 1970-01-01"
 
         checker = ProductChecker(definition=simple_definition_file)
-        checker.check(path)
-        assert checker.passing
-        assert len(checker.warnings) > 0
+        result = checker.check(path)
+        assert result.passing
+        assert len(result.warnings) > 0
 
     def test_wrong_variable_dtype_fails(
         self, tmp_path: Path, simple_definition_file: str
@@ -445,8 +468,8 @@ class TestProductCheckerCheckFile:
             tv.units = "seconds since 1970-01-01"
 
         checker = ProductChecker(definition=simple_definition_file)
-        checker.check(path)
-        assert not checker.passing
+        result = checker.check(path)
+        assert not result.passing
 
 
 # ---------------------------------------------------------------------------
@@ -459,24 +482,24 @@ class TestProductCheckerFullFixture:
         self, full_nc_file: str, full_definition_file: str
     ) -> None:
         checker = ProductChecker(definition=full_definition_file)
-        checker.check(full_nc_file)
-        assert checker.passing
+        result = checker.check(full_nc_file)
+        assert result.passing
 
     def test_optional_variable_absent_passes(
         self, full_nc_file: str, full_definition_file: str
     ) -> None:
         # full_nc_file omits the optional 'latitude' variable by design
         checker = ProductChecker(definition=full_definition_file)
-        checker.check(full_nc_file)
-        assert checker.passing
+        result = checker.check(full_nc_file)
+        assert result.passing
 
     def test_optional_attribute_absent_passes(
         self, full_nc_file: str, full_definition_file: str
     ) -> None:
         # full_nc_file omits the optional 'comment' attribute by design
         checker = ProductChecker(definition=full_definition_file)
-        checker.check(full_nc_file)
-        assert checker.passing
+        result = checker.check(full_nc_file)
+        assert result.passing
 
     def test_required_derived_attribute_missing_fails(
         self, tmp_path: Path, full_definition_file: str
@@ -501,8 +524,8 @@ class TestProductCheckerFullFixture:
             rs.long_name = "Raw Signal"
 
         checker = ProductChecker(definition=full_definition_file)
-        checker.check(path)
-        assert not checker.passing
+        result = checker.check(path)
+        assert not result.passing
 
     def test_required_group_missing_fails(
         self, tmp_path: Path, full_definition_file: str
@@ -523,8 +546,8 @@ class TestProductCheckerFullFixture:
             # raw_data group intentionally omitted
 
         checker = ProductChecker(definition=full_definition_file)
-        checker.check(path)
-        assert not checker.passing
+        result = checker.check(path)
+        assert not result.passing
 
     def test_fixed_dimension_size_mismatch_fails(
         self, tmp_path: Path, full_definition_file: str
@@ -549,5 +572,5 @@ class TestProductCheckerFullFixture:
             rs.long_name = "Raw Signal"
 
         checker = ProductChecker(definition=full_definition_file)
-        checker.check(path)
-        assert not checker.passing
+        result = checker.check(path)
+        assert not result.passing

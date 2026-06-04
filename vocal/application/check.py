@@ -36,6 +36,7 @@ from pydantic import BaseModel
 from pydantic import ValidationError
 
 from vocal.application.fetch import fetch_for_file
+from vocal.checking.checking import CheckReport
 from vocal.conventions_file import import_project_package
 from vocal.exceptions import VocalError
 from vocal.resolution import (
@@ -98,7 +99,7 @@ def check_against_standard(
         return True
 
 
-def print_checks(pc, filename, specification):
+def print_checks(pc: CheckReport, filename: str, specification: str) -> None:
     p.print_err(
         f"Checking {TS.BOLD}{filename}{TS.ENDC} against "
         f"{TS.BOLD}{os.path.basename(specification)}{TS.ENDC} specification... ",
@@ -162,9 +163,9 @@ def check_against_specification(filename: str, specification: str) -> bool:
         bool: True if all checks pass, False otherwise.
     """
     pc = ProductChecker(specification)
-    pc.check(filename)
-    print_checks(pc, filename, specification)
-    return pc.passing
+    report = pc.check(filename)
+    print_checks(report, filename, specification)
+    return report.passing
 
 
 def check_file_against_project(filename: str, project: str) -> bool:
