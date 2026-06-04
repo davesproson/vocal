@@ -3,7 +3,7 @@ import json
 import numpy as np
 
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Optional, Union
+from typing import Any, Iterable, Optional, Union, Literal
 
 from vocal.netcdf import NetCDFReader
 from vocal.types import UnknownDataType, type_from_spec
@@ -331,34 +331,37 @@ class ProductChecker:
 
         raise ElementDoesNotExist(f"Element {name} not found")
 
-    def check_group_exists(
+    def check_element_exists(
         self,
         name: str,
         parent: Iterable,
         path: str = "",
         from_file: bool = False,
         required: bool = True,
+        element_type: Literal["variable", "group"] = "variable",
     ) -> ElementStatus:
         """
-        Check a group exists in a parent, which is assumed to be an iterable
-        yielding a dict representation of the group.
+        Check an element (variable or group) exists in a parent, which is assumed to
+        be an iterable yielding a dict representation of the element.
 
         Args:
-            name: the name of the group to check
-            container: an iterable yielding dict group representations
-            from_file: if True, checking group from file is in definition,
-                       if False, checking group from definition is in file.
+            name: the name of the element to check
+            container: an iterable yielding dict element representations
+            from_file: if True, checking element from file is in definition,
+                       if False, checking element from definition is in file.
 
         Kwargs:
-            path: the full path of the group in the netCDF
+            path: the full path of the element in the netCDF
 
         Returns:
-            A GroupStatus enum value
+            An ElementStatus enum value
         """
 
         in_type = "in definition" if from_file else "in file"
 
-        check = self._check(description=f"Checking group {path} exists {in_type}")
+        check = self._check(
+            description=f"Checking {element_type} {path} exists {in_type}"
+        )
 
         try:
             self.get_element(name, parent)
@@ -366,47 +369,9 @@ class ProductChecker:
             if not required:
                 return ElementStatus.DOES_NOT_EXIST_AND_NOT_REQUIRED
             check.passed = False
-            check.error = CheckError(f"Group {path} does not exist {in_type}", path)
-            return ElementStatus.DOES_NOT_EXIST_AND_REQUIRED
-
-        return ElementStatus.EXISTS
-
-    def check_variable_exists(
-        self,
-        name: str,
-        parent: Iterable,
-        path: str = "",
-        from_file: bool = False,
-        required: bool = True,
-    ) -> ElementStatus:
-        """
-        Check a variable exists in a parent, which is assumed to be an iterable
-        yielding a dict representation of the variable.
-
-        Args:
-            name: the name of the variable to check
-            container: an iterable yielding dict variable representations
-            from_file: if True, checking variable from file is in definition,
-                       if False, checking variable from definition is in file.
-
-        Kwargs:
-            path: the full path of the variable in the netCDF
-
-        Returns:
-            A VariableStatus enum value
-        """
-
-        in_type = "in definition" if from_file else "in file"
-
-        check = self._check(description=f"Checking variable {path} exists {in_type}")
-
-        try:
-            self.get_element(name, parent)
-        except ElementDoesNotExist:
-            if not required:
-                return ElementStatus.DOES_NOT_EXIST_AND_NOT_REQUIRED
-            check.passed = False
-            check.error = CheckError(f"Variable does not exist {in_type}", path)
+            check.error = CheckError(
+                f"{element_type.capitalize()} does not exist {in_type}", path
+            )
             return ElementStatus.DOES_NOT_EXIST_AND_REQUIRED
 
         return ElementStatus.EXISTS
@@ -482,8 +447,12 @@ class ProductChecker:
             var_required = d_var["meta"].get("required", True)
             var_path = f"{path}/{var_name}"
 
-            variable_stat = self.check_variable_exists(
-                var_name, f, path=var_path, required=var_required
+            variable_stat = self.check_element_exists(
+                var_name,
+                f,
+                path=var_path,
+                required=var_required,
+                element_type="variable",
             )
 
             if variable_stat in (
@@ -503,8 +472,8 @@ class ProductChecker:
             var_name = f_var["meta"]["name"]
             var_path = f"{path}/{var_name}"
 
-            if not self.check_variable_exists(
-                var_name, d, path=var_path, from_file=True
+            if not self.check_element_exists(
+                var_name, d, path=var_path, from_file=True, element_type="variable"
             ):
                 continue
 
@@ -529,8 +498,12 @@ class ProductChecker:
             group_path = f"{path}/{group_name}"
             group_required = def_group["meta"].get("required", True)
 
-            group_stat = self.check_group_exists(
-                group_name, f, path=group_path, required=group_required
+            group_stat = self.check_element_exists(
+                group_name,
+                f,
+                path=group_path,
+                required=group_required,
+                element_type="group",
             )
 
             if group_stat in (
@@ -547,7 +520,9 @@ class ProductChecker:
             group_name = file_group["meta"]["name"]
             group_path = f"{path}/{group_name}"
 
-            self.check_group_exists(group_name, d, path=group_path, from_file=True)
+            self.check_element_exists(
+                group_name, d, path=group_path, from_file=True, element_type="group"
+            )
 
     def compare_dimensions(self, d: dict, f: dict, path: str = "") -> None:
         """
