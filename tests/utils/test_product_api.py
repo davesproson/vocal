@@ -41,7 +41,7 @@ from vocal.utils import (
 # ``import_project`` (which loads the package's ``__init__.py`` directly) can
 # exec it without submodule resolution. It exposes the project contract pieces
 # the API touches: ``models.Dataset`` and ``filecodec``.
-_PROJECT_INIT = '''\
+_PROJECT_INIT = """\
 from types import SimpleNamespace
 from typing import Any
 
@@ -62,7 +62,7 @@ defaults = SimpleNamespace(
     default_group_attrs={},
     default_variable_attrs={},
 )
-'''
+"""
 
 
 def _make_project(root: Path, package: str = "myproj") -> str:
@@ -168,7 +168,9 @@ class TestGetSpec:
         version_dir = tmp_path / "pack" / "v1"
         _write_product(version_dir, "alpha", "The real alpha")
         (version_dir / "dataset_schema.json").write_text(
-            json.dumps({"meta": {"short_name": "alpha"}, "attributes": {"title": "schema"}})
+            json.dumps(
+                {"meta": {"short_name": "alpha"}, "attributes": {"title": "schema"}}
+            )
         )
         spec = get_spec("alpha", project, "latest", str(tmp_path / "pack"))
         assert spec is not None
@@ -194,7 +196,7 @@ class TestGetProduct:
 
     def test_pinned_version(self, project: ModuleType, pack_root: str) -> None:
         product = get_product("alpha", project, 1, pack_root)
-        assert product.attributes["title"] == "Alpha v1"
+        assert product.attributes["title"] == "Alpha v1"  # type: ignore
 
     def test_unknown_short_name_fails_validation(
         self, project: ModuleType, pack_root: str
