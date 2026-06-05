@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from typing import Iterable, Any
+import re
 
 import numpy as np
 
@@ -9,10 +10,7 @@ from .checks import Check, CheckError, CheckWarning, CheckComment
 from vocal.types.schema_types import UnknownDataType, type_from_spec
 
 
-from vocal.utils.placeholder import (
-    get_type_from_placeholder,
-    get_attribute_props_from_placeholder,
-)
+from vocal.utils.placeholder import Placeholder
 
 
 def compare_groups(d: Iterable, f: Iterable, path: str = "") -> list[Check]:
@@ -331,8 +329,8 @@ def compare_attributes(d: dict, f: dict, path: str = "") -> list[Check]:
 
         if def_key not in f:
             if isinstance(def_value, str) and def_value.startswith("<"):
-                attr_props = get_attribute_props_from_placeholder(def_value)
-                if attr_props.optional:
+                placeholder = Placeholder.parse(def_value)
+                if placeholder.optional:
                     continue
 
             check.error = CheckError(
@@ -358,13 +356,15 @@ def compare_attributes(d: dict, f: dict, path: str = "") -> list[Check]:
     return checks
 
 
-def check_attribute_type(d: Any, f: Any, path: str = "") -> list[Check]:
+def check_attribute_type(
+    placeholder: Placeholder, f: Any, path: str = ""
+) -> list[Check]:
     """
-    Checks the type of an attribute is correct, given a placeholder string
+    Checks the type of an attribute is correct, given a Placeholder
     in the product definition file.
 
     Args:
-        d: the attribute in the product definition
+        placeholder: the Placeholder object parsed from the product definition
         f: the attribute in the netcdf file
 
     Kwargs:
@@ -379,20 +379,45 @@ def check_attribute_type(d: Any, f: Any, path: str = "") -> list[Check]:
     check = Check(description=f"Checking attribute {path} type is correct")
     checks.append(check)
 
-    expected_type, container = get_type_from_placeholder(d)
-    actual_type = type(f)
-
-    if expected_type == actual_type:
+    if placeholder.dtype == type(f):
         return checks
 
-    if container == "Array" and actual_type is list:
-        if all([type(i) == np.dtype(expected_type) for i in f]):
+    if placeholder.is_array and type(f) is list:
+        if all([type(i) == placeholder.dtype for i in f]):
             return checks
 
     check.error = CheckError(
-        message=f"Type of {path} incorrect. Expected {expected_type}, got {actual_type}",
+        message=f"Type of {path} incorrect. Expected {placeholder.dtype}, got {type(f)}",
         path=path,
     )
+
+    return checks
+
+
+def check_attribute_against_placeholder(d: Any, f: Any, path: str = "") -> list[Check]:
+    """
+    Checks the value of an attribute against a regex, where the product definition
+    specifies a placeholder with a regex.
+
+    Args:
+        d: the attribute in the product definition
+        f: the attribute in the netcdf file
+
+    Kwargs:
+        path: full path of the attribute in the netCDF
+    """
+    placeholder = Placeholder.parse(d)
+    checks = check_attribute_type(placeholder, f, path=path)
+
+    if placeholder.regex:
+        check = Check(description=f"Checking attribute {path} value matches regex")
+        checks.append(check)
+
+        if not re.fullmatch(placeholder.regex, f):
+            check.error = CheckError(
+                message=f'Value of {path} does not match expected format. Expected to match regex {placeholder.regex}, got "{f}"',
+                path=path,
+            )
 
     return checks
 
@@ -419,7 +444,7 @@ def check_attribute_value(d: Any, f: Any, path: str = "") -> list[Check]:
 
     # If the attribute is a placeholder, all we can do is check the type
     if isinstance(d, str) and "derived_from_file" in d:
-        checks += check_attribute_type(d, f, path=path)
+        checks += check_attribute_against_placeholder(d, f, path=path)
         return checks
 
     f_array = np.atleast_1d(f)
@@ -437,13 +462,12 @@ def check_attribute_value(d: Any, f: Any, path: str = "") -> list[Check]:
             continue
 
         if isinstance(d_val, str) and "derived_from_file" in d_val:
-            checks += check_attribute_type(d_val, f_val, path=path)
+            checks += check_attribute_against_placeholder(d_val, f_val, path=path)
             continue
 
         check.error = CheckError(
             message=f"Unexpected value of {path}. Got {f}, expected: {d}",
             path=path,
         )
-        # return checks
 
     return checks

@@ -4,8 +4,6 @@ import numpy as np
 
 from vocal.utils.placeholder import (
     Placeholder,
-    get_attribute_props_from_placeholder,
-    get_type_from_placeholder,
     InvalidPlaceholder,
 )
 
@@ -13,67 +11,61 @@ from vocal.utils.placeholder import (
 # Placeholder parsing
 # ---------------------------------------------------------------------------
 
+dtypes = [
+    ("float16", np.dtype("float16")),
+    ("float32", np.dtype("float32")),
+    ("float64", np.dtype("float64")),
+    ("int8", np.dtype("int8")),
+    ("int16", np.dtype("int16")),
+    ("int32", np.dtype("int32")),
+    ("int64", np.dtype("int64")),
+    ("uint8", np.dtype("uint8")),
+    ("uint16", np.dtype("uint16")),
+    ("uint32", np.dtype("uint32")),
+    ("uint64", np.dtype("uint64")),
+]
 
-class TestGetAttributePropsFromPlaceholder:
+
+class TestPlaceholderDtype:
+    @pytest.mark.parametrize(
+        "dtype_str, expected_dtype",
+        dtypes,
+    )
+    def test_various_dtypes(self, dtype_str: str, expected_dtype: np.dtype) -> None:
+        ph = Placeholder.parse(f"<{dtype_str}: derived_from_file>")
+        assert ph.dtype == expected_dtype
+        assert ph.is_array is False
+
+    @pytest.mark.parametrize("dtype_str, expected_dtype", dtypes)
+    def test_various_dtypes_in_array(
+        self, dtype_str: str, expected_dtype: np.dtype
+    ) -> None:
+        ph = Placeholder.parse(f"<Array[{dtype_str}]: derived_from_file>")
+        assert ph.dtype == expected_dtype
+        assert ph.is_array is True
+
+    def test_invalid_raises(self) -> None:
+        with pytest.raises(InvalidPlaceholder):
+            Placeholder.parse("not_a_placeholder")
+
+
+class TestPlaceholderAttributeProperties:
     def test_required_attribute(self) -> None:
-        props = get_attribute_props_from_placeholder("<str: derived_from_file>")
-        assert props.optional is False
-        assert props.regex is None
+        ph = Placeholder.parse("<str: derived_from_file>")
+        assert ph.optional is False
+        assert ph.regex is None
 
     def test_optional_attribute(self) -> None:
-        props = get_attribute_props_from_placeholder(
-            "<str: derived_from_file optional>"
-        )
-        assert props.optional is True
+        ph = Placeholder.parse("<str: derived_from_file optional>")
+        assert ph.optional is True
 
     def test_attribute_with_regex(self) -> None:
-        props = get_attribute_props_from_placeholder(
-            r"<str: derived_from_file regex=\d{4}-\d{2}-\d{2}>"
-        )
-        assert props.regex is not None
-        assert props.regex == r"\d{4}-\d{2}-\d{2}"
-
-    def test_invalid_placeholder_raises(self) -> None:
-        with pytest.raises(InvalidPlaceholder):
-            get_attribute_props_from_placeholder("not_a_placeholder")
-
-
-class TestGetTypeFromPlaceholder:
-    def test_float32(self) -> None:
-        dtype, container = get_type_from_placeholder("<float32: derived_from_file>")
-        assert dtype == np.dtype("float32")
-        assert container is None
-
-    def test_float64(self) -> None:
-        dtype, container = get_type_from_placeholder("<float64: derived_from_file>")
-        assert dtype == np.dtype("float64")
-
-    def test_array_placeholder(self) -> None:
-        dtype, container = get_type_from_placeholder(
-            "<Array[float32]: derived_from_file>"
-        )
-        assert dtype == np.dtype("float32")
-        assert container == "Array"
-
-    def test_invalid_raises_value_error(self) -> None:
-        with pytest.raises(InvalidPlaceholder):
-            get_type_from_placeholder("not_a_placeholder")
+        ph = Placeholder.parse(r"<str: derived_from_file regex=\d{4}-\d{2}-\d{2}>")
+        assert ph.regex == r"\d{4}-\d{2}-\d{2}"
 
 
 class TestPlaceholderParsingIntegration:
     def test_full_placeholder(self) -> None:
-        placeholder_str = (
-            "<Array[float64]: derived_from_file optional,regex=\\d{4}-\\d{2}-\\d{2}>"
-        )
-        props = get_attribute_props_from_placeholder(placeholder_str)
-        dtype, container = get_type_from_placeholder(placeholder_str)
-
-        assert dtype == np.dtype("float64")
-        assert container == "Array"
-        assert props.optional is True
-        assert props.regex == r"\d{4}-\d{2}-\d{2}"
-
-    def test_placeholder_parser(self) -> None:
         placeholder_str = (
             "<Array[float64]: derived_from_file optional,regex=\\d{4}-\\d{2}-\\d{2}>"
         )

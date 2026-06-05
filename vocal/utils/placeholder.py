@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 import re
-from typing import Any, Literal, Optional
 
 import numpy as np
 
@@ -9,12 +8,6 @@ class InvalidPlaceholder(Exception):
     """
     Raised when an invalid placeholder is used in a check
     """
-
-
-@dataclass
-class AttributeProperties:
-    optional: bool = False
-    regex: Optional[str] = None
 
 
 PLACEHOLDER_RE = (
@@ -31,7 +24,7 @@ class Placeholder:
     dtype: np.dtype
     is_array: bool = False
     optional: bool = False
-    regex: Optional[str] = None
+    regex: str | None = None
 
     @staticmethod
     def parse(placeholder_str: str) -> "Placeholder":
@@ -55,38 +48,3 @@ class Placeholder:
         return Placeholder(
             dtype=np.dtype(dtype), is_array=is_array, optional=optional, regex=regex
         )
-
-
-def get_type_from_placeholder(
-    placeholder: str,
-) -> tuple[np.dtype[Any], Literal["Array"] | None]:
-    """
-    Returns the type from a placeholder string.
-
-    Args:
-        placeholder: the placeholder string
-
-    Returns:
-        A tuple of the type, and whether it is an array (as "Array" or None).
-    """
-
-    placeholder_info = Placeholder.parse(placeholder)
-    return (placeholder_info.dtype, "Array" if placeholder_info.is_array else None)
-
-
-def get_attribute_props_from_placeholder(placeholder: str) -> AttributeProperties:
-    """
-    Returns additional attributes from a placeholder string.
-
-    Args:
-        placeholder: the placeholder string
-
-    Returns:
-        Additional placeholder info, in the form of an AttributeProperties object.
-    """
-
-    placeholder_info = Placeholder.parse(placeholder)
-
-    return AttributeProperties(
-        optional=placeholder_info.optional, regex=placeholder_info.regex
-    )

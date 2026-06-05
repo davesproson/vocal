@@ -38,7 +38,7 @@ class CheckReport:
         if not self.checks:
             raise NotCheckedError("Checks have not been performed")
 
-        return [i.warning for i in self.checks if i.warning]
+        return [i.warning for i in self.checks if i.has_warning and i.warning]
 
     @property
     def errors(self) -> list[CheckError]:
@@ -49,7 +49,7 @@ class CheckReport:
         if not self.checks:
             raise NotCheckedError("Checks have not been performed")
 
-        return [i.error for i in self.checks if i.error]
+        return [i.error for i in self.checks if not i.passed]  # type: ignore
 
     @property
     def comments(self) -> list[CheckComment]:
@@ -60,7 +60,7 @@ class CheckReport:
         if not self.checks:
             raise NotCheckedError("Checks have not been performed")
 
-        return [i.comment for i in self.checks if i.comment]
+        return [i.comment for i in self.checks if i.has_comment and i.comment]
 
 
 @dataclass

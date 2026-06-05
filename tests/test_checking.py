@@ -16,12 +16,15 @@ from vocal.checking import (
     CheckReport,
 )
 from vocal.checking.core import (
+    check_attribute_against_placeholder,
+    check_attribute_type,
     check_attribute_value,
     check_variable_dtype,
     compare_attributes,
     compare_container,
 )
 from vocal.checking.utils import get_element
+from vocal.utils.placeholder import Placeholder
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +141,67 @@ class TestCheckAttributeValue:
         )
         value_errors = [e for e in _errors(checks) if "Unexpected value" in e.message]
         assert not value_errors
+
+
+class TestCheckAttributeType:
+    def test_matching_scalar_type_passes(self) -> None:
+        placeholder = Placeholder.parse("<float32: derived_from_file>")
+        checks = check_attribute_type(placeholder, np.float32(1.0), path="/fill")
+        assert _passing(checks)
+
+    def test_wrong_scalar_type_fails(self) -> None:
+        placeholder = Placeholder.parse("<float32: derived_from_file>")
+        checks = check_attribute_type(placeholder, np.float64(1.0), path="/fill")
+        assert not _passing(checks)
+
+    def test_matching_array_type_passes(self) -> None:
+        placeholder = Placeholder.parse("<Array[float32]: derived_from_file>")
+        checks = check_attribute_type(
+            placeholder, [np.float32(1.0), np.float32(2.0)], path="/coords"
+        )
+        assert _passing(checks)
+
+    def test_array_with_wrong_element_type_fails(self) -> None:
+        placeholder = Placeholder.parse("<Array[float32]: derived_from_file>")
+        checks = check_attribute_type(placeholder, [np.float64(1.0)], path="/coords")
+        assert not _passing(checks)
+
+
+class TestCheckAttributeAgainstPlaceholder:
+    def test_no_regex_checks_type_only(self) -> None:
+        checks = check_attribute_against_placeholder(
+            "<str: derived_from_file>", "anything", path="/source"
+        )
+        assert _passing(checks)
+
+    def test_matching_regex_passes(self) -> None:
+        checks = check_attribute_against_placeholder(
+            r"<str: derived_from_file regex=\d{4}-\d{2}-\d{2}>",
+            "2026-06-05",
+            path="/date",
+        )
+        assert _passing(checks)
+
+    def test_non_matching_regex_fails(self) -> None:
+        checks = check_attribute_against_placeholder(
+            r"<str: derived_from_file regex=\d{4}-\d{2}-\d{2}>",
+            "not-a-date",
+            path="/date",
+        )
+        assert not _passing(checks)
+
+    def test_partial_match_fails(self) -> None:
+        # The regex must match the whole value (re.fullmatch), not just a prefix.
+        checks = check_attribute_against_placeholder(
+            r"<str: derived_from_file regex=\d{4}>", "2026-06", path="/date"
+        )
+        assert not _passing(checks)
+
+    def test_wrong_type_fails_even_without_regex(self) -> None:
+        checks = check_attribute_against_placeholder(
+            "<float32: derived_from_file>", np.float64(1.0), path="/fill"
+        )
+        assert not _passing(checks)
 
 
 # ---------------------------------------------------------------------------
