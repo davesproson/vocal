@@ -32,10 +32,12 @@ import os
 from typing import Any, Mapping, Optional
 
 import typer
-from pydantic import BaseModel
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
-from vocal.application.fetch import fetch_for_file
+from rich.progress import Progress, SpinnerColumn, TextColumn
+
+
+from vocal.application.fetch import fetch_for_file, summarise_outcomes
 from vocal.checking.checking import CheckReport
 from vocal.conventions_file import import_project_package
 from vocal.exceptions import VocalError
@@ -55,6 +57,22 @@ LINE_LEN = 50
 
 TS = TextStyles()
 p = Printer()
+
+
+class NoopProgress:
+    """A no-op progress context manager for when --quiet suppresses the real one."""
+
+    def __enter__(self) -> "NoopProgress":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        pass
+
+    def add_task(self, description: str = "", total: Optional[float] = None) -> None:
+        pass
+
+    def remove_task(self, task_id: object) -> None:
+        pass
 
 
 def check_against_standard(
@@ -115,27 +133,23 @@ def print_checks(pc: CheckReport, filename: str, specification: str) -> None:
     for check in pc.checks:
         if check.passed:
             if check.has_warning and check.warning:
-                p.print_warn(f"  {check.description}", end="\r")
-                p.print_warn(f"{TS.BOLD}{TS.WARNING}!{TS.ENDC}")
+                p.print_warn(f"{TS.BOLD}{TS.WARNING}!{TS.ENDC} {check.description}")
                 p.print_warn(
-                    f"{TS.BOLD}{TS.WARNING}  --> {check.warning.path}: {TS.ENDC}"
+                    f"{TS.BOLD}{TS.WARNING}  ➜ {check.warning.path}: {TS.ENDC}"
                     f"{TS.WARNING}{check.warning.message}{TS.ENDC}"
                 )
             if check.has_comment and check.comment:
-                p.print_comment(f"  {check.description}", end="\r")
-                p.print_comment(f"{TS.BOLD}{TS.OKBLUE}i{TS.ENDC}")
+                p.print_comment(f"{TS.BOLD}{TS.OKBLUE}i{TS.ENDC} {check.description}")
                 p.print_comment(
-                    f"{TS.BOLD}{TS.OKBLUE}  --> {check.comment.path}: {TS.ENDC}"
+                    f"{TS.BOLD}{TS.OKBLUE}  ➜ {check.comment.path}: {TS.ENDC}"
                     f"{TS.OKBLUE}{check.comment.message}{TS.ENDC}"
                 )
             else:
-                p.print(f"  {check.description}", end="\r")
-                p.print(f"{TS.BOLD}{TS.OKGREEN}✔{TS.ENDC}")
+                p.print(f"{TS.BOLD}{TS.OKGREEN}✔{TS.ENDC} {check.description}")
         elif check.error:
-            p.print_err(f"  {check.description}", end="\r")
-            p.print_err(f"{TS.FAIL}{TS.BOLD}✗{TS.ENDC}")
+            p.print_err(f"{TS.FAIL}{TS.BOLD}✗{TS.ENDC} {check.description}")
             p.print_err(
-                f"{TS.FAIL}  --> {TS.BOLD}{check.error.path}:{TS.ENDC} "
+                f"{TS.FAIL}  ➜ {TS.BOLD}{check.error.path}:{TS.ENDC} "
                 f"{TS.FAIL}{check.error.message}{TS.ENDC}"
             )
 
@@ -394,23 +408,54 @@ def command(
         )
         raise typer.Exit(code=1)
 
-    if fetch:
-        # Ensure the file's declared resources are present, then fall through
-        # into the normal resolve-and-check flow below. The fetch is idempotent
-        # (already-present resources are skipped). -d is unaffected here: the
-        # file's declared pack is still fetched, and -d only overrides the
-        # product at check time.
-        try:
-            fetch_for_file(filename)
-        except VocalError as e:
-            _print_error(e)
-            raise typer.Exit(code=1)
-
-    if project:
-        ok = _run_manual_checks(filename, project, definition)
+    if quiet:
+        progress_context: Progress | NoopProgress = NoopProgress()
     else:
-        attrs = read_file_conventions(filename)
-        ok = _run_resolved_checks(filename, attrs, definition, fetched=fetch)
+        progress_context = Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            transient=True,
+        )
+
+    with progress_context as progress:
+        outcomes = []
+        if fetch:
+            # Ensure the file's declared resources are present, then fall through
+            # into the normal resolve-and-check flow below. The fetch is idempotent
+            # (already-present resources are skipped). -d is unaffected here: the
+            # file's declared pack is still fetched, and -d only overrides the
+            # product at check time.
+            task = progress.add_task(description="Fetching resources...", total=None)
+            try:
+                outcomes = fetch_for_file(filename)
+            except VocalError as e:
+                _print_error(e)
+                raise typer.Exit(code=1)
+            finally:
+                # Finish this phase before the next task starts, so phases show
+                # one spinner at a time rather than accumulating.
+                progress.remove_task(task)
+
+        if not quiet and outcomes:
+            summarise_outcomes(outcomes)
+
+        if project:
+            task = progress.add_task(
+                description="Running project checks...", total=None
+            )
+            try:
+                ok = _run_manual_checks(filename, project, definition)
+            finally:
+                progress.remove_task(task)
+        else:
+            task = progress.add_task(
+                description="Running product checks...", total=None
+            )
+            try:
+                attrs = read_file_conventions(filename)
+                ok = _run_resolved_checks(filename, attrs, definition, fetched=fetch)
+            finally:
+                progress.remove_task(task)
 
     if not ok:
         raise typer.Exit(code=1)

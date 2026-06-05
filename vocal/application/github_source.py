@@ -82,7 +82,6 @@ def fetch_with_git(url: str, target: str) -> None:
         GitCloneFailed: if `git clone` exits non-zero. Message carries the
             captured stderr verbatim so users see git's own diagnostic.
     """
-    print(f"Cloning from git repository: {url}")
 
     try:
         result = subprocess.run(
@@ -213,18 +212,15 @@ def fetch_http(url: str, target: str) -> None:
         GitHubAPIError: see get_latest_release.
         FetchError: wrapping a download or extraction failure (Tier B).
     """
-    print(f"Fetching from HTTP repository: {url}")
 
     api_url = convert_github_repo_to_api_url(url)
     release_info = get_latest_release(api_url)
 
     try:
         zip_url = release_info["zipball_url"]
-        tag_name = release_info["tag_name"]
+        _tag_name = release_info["tag_name"]
     except (KeyError, TypeError) as e:
         raise GitHubAPIError(f"Unexpected GitHub release payload: missing {e}")
-
-    print(f"Fetching release {tag_name}")
 
     # Extract into the target's parent (a caller-owned temp directory), so the
     # download is self-contained and never touches the install location.

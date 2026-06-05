@@ -14,7 +14,13 @@ import netCDF4
 import typer
 from typer.testing import CliRunner
 
-from vocal.application.fetch import FetchOutcome, command
+from vocal.application.fetch import (
+    FetchOutcome,
+    PackAlreadyFetched,
+    ProjectAlreadyFetched,
+    command,
+)
+from vocal.application.resource import ResourceKind
 
 
 runner = CliRunner()
@@ -53,6 +59,44 @@ class TestExactlyOneOf:
         fetch_mock.assert_called_once_with(
             "https://host/repo", git=False, update=False, force=False
         )
+
+
+class TestFetchByUrlSummary:
+    def test_project_fetch_summarised(self) -> None:
+        with patch(
+            "vocal.application.fetch.fetch", return_value=ResourceKind.PROJECT
+        ):
+            result = runner.invoke(_app(), ["https://host/std"])
+        assert result.exit_code == 0
+        assert "project: https://host/std" in result.output
+        assert "fetched" in result.output
+
+    def test_pack_fetch_summarised(self) -> None:
+        with patch("vocal.application.fetch.fetch", return_value=ResourceKind.PACK):
+            result = runner.invoke(_app(), ["https://host/pack"])
+        assert result.exit_code == 0
+        assert "pack: https://host/pack" in result.output
+        assert "fetched" in result.output
+
+    def test_already_present_project_is_tidy_outcome(self) -> None:
+        with patch(
+            "vocal.application.fetch.fetch",
+            side_effect=ProjectAlreadyFetched("already there"),
+        ):
+            result = runner.invoke(_app(), ["https://host/std"])
+        assert result.exit_code == 0
+        assert "project: https://host/std" in result.output
+        assert "already present" in result.output
+
+    def test_already_present_pack_is_tidy_outcome(self) -> None:
+        with patch(
+            "vocal.application.fetch.fetch",
+            side_effect=PackAlreadyFetched("already there"),
+        ):
+            result = runner.invoke(_app(), ["https://host/pack"])
+        assert result.exit_code == 0
+        assert "pack: https://host/pack" in result.output
+        assert "already present" in result.output
 
 
 class TestFetchForFile:

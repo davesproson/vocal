@@ -17,6 +17,7 @@ import typer
 from typer.testing import CliRunner
 
 from vocal.application.check import command
+from vocal.application.fetch import FetchOutcome
 from vocal.manifest import ManifestProduct, build_manifest
 from vocal.utils.registry import Pack, Project, Registry
 
@@ -400,6 +401,46 @@ class TestFetchFlag:
         spec_check.assert_called_once_with(
             nc, "/cache/packs/host-packs/v3/product_foo.json"
         )
+
+    def test_fetch_prestep_summary_reaches_output(self, tmp_path: Path) -> None:
+        """The --fetch pre-step prints the same per-resource summary as fetch."""
+        nc = _make_nc(
+            tmp_path,
+            name="foo_20260522.nc",
+            conventions="MYSTD-2.3",
+            project_url="https://host/mystd.git",
+            definitions_url="https://host/packs",
+            definitions_version=3,
+        )
+        outcomes = [
+            FetchOutcome("project", "https://host/mystd.git", "fetched"),
+            FetchOutcome("pack", "https://host/packs", "already-present"),
+        ]
+        with (
+            patch(
+                "vocal.application.check.fetch_for_file", return_value=outcomes
+            ),
+            patch(
+                "vocal.application.check.Registry.load",
+                return_value=_registry(project=_project(), pack=_pack()),
+            ),
+            patch(
+                "vocal.application.check.import_project_package",
+                return_value=_fake_project_module(),
+            ),
+            patch("vocal.application.check.check_against_standard", return_value=True),
+            patch(
+                "vocal.application.check.check_against_specification",
+                return_value=True,
+            ),
+        ):
+            result = runner.invoke(_app(), [nc, "--fetch"])
+
+        assert result.exit_code == 0
+        assert "project: https://host/mystd.git" in result.output
+        assert "fetched" in result.output
+        assert "pack: https://host/packs" in result.output
+        assert "already present" in result.output
 
     def test_fetch_plus_d_allowed_and_overrides_product(self, tmp_path: Path) -> None:
         """--fetch + -d: the pre-step still runs and -d overrides the product."""

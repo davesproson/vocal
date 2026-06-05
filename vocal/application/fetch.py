@@ -458,8 +458,13 @@ def fetch(
         shutil.rmtree(tmp_root, ignore_errors=True)
 
 
-def _summarise_outcomes(outcomes: list[FetchOutcome]) -> None:
-    """Print a per-resource summary of a file-driven fetch to stdout."""
+def summarise_outcomes(outcomes: list[FetchOutcome]) -> None:
+    """Print a per-resource summary of a fetch to stdout.
+
+    Shared across every surface that fetches: the bare-URL and ``--for`` forms
+    of ``vocal fetch``, and the ``--fetch`` pre-step of ``vocal check``, so the
+    summary a user sees is identical however the fetch was triggered.
+    """
     labels = {
         "fetched": f"{TS.OKGREEN}fetched{TS.ENDC}",
         "already-present": f"{TS.OKBLUE}already present{TS.ENDC}",
@@ -468,7 +473,7 @@ def _summarise_outcomes(outcomes: list[FetchOutcome]) -> None:
     for outcome in outcomes:
         label = labels.get(outcome.outcome, outcome.outcome)
         target = f" {outcome.url}" if outcome.url else ""
-        p.print(f"  {outcome.role}:{target} — {label}")
+        p.print(f"➜ {outcome.role}:{target} — {label}")
 
 
 def command(
@@ -528,10 +533,21 @@ def command(
     try:
         if for_file is not None:
             outcomes = fetch_for_file(for_file, git=git, update=update, force=force)
-            _summarise_outcomes(outcomes)
+            summarise_outcomes(outcomes)
         else:
             assert url is not None  # guaranteed by the guard above
-            fetch(url, git=git, update=update, force=force)
+            # An already-present resource is a tidy idempotent outcome here, not
+            # an error — mirroring the --for path, which catches the same
+            # exceptions in fetch_for_file. The exception type carries the role,
+            # so we report it without needing fetch() to have returned a kind.
+            try:
+                kind = fetch(url, git=git, update=update, force=force)
+                role = "project" if kind is ResourceKind.PROJECT else "pack"
+                summarise_outcomes([FetchOutcome(role, url, "fetched")])
+            except ProjectAlreadyFetched:
+                summarise_outcomes([FetchOutcome("project", url, "already-present")])
+            except PackAlreadyFetched:
+                summarise_outcomes([FetchOutcome("pack", url, "already-present")])
     except VocalError as e:
         p.print_err(f"{TS.BOLD}{TS.FAIL}✗{TS.ENDC} {e.message}")
         if e.hint:
