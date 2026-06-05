@@ -53,7 +53,7 @@ class TestPlaceholderAttributeProperties:
     def test_required_attribute(self) -> None:
         ph = Placeholder.parse("<str: derived_from_file>")
         assert ph.optional is False
-        assert ph.regex is None
+        assert ph.constraints.regex is None
 
     def test_optional_attribute(self) -> None:
         ph = Placeholder.parse("<str: derived_from_file optional>")
@@ -61,7 +61,27 @@ class TestPlaceholderAttributeProperties:
 
     def test_attribute_with_regex(self) -> None:
         ph = Placeholder.parse(r"<str: derived_from_file regex=\d{4}-\d{2}-\d{2}>")
-        assert ph.regex == r"\d{4}-\d{2}-\d{2}"
+        assert ph.constraints.regex == r"\d{4}-\d{2}-\d{2}"
+
+    def test_regex_may_contain_commas(self) -> None:
+        # regex comes last and runs to the end, so commas in the pattern are safe
+        ph = Placeholder.parse(r"<str: derived_from_file regex=[A-Z]{2,5}>")
+        assert ph.constraints.regex == r"[A-Z]{2,5}"
+
+    def test_optional_and_regex_combined(self) -> None:
+        ph = Placeholder.parse(r"<str: derived_from_file optional,regex=[A-Z]{2,5}>")
+        assert ph.optional is True
+        assert ph.constraints.regex == r"[A-Z]{2,5}"
+
+    def test_unknown_attribute_raises(self) -> None:
+        # min_len is not supported yet: fail loudly rather than silently ignore
+        with pytest.raises(InvalidPlaceholder):
+            Placeholder.parse("<str: derived_from_file min_len=2>")
+
+    def test_space_separated_attributes_rejected(self) -> None:
+        # attributes are comma-separated; spaces are not supported
+        with pytest.raises(InvalidPlaceholder):
+            Placeholder.parse(r"<str: derived_from_file optional regex=\d{3}>")
 
 
 class TestPlaceholderParsingIntegration:
@@ -74,4 +94,4 @@ class TestPlaceholderParsingIntegration:
         assert ph.dtype == np.dtype("float64")
         assert ph.is_array is True
         assert ph.optional is True
-        assert ph.regex == r"\d{4}-\d{2}-\d{2}"
+        assert ph.constraints.regex == r"\d{4}-\d{2}-\d{2}"
