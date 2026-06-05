@@ -409,15 +409,14 @@ def check_attribute_against_placeholder(d: Any, f: Any, path: str = "") -> list[
     placeholder = Placeholder.parse(d)
     checks = check_attribute_type(placeholder, f, path=path)
 
-    if regex := placeholder.constraints.regex:
-        check = Check(description=f"Checking attribute {path} value matches regex")
+    for constraint_result in placeholder.constraints.check(f):
+        check = Check(
+            description=f"Checking attribute {path}: {constraint_result.description}"
+        )
         checks.append(check)
 
-        if not re.fullmatch(regex, f):
-            check.error = CheckError(
-                message=f'Value of {path} does not match expected format. Expected to match regex {regex}, got "{f}"',
-                path=path,
-            )
+        if constraint_result.error:
+            check.error = CheckError(message=constraint_result.error, path=path)
 
     return checks
 
