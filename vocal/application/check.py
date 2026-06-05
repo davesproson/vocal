@@ -434,7 +434,7 @@ def command(
             finally:
                 # Finish this phase before the next task starts, so phases show
                 # one spinner at a time rather than accumulating.
-                progress.remove_task(task)
+                task and progress.remove_task(task)
 
         if not quiet and outcomes:
             summarise_outcomes(outcomes)
@@ -446,7 +446,7 @@ def command(
             try:
                 ok = _run_manual_checks(filename, project, definition)
             finally:
-                progress.remove_task(task)
+                task and progress.remove_task(task)
         else:
             task = progress.add_task(
                 description="Running product checks...", total=None
@@ -455,7 +455,7 @@ def command(
                 attrs = read_file_conventions(filename)
                 ok = _run_resolved_checks(filename, attrs, definition, fetched=fetch)
             finally:
-                progress.remove_task(task)
+                task and progress.remove_task(task)
 
     if not ok:
         raise typer.Exit(code=1)
