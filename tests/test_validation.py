@@ -3,23 +3,29 @@ Tests for vocal/validation.py.
 
 Calling convention for validator functions
 ------------------------------------------
-The validator factories (is_exact, is_in, in_vocabulary) return functions that
-are intended to be registered as pydantic field validators. Pydantic calls them
-as unbound class methods: validator(cls, value). The Validator protocol,
-however, models the public signature as validator(value) — the single-arg form
-that pydantic exposes after binding.
+The validator factories (is_exact, is_in, in_vocabulary) bind their validator to
+an attribute and return a pydantic descriptor proxy ready to assign as a class
+attribute. The underlying function — called by pydantic as an unbound class
+method, validator(cls, value) — is reachable via proxy.wrapped.__func__. The
+_call helper unwraps and invokes it with the (None, value) form pydantic uses.
 
-When calling validators directly in tests we must use the two-argument form
-(None, value) to match the actual function signature. mypy flags this as an
-error because it sees the Validator protocol, not the underlying function, so
-affected locals are typed as Any to acknowledge the deliberate deviation.
+Binding metadata (description, binding) is attached to the proxy itself, so it
+remains introspectable after binding. Locals are typed as Any because the
+Validator protocol models the post-binding single-arg public signature, not the
+proxy/underlying-function shapes the tests reach into.
 """
+
 from typing import Any
 
 import pytest
 
 from vocal.validation import in_vocabulary, is_exact, is_in, substitute_placeholders
 from vocal.vocab import ListVocabulary
+
+
+def _call(validator: Any, value: Any) -> Any:
+    """Invoke a bound validator's underlying function directly."""
+    return validator.wrapped.__func__(None, value)
 
 
 # ---------------------------------------------------------------------------
@@ -29,34 +35,34 @@ from vocal.vocab import ListVocabulary
 
 class TestIsExact:
     def test_correct_value_returns_value(self) -> None:
-        validator: Any = is_exact("CF-1.8")
-        assert validator(None, "CF-1.8") == "CF-1.8"
+        validator: Any = is_exact("CF-1.8", attribute="conventions")
+        assert _call(validator, "CF-1.8") == "CF-1.8"
 
     def test_wrong_value_raises(self) -> None:
-        validator: Any = is_exact("CF-1.8")
+        validator: Any = is_exact("CF-1.8", attribute="conventions")
         with pytest.raises(ValueError, match="CF-1.8"):
-            validator(None, "CF-1.6")
+            _call(validator, "CF-1.6")
 
     def test_validator_has_description(self) -> None:
-        validator = is_exact("CF-1.8")
+        validator = is_exact("CF-1.8", attribute="conventions")
         assert "CF-1.8" in validator.description
 
     def test_numeric_value_passes(self) -> None:
-        validator: Any = is_exact(42)
-        assert validator(None, 42) == 42
+        validator: Any = is_exact(42, attribute="answer")
+        assert _call(validator, 42) == 42
 
     def test_numeric_value_wrong_raises(self) -> None:
-        validator: Any = is_exact(42)
+        validator: Any = is_exact(42, attribute="answer")
         with pytest.raises(ValueError):
-            validator(None, 43)
+            _call(validator, 43)
 
     def test_each_call_produces_independent_validator(self) -> None:
-        v1: Any = is_exact("a")
-        v2: Any = is_exact("b")
-        assert v1(None, "a") == "a"
-        assert v2(None, "b") == "b"
+        v1: Any = is_exact("a", attribute="x")
+        v2: Any = is_exact("b", attribute="y")
+        assert _call(v1, "a") == "a"
+        assert _call(v2, "b") == "b"
         with pytest.raises(ValueError):
-            v1(None, "b")
+            _call(v1, "b")
 
 
 # ---------------------------------------------------------------------------
@@ -66,23 +72,23 @@ class TestIsExact:
 
 class TestIsIn:
     def test_value_in_collection_passes(self) -> None:
-        validator: Any = is_in(["a", "b", "c"])
-        assert validator(None, "b") == "b"
+        validator: Any = is_in(["a", "b", "c"], attribute="letter")
+        assert _call(validator, "b") == "b"
 
     def test_value_not_in_collection_raises(self) -> None:
-        validator: Any = is_in(["a", "b", "c"])
+        validator: Any = is_in(["a", "b", "c"], attribute="letter")
         with pytest.raises(ValueError):
-            validator(None, "z")
+            _call(validator, "z")
 
     def test_validator_has_description(self) -> None:
-        validator = is_in(["x", "y"])
+        validator = is_in(["x", "y"], attribute="letter")
         assert validator.description
 
     def test_works_with_non_string_collection(self) -> None:
-        validator: Any = is_in([1, 2, 3])
-        assert validator(None, 2) == 2
+        validator: Any = is_in([1, 2, 3], attribute="number")
+        assert _call(validator, 2) == 2
         with pytest.raises(ValueError):
-            validator(None, 5)
+            _call(validator, 5)
 
 
 # ---------------------------------------------------------------------------
@@ -93,18 +99,18 @@ class TestIsIn:
 class TestInVocabulary:
     def test_word_in_vocabulary_passes(self) -> None:
         vocab = ListVocabulary("test_vocab", ["air_temperature", "wind_speed"])
-        validator: Any = in_vocabulary(vocab)
-        assert validator(None, "air_temperature") == "air_temperature"
+        validator: Any = in_vocabulary(vocab, attribute="standard_name")
+        assert _call(validator, "air_temperature") == "air_temperature"
 
     def test_word_not_in_vocabulary_raises(self) -> None:
         vocab = ListVocabulary("test_vocab", ["air_temperature"])
-        validator: Any = in_vocabulary(vocab)
+        validator: Any = in_vocabulary(vocab, attribute="standard_name")
         with pytest.raises(ValueError):
-            validator(None, "not_a_standard_name")
+            _call(validator, "not_a_standard_name")
 
     def test_validator_has_description(self) -> None:
         vocab = ListVocabulary("test_vocab", [])
-        validator = in_vocabulary(vocab)
+        validator = in_vocabulary(vocab, attribute="standard_name")
         assert validator.description
 
 

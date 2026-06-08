@@ -1,8 +1,6 @@
 from dataclasses import dataclass
 import enum
-import random
 
-from string import ascii_lowercase, ascii_uppercase
 from typing import Any, Callable, Collection, Protocol, cast
 from pydantic import model_validator, field_validator
 
@@ -63,10 +61,20 @@ def vocal_validator(description: str = "", bound: Binding | None = None):
     """
 
     def inner[I](func: Callable[[Any, I], I]) -> Validator[I]:
+        # Attach metadata to the raw function so it survives pydantic's class
+        # construction: pydantic replaces the bound proxy with a classmethod
+        # wrapping this function, leaving the metadata reachable via the bound
+        # method / __func__ — the path autodoc and VocalValidatorsMixin use.
         _func = cast(Validator[I], func)
         _func.description = description
         _func.binding = bound
-        return _bind_validator(bound)(_func)
+        # Also attach to the proxy that binding returns, so the factory's return
+        # value is introspectable before it is assigned onto a model (the proxy
+        # does not forward attribute access to the function it wraps).
+        bound_validator = cast(Validator[I], _bind_validator(bound)(_func))
+        bound_validator.description = description
+        bound_validator.binding = bound
+        return bound_validator
 
     return inner
 
@@ -82,34 +90,23 @@ def validate[I](binding: Binding, validator: Validator[I]) -> Validator[I]:
     Returns:
         The validator bound to the given binding
     """
+    description = getattr(validator, "description", "")
+    validator.description = description
     validator.binding = binding
-    return _bind_validator(binding)(validator)
+    bound_validator = cast(Validator[I], _bind_validator(binding)(validator))
+    bound_validator.description = description
+    bound_validator.binding = binding
+    return bound_validator
 
 
-def _randomize_object_name[I: Callable](obj: I) -> I:
-    """
-    Randomize the name of an object (__name__), to work around a
-    bug-or-odd-feature in pydantic
-
-    Args:
-        obj: the object to rename
-
-    Returns:
-        obj with a random __name__
-    """
-    _random_str = "".join(random.sample(ascii_lowercase + ascii_uppercase, 12))
-    obj.__name__ = _random_str
-    return obj
-
-
-def default_value[I](default: I) -> Validator[I]:
+def default_value[I](default: I, *, attribute: str) -> Validator[I]:
     """
     This has been replaced by is_exact
     """
-    return is_exact(default)
+    return is_exact(default, attribute=attribute)
 
 
-def is_exact[I](default: I) -> Validator[I]:
+def is_exact[I](default: I, *, attribute: str) -> Validator[I]:
     """
     Provides a validator which ensures an attribute takes a given default
     value
@@ -121,16 +118,18 @@ def is_exact[I](default: I) -> Validator[I]:
         A validator function
     """
 
-    @vocal_validator(description=f"Value must be exactly '{default}'")
+    @vocal_validator(
+        description=f"Value must be exactly '{default}'", bound=Attribute(attribute)
+    )
     def _validator(cls, value):
         if value != default:
             raise ValueError(f'text is incorrect. Got: "{value}", expected "{default}"')
         return value
 
-    return _randomize_object_name(_validator)
+    return _validator
 
 
-def is_in(collection: Collection) -> Validator:
+def is_in(collection: Collection, *, attribute: str) -> Validator:
     """
     Provides a validator which ensures an attribute takes a value in a
     given collection
@@ -142,13 +141,15 @@ def is_in(collection: Collection) -> Validator:
         A validator function
     """
 
-    @vocal_validator(description=f"Value must be in {collection}")
+    @vocal_validator(
+        description=f"Value must be in {collection}", bound=Attribute(attribute)
+    )
     def _validator(cls, value):
         if value not in collection:
             raise ValueError(f"Value should be in {collection}")
         return value
 
-    return _randomize_object_name(_validator)
+    return _validator
 
 
 def variable_exists(variable_name: str) -> Validator:
@@ -168,7 +169,7 @@ def variable_exists(variable_name: str) -> Validator:
     )
     def _validator(cls, values):
         try:
-            variables = values["variables"]
+            variables = values.variables
         except Exception:
             variables = []
 
@@ -181,7 +182,7 @@ def variable_exists(variable_name: str) -> Validator:
                 return values
         raise ValueError(f"Variable '{variable_name}' not found in {name}")
 
-    return _randomize_object_name(_validator)
+    return _validator
 
 
 def variable_has_types(variable_name: str, allowed_types: list[str]) -> Callable:
@@ -197,7 +198,8 @@ def variable_has_types(variable_name: str, allowed_types: list[str]) -> Callable
     """
 
     @vocal_validator(
-        description=f"Variable '{variable_name}' must be one of {allowed_types}"
+        description=f"Variable '{variable_name}' must be one of {allowed_types}",
+        bound=Model.after,
     )
     def _validator(cls, values):
         variables = values.variables
@@ -215,7 +217,7 @@ def variable_has_types(variable_name: str, allowed_types: list[str]) -> Callable
                 )
         return values
 
-    return _randomize_object_name(_validator)
+    return _validator
 
 
 def variable_has_dimensions(variable_name: str, dimensions: list[str]) -> Callable:
@@ -231,7 +233,8 @@ def variable_has_dimensions(variable_name: str, dimensions: list[str]) -> Callab
     """
 
     @vocal_validator(
-        description=f"Variable '{variable_name}' must have dimensions {dimensions}"
+        description=f"Variable '{variable_name}' must have dimensions {dimensions}",
+        bound=Model.after,
     )
     def _validator(cls, values):
         variables = values.variables
@@ -255,7 +258,7 @@ def variable_has_dimensions(variable_name: str, dimensions: list[str]) -> Callab
                     )
         return values
 
-    return _randomize_object_name(_validator)
+    return _validator
 
 
 def group_exists(group_name: str) -> Callable:
@@ -270,7 +273,9 @@ def group_exists(group_name: str) -> Callable:
         A validator function
     """
 
-    @vocal_validator(description=f"Group '{group_name}' must exist in supergroup")
+    @vocal_validator(
+        description=f"Group '{group_name}' must exist in supergroup", bound=Model.after
+    )
     def _validator(cls, values):
         try:
             groups = values.groups
@@ -285,7 +290,7 @@ def group_exists(group_name: str) -> Callable:
                 return values
         raise ValueError(f"Group '{group_name}' not found in {name}")
 
-    return _randomize_object_name(_validator)
+    return _validator
 
 
 def dimension_exists(dimension_name: str) -> Callable:
@@ -300,7 +305,10 @@ def dimension_exists(dimension_name: str) -> Callable:
         A validator function
     """
 
-    @vocal_validator(description=f"Dimension '{dimension_name}' must exist in group")
+    @vocal_validator(
+        description=f"Dimension '{dimension_name}' must exist in group",
+        bound=Model.after,
+    )
     def _validator(cls, values):
         dimensions = values.dimensions
         name = values.meta.name
@@ -312,28 +320,31 @@ def dimension_exists(dimension_name: str) -> Callable:
                 return values
         raise ValueError(f"Dimension '{dimension_name}' not found in {name}")
 
-    return _randomize_object_name(_validator)
+    return _validator
 
 
-def in_vocabulary(vocabulary: Vocabulary) -> Validator[str]:
+def in_vocabulary(vocabulary: Vocabulary, *, attribute: str) -> Validator[str]:
     """
     Provides a validator which ensures an attribute takes a value in a
     given vocabulary
 
     Args:
         vocabulary: The vocabulary of allowed values
+        attribute: The attribute to bind the validator to
 
     Returns:
         A validator function
     """
 
-    @vocal_validator(description=f"Value must be in {vocabulary}")
+    @vocal_validator(
+        description=f"Value must be in {vocabulary}", bound=Attribute(attribute)
+    )
     def _validator(cls: Any, value: str) -> str:
         if value not in vocabulary:
             raise ValueError(f"'{value}' not in {vocabulary}")
         return value
 
-    return _randomize_object_name(_validator)
+    return _validator
 
 
 # These were more customised for pydantic v1. They're mostly passthroughs now.
