@@ -153,12 +153,14 @@ def document_project(dataset: type[BaseModel]) -> ProjectDoc:
 
     Accepts the ``Dataset`` *class* directly (the core owns no importing). The
     global attributes are documented along with the dataset's own model-bound
-    (structural) rules, the variable and dimension templates, and the group
-    template (referenced from the dataset and registered in ``defs``).
+    (structural) rules, the ``meta`` section's field specs, the variable and
+    dimension templates, and the group template (referenced from the dataset
+    and registered in ``defs``).
     """
     defs: dict[str, GroupDoc] = {}
     doc = DatasetDoc(
         attributes=_document_attributes(field_model(dataset, "attributes")),
+        meta=_document_attributes(field_model(dataset, "meta")),
         rules=model_rules(dataset) or None,
         variables=_variable_template(field_model(dataset, "variables")),
         dimensions=_dimension_template(field_model(dataset, "dimensions")),

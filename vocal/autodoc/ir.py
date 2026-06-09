@@ -156,7 +156,8 @@ class GroupDoc(BaseModel):
 
 class DatasetDoc(BaseModel):
     """The root container node. Holds the global attributes (slice 1),
-    plus the variables and dimensions (slice 5) and the groups (slice 6).
+    plus the variables and dimensions (slice 5), the groups (slice 6) and the
+    ``meta`` section (slice 7).
 
     ``rules`` carries the container-level (model-bound) validator rules declared
     on the ``Dataset`` model itself — the structural requirements
@@ -165,11 +166,17 @@ class DatasetDoc(BaseModel):
     attribute. ``variables`` holds exactly one template ``VariableDoc`` in
     project mode and the N concrete variables in product mode; ``dimensions``
     likewise. ``groups`` holds a single ``NodeRef`` (project mode, template in
-    ``defs``) or the N inlined ``GroupDoc`` nodes (product mode). A later slice
-    adds ``meta``.
+    ``defs``) or the N inlined ``GroupDoc`` nodes (product mode).
+
+    ``meta`` documents the dataset's headline section — file pattern,
+    short/canonical name, description and references — as a list of
+    ``AttributeDoc``, reusing the attribute node so a renderer treats it the
+    same way: project mode fills each field's spec (description / example /
+    required / constraints), product mode fills the concrete value.
     """
 
     attributes: list[AttributeDoc] = Field(default_factory=list)
+    meta: list[AttributeDoc] = Field(default_factory=list)
     rules: list[RuleDoc] | None = None
     variables: list[VariableDoc] = Field(default_factory=list)
     dimensions: list[DimensionDoc] = Field(default_factory=list)

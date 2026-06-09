@@ -106,11 +106,14 @@ def document_product(spec: dict[str, Any] | str | os.PathLike) -> ProductDoc:
 
     Accepts the loaded JSON dict or a path to it, walks the raw structure by
     canonical CDM keys, and never imports or validates against the project.
-    Documents the global attributes plus the concrete variables and dimensions.
+    Documents the global attributes, the ``meta`` section's concrete values
+    (file pattern, names, description, references), plus the concrete variables
+    and dimensions.
     """
     data = _load(spec)
     doc = DatasetDoc(
         attributes=_document_attributes(data.get("attributes", {})),
+        meta=_document_attributes(data.get("meta", {})),
         variables=[_document_variable(v) for v in data.get("variables", [])],
         dimensions=[_document_dimension(d) for d in data.get("dimensions", [])],
         groups=[_document_group(g) for g in data.get("groups") or []],

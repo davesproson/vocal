@@ -85,7 +85,28 @@ class Group(BaseModel, VocalGroupMixin):
 Group.model_rebuild()
 
 
+class _Reference(BaseModel):
+    title: str = Field(description="The reference title", example="A paper")
+    doi: Optional[str] = Field(description="The DOI", example="10.1/2", default=None)
+
+
+class _DatasetMeta(BaseModel):
+    file_pattern: str = Field(
+        description="Canonical filename pattern", example="thing_{date}.nc"
+    )
+    short_name: Optional[str] = Field(
+        description="A short name", example="thing", default=None
+    )
+    description: Optional[str] = Field(
+        description="A description of the dataset", default=None
+    )
+    references: Optional[list[_Reference]] = Field(
+        description="References for the dataset", default=None
+    )
+
+
 class _Dataset(BaseModel, VocalDatasetMixin):
+    meta: _DatasetMeta
     attributes: _GlobalAttributes
     dimensions: list[_Dimension]
     variables: list[_Variable]
@@ -158,7 +179,16 @@ class TestDocumentProject:
 # ---------------------------------------------------------------------------
 
 _PRODUCT = {
-    "meta": {"file_pattern": "thing_{date}.nc"},
+    "meta": {
+        "file_pattern": "thing_{date}.nc",
+        "short_name": "thing",
+        "long_name": "A Thing Dataset",
+        "description": "A concrete product describing some thing.",
+        "references": [
+            {"title": "A paper", "doi": "10.1/2"},
+            {"title": "A website", "web": "https://example.com"},
+        ],
+    },
     "attributes": {
         "title": "My dataset",
         "flight_number": "<str: derived_from_file>",
@@ -337,6 +367,94 @@ class TestProductVariablesAndDimensions:
         doc = document_product(_PRODUCT)
         dims = {d.name: d.size for d in doc.dataset.dimensions}
         assert dims == {"time": None, "bins": 512}
+
+    def test_roundtrips_through_json(self) -> None:
+        doc = document_product(_PRODUCT)
+        assert ProductDoc.model_validate_json(doc.model_dump_json()) == doc
+
+
+# ---------------------------------------------------------------------------
+# Meta section (slice 7): project field specs vs. product concrete values.
+# ---------------------------------------------------------------------------
+
+
+def _meta(doc, name):
+    return next(m for m in doc.dataset.meta if m.name == name)
+
+
+class TestProjectMeta:
+    def test_documents_every_meta_field(self) -> None:
+        doc = document_project(_Dataset)
+        assert {m.name for m in doc.dataset.meta} == {
+            "file_pattern",
+            "short_name",
+            "description",
+            "references",
+        }
+
+    def test_meta_field_specs(self) -> None:
+        file_pattern = _meta(document_project(_Dataset), "file_pattern")
+        assert file_pattern.description == "Canonical filename pattern"
+        assert file_pattern.example == "thing_{date}.nc"
+        assert file_pattern.required is True
+
+    def test_optional_meta_field_is_not_required(self) -> None:
+        short_name = _meta(document_project(_Dataset), "short_name")
+        assert short_name.required is False
+
+    def test_references_field_is_documented(self) -> None:
+        references = _meta(document_project(_Dataset), "references")
+        assert references.description == "References for the dataset"
+        # Project mode carries the spec, not a concrete value.
+        assert references.value is None
+
+    def test_concrete_fields_absent_in_project_mode(self) -> None:
+        file_pattern = _meta(document_project(_Dataset), "file_pattern")
+        assert file_pattern.value is None
+        assert file_pattern.derived is None
+
+    def test_dataset_without_meta_has_empty_meta(self) -> None:
+        class NoMeta(BaseModel, VocalDatasetMixin):
+            attributes: _GlobalAttributes
+            variables: list[_Variable]
+
+        assert document_project(NoMeta).dataset.meta == []
+
+    def test_roundtrips_through_json(self) -> None:
+        doc = document_project(_Dataset)
+        assert ProjectDoc.model_validate_json(doc.model_dump_json()) == doc
+
+
+class TestProductMeta:
+    def test_documents_every_meta_field(self) -> None:
+        doc = document_product(_PRODUCT)
+        assert {m.name for m in doc.dataset.meta} == {
+            "file_pattern",
+            "short_name",
+            "long_name",
+            "description",
+            "references",
+        }
+
+    def test_concrete_scalar_values(self) -> None:
+        doc = document_product(_PRODUCT)
+        assert _meta(doc, "file_pattern").value == "thing_{date}.nc"
+        assert _meta(doc, "short_name").value == "thing"
+        assert _meta(doc, "long_name").value == "A Thing Dataset"
+        assert _meta(doc, "description").value.startswith("A concrete product")
+
+    def test_references_value_passes_through(self) -> None:
+        references = _meta(document_product(_PRODUCT), "references")
+        assert references.value == [
+            {"title": "A paper", "doi": "10.1/2"},
+            {"title": "A website", "web": "https://example.com"},
+        ]
+        assert references.derived is False
+
+    def test_rule_bearing_fields_absent_in_product_mode(self) -> None:
+        file_pattern = _meta(document_product(_PRODUCT), "file_pattern")
+        assert file_pattern.description is None
+        assert file_pattern.constraints is None
 
     def test_roundtrips_through_json(self) -> None:
         doc = document_product(_PRODUCT)
