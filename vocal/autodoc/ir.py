@@ -76,11 +76,16 @@ class AttributeDoc(BaseModel):
 class DatasetDoc(BaseModel):
     """The root container node. Holds the global attributes (slice 1).
 
-    Later slices add ``variables`` / ``dimensions`` / ``groups`` / ``meta`` and
-    container-level ``rules``.
+    ``rules`` carries the container-level (model-bound) validator rules declared
+    on the ``Dataset`` model itself — the structural requirements
+    (``variable_exists`` / ``dimension_exists`` / … and bespoke model
+    validators) that apply to the dataset as a whole rather than to a single
+    attribute. Later slices add ``variables`` / ``dimensions`` / ``groups`` /
+    ``meta``.
     """
 
     attributes: list[AttributeDoc] = Field(default_factory=list)
+    rules: list[RuleDoc] | None = None
 
 
 class ProjectDoc(BaseModel):

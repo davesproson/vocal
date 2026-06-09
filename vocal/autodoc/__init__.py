@@ -23,7 +23,7 @@ from .ir import (
 from .placeholder import ParsedValue, parse_value
 from .product import document_product
 from .project import document_project
-from .rules import attribute_rules, rule_doc
+from .rules import attribute_rules, model_rules, rule_doc
 
 __all__ = [
     "AttributeDoc",
@@ -38,5 +38,6 @@ __all__ = [
     "document_product",
     "document_project",
     "attribute_rules",
+    "model_rules",
     "rule_doc",
 ]

@@ -8,10 +8,16 @@ on an externally-installed project. Tests assert the external behaviour (the
 
 from pydantic import BaseModel
 
-from vocal.autodoc import RuleDoc, attribute_rules, document_project
+from vocal.autodoc import RuleDoc, attribute_rules, document_project, model_rules
 from vocal.autodoc.rules import rule_doc
 from vocal.field import Field
-from vocal.validation import in_vocabulary, is_exact, is_in
+from vocal.validation import (
+    in_vocabulary,
+    is_exact,
+    is_in,
+    variable_exists,
+    variable_has_dimensions,
+)
 from vocal.vocab import CoverageContentTypes
 
 
@@ -86,6 +92,48 @@ class TestAttributeRules:
 
 
 # ---------------------------------------------------------------------------
+# model_rules: model-bound (structural) rule extraction + routing
+# ---------------------------------------------------------------------------
+
+
+class _Structural(BaseModel):
+    """A container carrying two model-bound (structural) validators."""
+
+    attributes: _Attributes
+
+    _v_temp_exists = variable_exists("temperature")
+    _v_temp_dims = variable_has_dimensions("temperature", ["time"])
+
+
+class TestModelRules:
+    def test_none_model_yields_no_rules(self) -> None:
+        assert model_rules(None) == []
+
+    def test_collects_each_model_bound_validator(self) -> None:
+        rules = model_rules(_Structural)
+        assert len(rules) == 2
+        descriptions = {rule.description for rule in rules}
+        assert any("temperature" in d and "exist" in d for d in descriptions)
+        assert any("dimensions" in d for d in descriptions)
+
+    def test_attribute_bound_validators_excluded(self) -> None:
+        # ``_Attributes`` carries only attribute-bound validators, so it
+        # contributes no model rules.
+        assert model_rules(_Attributes) == []
+
+    def test_model_rules_have_no_members(self) -> None:
+        assert all(rule.members is None for rule in model_rules(_Structural))
+
+    def test_only_directly_declared_validators_counted(self) -> None:
+        # A subclass that declares no new validators inherits the parent's but
+        # documents none of its own.
+        class _Sub(_Structural):
+            pass
+
+        assert model_rules(_Sub) == []
+
+
+# ---------------------------------------------------------------------------
 # Vocabulary enumeration vs. fallback
 # ---------------------------------------------------------------------------
 
@@ -128,3 +176,21 @@ class TestProjectWalkerRules:
 
     def test_attribute_without_rules_has_none(self) -> None:
         assert self._doc_attr("plain").rules is None
+
+
+class TestProjectWalkerModelRules:
+    def test_model_rules_attached_to_dataset_node(self) -> None:
+        class Dataset(BaseModel):
+            attributes: _Attributes
+
+            _v_temp_exists = variable_exists("temperature")
+
+        doc = document_project(Dataset)
+        assert doc.dataset.rules is not None
+        assert any("temperature" in r.description for r in doc.dataset.rules)
+
+    def test_dataset_without_model_rules_has_none(self) -> None:
+        class Dataset(BaseModel):
+            attributes: _Attributes
+
+        assert document_project(Dataset).dataset.rules is None

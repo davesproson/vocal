@@ -17,7 +17,7 @@ from pydantic.fields import FieldInfo
 from ._introspect import field_model
 from .constraints import normalize_constraints
 from .ir import AttributeDoc, DatasetDoc, ProjectDoc, RuleDoc
-from .rules import attribute_rules
+from .rules import attribute_rules, model_rules
 
 
 def _example(field: FieldInfo) -> Any | None:
@@ -71,9 +71,13 @@ def _document_attributes(model: type[BaseModel] | None) -> list[AttributeDoc]:
 def document_project(dataset: type[BaseModel]) -> ProjectDoc:
     """Document a project's root ``Dataset`` model into a :class:`ProjectDoc`.
 
-    Accepts the ``Dataset`` *class* directly (the core owns no importing). Slice
-    1 documents the global attributes only.
+    Accepts the ``Dataset`` *class* directly (the core owns no importing). The
+    global attributes are documented along with the dataset's own model-bound
+    (structural) rules.
     """
     attributes_model = field_model(dataset, "attributes")
-    doc = DatasetDoc(attributes=_document_attributes(attributes_model))
+    doc = DatasetDoc(
+        attributes=_document_attributes(attributes_model),
+        rules=model_rules(dataset) or None,
+    )
     return ProjectDoc(dataset=doc)
