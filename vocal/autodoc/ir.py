@@ -22,7 +22,7 @@ shape that depends on them.
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal, Union
 
 from pydantic import BaseModel, Field
 
@@ -113,9 +113,50 @@ class VariableDoc(BaseModel):
     rules: list[RuleDoc] | None = None
 
 
+class NodeRef(BaseModel):
+    """A reference to a node template registered in the root ``defs`` registry.
+
+    Used (project mode only) to represent the recursive ``Group`` slot without
+    infinite expansion: the slot holds a ``NodeRef`` whose ``ref`` names the
+    template in :attr:`ProjectDoc.defs`. The ``kind`` tag discriminates the
+    ``GroupDoc | NodeRef`` union so the IR round-trips through JSON.
+    """
+
+    kind: Literal["ref"] = "ref"
+    ref: str
+
+
+# The single structural location where the recursive group union appears: a
+# child group is either an inlined ``GroupDoc`` (product mode) or a ``NodeRef``
+# to the group template (project mode). Discriminated on ``kind`` so product
+# consumers can ignore the ref arm and the IR round-trips through JSON. The
+# ``GroupDoc`` arm is a forward reference resolved by ``model_rebuild`` below.
+GroupChild = Annotated[Union["GroupDoc", NodeRef], Field(discriminator="kind")]
+
+
+class GroupDoc(BaseModel):
+    """A group container node, in either mode.
+
+    A group mirrors the dataset's structure — attributes, variables, dimensions
+    and (recursively) child groups. Project mode emits a single *template*
+    (``name`` is ``None``) carrying the rule-bearing attribute specs, the group
+    model's structural ``rules`` and the variable/dimension templates; its own
+    recursive ``groups`` slot is a ``NodeRef`` back to the template. Product mode
+    fills the concrete ``name`` and inlines the child groups.
+    """
+
+    kind: Literal["group"] = "group"
+    name: str | None = None
+    attributes: list[AttributeDoc] = Field(default_factory=list)
+    rules: list[RuleDoc] | None = None
+    variables: list[VariableDoc] = Field(default_factory=list)
+    dimensions: list[DimensionDoc] = Field(default_factory=list)
+    groups: list[GroupChild] = Field(default_factory=list)
+
+
 class DatasetDoc(BaseModel):
     """The root container node. Holds the global attributes (slice 1),
-    plus the variables and dimensions (slice 5).
+    plus the variables and dimensions (slice 5) and the groups (slice 6).
 
     ``rules`` carries the container-level (model-bound) validator rules declared
     on the ``Dataset`` model itself — the structural requirements
@@ -123,13 +164,16 @@ class DatasetDoc(BaseModel):
     validators) that apply to the dataset as a whole rather than to a single
     attribute. ``variables`` holds exactly one template ``VariableDoc`` in
     project mode and the N concrete variables in product mode; ``dimensions``
-    likewise. Later slices add ``groups`` / ``meta``.
+    likewise. ``groups`` holds a single ``NodeRef`` (project mode, template in
+    ``defs``) or the N inlined ``GroupDoc`` nodes (product mode). A later slice
+    adds ``meta``.
     """
 
     attributes: list[AttributeDoc] = Field(default_factory=list)
     rules: list[RuleDoc] | None = None
     variables: list[VariableDoc] = Field(default_factory=list)
     dimensions: list[DimensionDoc] = Field(default_factory=list)
+    groups: list[GroupChild] = Field(default_factory=list)
 
 
 class ProjectDoc(BaseModel):
@@ -143,10 +187,10 @@ class ProjectDoc(BaseModel):
     mode: Literal["project"] = "project"
     dataset: DatasetDoc
     diagnostics: list[str] = Field(default_factory=list)
-    # Project-only registry of reusable node templates (the recursive ``Group``
-    # template lands here from a later slice). Typed loosely until ``GroupDoc``
-    # exists; the key is the referenced type name.
-    defs: dict[str, Any] = Field(default_factory=dict)
+    # Project-only registry of reusable node templates: the recursive ``Group``
+    # template lands here, keyed by the referenced type name that the matching
+    # ``NodeRef.ref`` resolves against.
+    defs: dict[str, GroupDoc] = Field(default_factory=dict)
 
 
 class ProductDoc(BaseModel):
@@ -159,3 +203,9 @@ class ProductDoc(BaseModel):
     mode: Literal["product"] = "product"
     dataset: DatasetDoc
     diagnostics: list[str] = Field(default_factory=list)
+
+
+# Resolve the ``"GroupDoc"`` forward reference in ``GroupChild`` now that every
+# node type exists, so the recursive ``groups`` union is fully built.
+GroupDoc.model_rebuild()
+DatasetDoc.model_rebuild()

@@ -20,6 +20,8 @@ from .ir import (
     AttributeDoc,
     DatasetDoc,
     DimensionDoc,
+    GroupDoc,
+    NodeRef,
     ProjectDoc,
     RuleDoc,
     VariableDoc,
@@ -108,17 +110,58 @@ def _dimension_template(model: type[BaseModel] | None) -> list[DimensionDoc]:
     return [DimensionDoc(rules=model_rules(model) or None)]
 
 
+def _group_template(group_model: type[BaseModel], name: str) -> GroupDoc:
+    """Build the single ``GroupDoc`` template for the recursive group model.
+
+    A group mirrors the dataset's structure, so the template reuses the
+    attribute / variable / dimension walks and carries the group model's own
+    structural rules. Its own recursive ``groups`` slot is a ``NodeRef`` back to
+    itself (``name``), keeping the template finite — the only recursive type in
+    a vocal standard is ``Group``.
+    """
+    nested = field_model(group_model, "groups")
+    return GroupDoc(
+        attributes=_document_attributes(field_model(group_model, "attributes")),
+        rules=model_rules(group_model) or None,
+        variables=_variable_template(field_model(group_model, "variables")),
+        dimensions=_dimension_template(field_model(group_model, "dimensions")),
+        groups=[NodeRef(ref=name)] if nested is not None else [],
+    )
+
+
+def _project_groups(
+    container: type[BaseModel], defs: dict[str, GroupDoc]
+) -> list[GroupDoc | NodeRef]:
+    """Document a container's recursive ``groups`` slot in project mode.
+
+    The slot holds a single ``NodeRef`` to the group template rather than
+    expanding the recursive ``Group`` type inline; the template is emitted once
+    into the root ``defs`` registry, keyed by the group model's name. Returns an
+    empty list when the container declares no ``groups`` field.
+    """
+    group_model = field_model(container, "groups")
+    if group_model is None:
+        return []
+    name = group_model.__name__
+    if name not in defs:
+        defs[name] = _group_template(group_model, name)
+    return [NodeRef(ref=name)]
+
+
 def document_project(dataset: type[BaseModel]) -> ProjectDoc:
     """Document a project's root ``Dataset`` model into a :class:`ProjectDoc`.
 
     Accepts the ``Dataset`` *class* directly (the core owns no importing). The
     global attributes are documented along with the dataset's own model-bound
-    (structural) rules, plus the variable and dimension templates.
+    (structural) rules, the variable and dimension templates, and the group
+    template (referenced from the dataset and registered in ``defs``).
     """
+    defs: dict[str, GroupDoc] = {}
     doc = DatasetDoc(
         attributes=_document_attributes(field_model(dataset, "attributes")),
         rules=model_rules(dataset) or None,
         variables=_variable_template(field_model(dataset, "variables")),
         dimensions=_dimension_template(field_model(dataset, "dimensions")),
+        groups=_project_groups(dataset, defs),
     )
-    return ProjectDoc(dataset=doc)
+    return ProjectDoc(dataset=doc, defs=defs)

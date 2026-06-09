@@ -10,6 +10,8 @@ from typing import Optional
 from pydantic import BaseModel
 
 from vocal.autodoc import (
+    GroupDoc,
+    NodeRef,
     ProductDoc,
     ProjectDoc,
     document_product,
@@ -20,6 +22,7 @@ from vocal.mixins import (
     VocalAttributesMixin,
     VocalDatasetMixin,
     VocalDimensionMixin,
+    VocalGroupMixin,
     VocalVariableMixin,
 )
 from vocal.validation import variable_has_dimensions
@@ -63,10 +66,30 @@ class _Dimension(BaseModel, VocalDimensionMixin):
     size: Optional[int]
 
 
+class _GroupAttributes(BaseModel, VocalAttributesMixin):
+    group_title: str = Field(description="The group title", example="A group")
+
+
+class _GroupMeta(BaseModel):
+    name: str
+
+
+class Group(BaseModel, VocalGroupMixin):
+    meta: _GroupMeta
+    attributes: _GroupAttributes
+    dimensions: list[_Dimension]
+    variables: list[_Variable]
+    groups: Optional[list["Group"]] = None
+
+
+Group.model_rebuild()
+
+
 class _Dataset(BaseModel, VocalDatasetMixin):
     attributes: _GlobalAttributes
     dimensions: list[_Dimension]
     variables: list[_Variable]
+    groups: Optional[list[Group]] = None
 
 
 def _attr(doc, name):
@@ -160,6 +183,32 @@ _PRODUCT = {
             "dimensions": ["time", "bins"],
             "attributes": {"long_name": "A spectrum", "units": "1"},
         },
+    ],
+    "groups": [
+        {
+            "meta": {"name": "navigation"},
+            "attributes": {"group_title": "Navigation data"},
+            "dimensions": [{"name": "sps", "size": 32}],
+            "variables": [
+                {
+                    "meta": {"name": "latitude", "datatype": "<float64>"},
+                    "dimensions": ["time"],
+                    "attributes": {
+                        "long_name": "Latitude",
+                        "units": "degrees_north",
+                    },
+                }
+            ],
+            "groups": [
+                {
+                    "meta": {"name": "raw"},
+                    "attributes": {"group_title": "Raw navigation"},
+                    "dimensions": [],
+                    "variables": [],
+                    "groups": [],
+                }
+            ],
+        }
     ],
 }
 
@@ -288,6 +337,89 @@ class TestProductVariablesAndDimensions:
         doc = document_product(_PRODUCT)
         dims = {d.name: d.size for d in doc.dataset.dimensions}
         assert dims == {"time": None, "bins": 512}
+
+    def test_roundtrips_through_json(self) -> None:
+        doc = document_product(_PRODUCT)
+        assert ProductDoc.model_validate_json(doc.model_dump_json()) == doc
+
+
+# ---------------------------------------------------------------------------
+# Groups + recursion (slice 6): project NodeRef/defs vs. product inlining.
+# ---------------------------------------------------------------------------
+
+
+class TestProjectGroups:
+    def test_dataset_groups_slot_is_noderef(self) -> None:
+        doc = document_project(_Dataset)
+        (ref,) = doc.dataset.groups
+        assert isinstance(ref, NodeRef)
+        assert ref.ref == "Group"
+
+    def test_defs_holds_single_group_template(self) -> None:
+        doc = document_project(_Dataset)
+        assert set(doc.defs) == {"Group"}
+        assert isinstance(doc.defs["Group"], GroupDoc)
+
+    def test_group_template_reuses_attribute_and_variable_walks(self) -> None:
+        template = document_project(_Dataset).defs["Group"]
+        # Template, so no concrete name.
+        assert template.name is None
+        assert {a.name for a in template.attributes} == {"group_title"}
+        group_title = template.attributes[0]
+        assert group_title.description == "The group title"
+        assert group_title.required is True
+        # Reuses the variable/dimension template walks.
+        assert len(template.variables) == 1
+        assert len(template.dimensions) == 1
+
+    def test_group_recursion_is_noderef_back_to_template(self) -> None:
+        template = document_project(_Dataset).defs["Group"]
+        (ref,) = template.groups
+        assert isinstance(ref, NodeRef)
+        assert ref.ref == "Group"
+
+    def test_dataset_without_groups_has_empty_slot_and_defs(self) -> None:
+        class NoGroups(BaseModel, VocalDatasetMixin):
+            attributes: _GlobalAttributes
+            variables: list[_Variable]
+
+        doc = document_project(NoGroups)
+        assert doc.dataset.groups == []
+        assert doc.defs == {}
+
+    def test_roundtrips_through_json(self) -> None:
+        doc = document_project(_Dataset)
+        assert ProjectDoc.model_validate_json(doc.model_dump_json()) == doc
+
+
+class TestProductGroups:
+    def _group(self, doc, name):
+        return next(g for g in doc.dataset.groups if g.name == name)
+
+    def test_groups_are_inlined_as_groupdoc(self) -> None:
+        doc = document_product(_PRODUCT)
+        nav = self._group(doc, "navigation")
+        assert isinstance(nav, GroupDoc)
+
+    def test_group_attributes_and_variables_are_concrete(self) -> None:
+        nav = self._group(document_product(_PRODUCT), "navigation")
+        assert {a.name for a in nav.attributes} == {"group_title"}
+        assert nav.attributes[0].value == "Navigation data"
+        assert {v.name for v in nav.variables} == {"latitude"}
+        latitude = nav.variables[0]
+        assert latitude.datatype == "float64"
+        assert {d.name: d.size for d in nav.dimensions} == {"sps": 32}
+
+    def test_nested_group_is_inlined(self) -> None:
+        nav = self._group(document_product(_PRODUCT), "navigation")
+        (raw,) = nav.groups
+        assert isinstance(raw, GroupDoc)
+        assert raw.name == "raw"
+        assert raw.groups == []
+
+    def test_defs_is_unused_in_product_mode(self) -> None:
+        doc = document_product(_PRODUCT)
+        assert "defs" not in doc.model_dump()
 
     def test_roundtrips_through_json(self) -> None:
         doc = document_product(_PRODUCT)

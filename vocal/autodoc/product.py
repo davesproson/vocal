@@ -14,7 +14,14 @@ import json
 import os
 from typing import Any
 
-from .ir import AttributeDoc, DatasetDoc, DimensionDoc, ProductDoc, VariableDoc
+from .ir import (
+    AttributeDoc,
+    DatasetDoc,
+    DimensionDoc,
+    GroupDoc,
+    ProductDoc,
+    VariableDoc,
+)
 from .placeholder import parse_value
 
 
@@ -76,6 +83,24 @@ def _document_dimension(raw: dict[str, Any]) -> DimensionDoc:
     return DimensionDoc(name=raw.get("name"), size=raw.get("size"))
 
 
+def _document_group(raw: dict[str, Any]) -> GroupDoc:
+    """Document a single concrete group, inlining its nested groups.
+
+    A group mirrors the dataset's structure, so it reuses the concrete
+    attribute / variable / dimension walks; its child groups are inlined
+    recursively (``defs`` is unused in product mode). Its ``meta.name`` is the
+    group name.
+    """
+    meta = raw.get("meta", {})
+    return GroupDoc(
+        name=meta.get("name"),
+        attributes=_document_attributes(raw.get("attributes", {})),
+        variables=[_document_variable(v) for v in raw.get("variables", [])],
+        dimensions=[_document_dimension(d) for d in raw.get("dimensions", [])],
+        groups=[_document_group(g) for g in raw.get("groups") or []],
+    )
+
+
 def document_product(spec: dict[str, Any] | str | os.PathLike) -> ProductDoc:
     """Document a product-pack spec into a :class:`ProductDoc`.
 
@@ -88,5 +113,6 @@ def document_product(spec: dict[str, Any] | str | os.PathLike) -> ProductDoc:
         attributes=_document_attributes(data.get("attributes", {})),
         variables=[_document_variable(v) for v in data.get("variables", [])],
         dimensions=[_document_dimension(d) for d in data.get("dimensions", [])],
+        groups=[_document_group(g) for g in data.get("groups") or []],
     )
     return ProductDoc(dataset=doc)
