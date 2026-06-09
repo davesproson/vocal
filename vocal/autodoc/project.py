@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from pydantic.fields import FieldInfo
 
 from ._introspect import field_model
+from .constraints import normalize_constraints
 from .ir import AttributeDoc, DatasetDoc, ProjectDoc
 
 
@@ -32,13 +33,20 @@ def _example(field: FieldInfo) -> Any | None:
     return None
 
 
-def _attribute_doc(name: str, field: FieldInfo) -> AttributeDoc:
-    """Document a single attribute field as a rule-bearing ``AttributeDoc``."""
+def _attribute_doc(
+    name: str, field: FieldInfo, fragment: dict[str, Any]
+) -> AttributeDoc:
+    """Document a single attribute field as a rule-bearing ``AttributeDoc``.
+
+    ``fragment`` is the field's JSON-schema fragment, normalised into the
+    attribute's typed constraint list.
+    """
     return AttributeDoc(
         name=name,
         description=field.description,
         example=_example(field),
         required=field.is_required(),
+        constraints=normalize_constraints(fragment),
     )
 
 
@@ -46,8 +54,10 @@ def _document_attributes(model: type[BaseModel] | None) -> list[AttributeDoc]:
     """Document every attribute declared on an attributes container model."""
     if model is None:
         return []
+    properties = model.model_json_schema().get("properties", {})
     return [
-        _attribute_doc(name, field) for name, field in model.model_fields.items()
+        _attribute_doc(name, field, properties.get(name, {}))
+        for name, field in model.model_fields.items()
     ]
 
 

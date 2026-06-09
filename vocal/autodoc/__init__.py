@@ -11,6 +11,7 @@ Both return a serialisable IR (see :mod:`vocal.autodoc.ir`). No renderer and no
 CLI live here — the IR is the deliverable.
 """
 
+from .constraints import normalize_constraints
 from .ir import (
     AttributeDoc,
     ConstraintDoc,
@@ -32,6 +33,7 @@ __all__ = [
     "RuleDoc",
     "ParsedValue",
     "parse_value",
+    "normalize_constraints",
     "document_product",
     "document_project",
 ]

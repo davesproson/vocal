@@ -30,6 +30,7 @@ class _GlobalAttributes(BaseModel, VocalAttributesMixin):
     comment: Optional[str] = Field(
         description="An optional comment", example="a note", default=None
     )
+    revision: int = Field(description="Revision number", ge=0, example=1)
 
 
 class _Dataset(BaseModel, VocalDatasetMixin):
@@ -48,7 +49,11 @@ class TestDocumentProject:
 
     def test_documents_every_global_attribute(self) -> None:
         doc = document_project(_Dataset)
-        assert {a.name for a in doc.dataset.attributes} == {"title", "comment"}
+        assert {a.name for a in doc.dataset.attributes} == {
+            "title",
+            "comment",
+            "revision",
+        }
 
     def test_required_attribute_fields(self) -> None:
         title = _attr(document_project(_Dataset), "title")
@@ -59,6 +64,15 @@ class TestDocumentProject:
     def test_optional_attribute_is_not_required(self) -> None:
         comment = _attr(document_project(_Dataset), "comment")
         assert comment.required is False
+
+    def test_attribute_constraints_are_normalized(self) -> None:
+        from vocal.autodoc import ConstraintDoc
+
+        revision = _attr(document_project(_Dataset), "revision")
+        assert ConstraintDoc(kind="type", detail={"type": "integer"}) in (
+            revision.constraints
+        )
+        assert ConstraintDoc(kind="range", detail={"ge": 0}) in revision.constraints
 
     def test_concrete_fields_absent_in_project_mode(self) -> None:
         title = _attr(document_project(_Dataset), "title")
@@ -73,7 +87,11 @@ class TestDocumentProject:
             attributes: _GlobalAttributes
 
         doc = document_project(PlainDataset)
-        assert {a.name for a in doc.dataset.attributes} == {"title", "comment"}
+        assert {a.name for a in doc.dataset.attributes} == {
+            "title",
+            "comment",
+            "revision",
+        }
 
     def test_roundtrips_through_json(self) -> None:
         doc = document_project(_Dataset)
