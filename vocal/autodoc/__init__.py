@@ -12,6 +12,7 @@ CLI live here — the IR is the deliverable.
 """
 
 from .constraints import normalize_constraints
+from .diagnostics import mixin_mismatch, undescribed_validator
 from .ir import (
     AttributeDoc,
     ConstraintDoc,
@@ -43,6 +44,8 @@ __all__ = [
     "ParsedValue",
     "parse_value",
     "normalize_constraints",
+    "mixin_mismatch",
+    "undescribed_validator",
     "document_product",
     "document_project",
     "attribute_rules",

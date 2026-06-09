@@ -25,7 +25,7 @@ from vocal.mixins import (
     VocalGroupMixin,
     VocalVariableMixin,
 )
-from vocal.validation import variable_has_dimensions
+from vocal.validation import Attribute, variable_has_dimensions, vocal_validator
 
 
 # ---------------------------------------------------------------------------
@@ -459,6 +459,55 @@ class TestProductMeta:
     def test_roundtrips_through_json(self) -> None:
         doc = document_product(_PRODUCT)
         assert ProductDoc.model_validate_json(doc.model_dump_json()) == doc
+
+
+# ---------------------------------------------------------------------------
+# Diagnostics / doc-lint (slice 8): documentation gaps surfaced non-fatally on
+# the project IR's `diagnostics` list while the walk completes normally.
+# ---------------------------------------------------------------------------
+
+
+@vocal_validator(description="", bound=Attribute("title"))
+def _undescribed_rule(cls, value):  # pragma: no cover - never invoked
+    return value
+
+
+class TestProjectDiagnostics:
+    def test_well_formed_project_has_no_diagnostics(self) -> None:
+        assert document_project(_Dataset).diagnostics == []
+
+    def test_undescribed_validator_is_flagged(self) -> None:
+        class _BadAttrs(_GlobalAttributes):
+            _v_blank = _undescribed_rule
+
+        class _DatasetWithGap(BaseModel, VocalDatasetMixin):
+            meta: _DatasetMeta
+            attributes: _BadAttrs
+            dimensions: list[_Dimension]
+            variables: list[_Variable]
+
+        doc = document_project(_DatasetWithGap)
+        # Non-fatal: the IR is still produced in full.
+        assert isinstance(doc, ProjectDoc)
+        assert {a.name for a in doc.dataset.attributes} >= {"title"}
+        # ... and the gap is surfaced.
+        assert any(
+            "_BadAttrs" in d and "empty description" in d for d in doc.diagnostics
+        )
+
+    def test_field_name_mixin_mismatch_is_flagged(self) -> None:
+        class _PlainAttrs(BaseModel):  # forgot VocalAttributesMixin
+            title: str = Field(description="A title", example="x")
+
+        class _DatasetWithMismatch(BaseModel, VocalDatasetMixin):
+            attributes: _PlainAttrs
+
+        doc = document_project(_DatasetWithMismatch)
+        assert isinstance(doc, ProjectDoc)
+        assert any(
+            "_PlainAttrs" in d and "VocalAttributesMixin" in d
+            for d in doc.diagnostics
+        )
 
 
 # ---------------------------------------------------------------------------
