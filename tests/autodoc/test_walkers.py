@@ -10,10 +10,12 @@ from typing import Optional
 from pydantic import BaseModel
 
 from vocal.autodoc import (
+    DimensionDoc,
     GroupDoc,
     NodeRef,
     ProductDoc,
     ProjectDoc,
+    VariableDoc,
     document_product,
     document_project,
 )
@@ -300,18 +302,21 @@ class TestDocumentProduct:
 
 
 class TestProjectVariablesAndDimensions:
-    def test_variables_hold_exactly_one_template(self) -> None:
+    def test_variables_slot_is_a_ref_to_the_template(self) -> None:
         doc = document_project(_Dataset)
-        assert len(doc.dataset.variables) == 1
+        (ref,) = doc.dataset.variables
+        assert isinstance(ref, NodeRef)
+        assert ref.ref == "_Variable"
 
-    def test_template_has_no_concrete_fields(self) -> None:
-        (template,) = document_project(_Dataset).dataset.variables
+    def test_variable_template_lives_in_defs(self) -> None:
+        template = document_project(_Dataset).defs["_Variable"]
+        assert isinstance(template, VariableDoc)
         assert template.name is None
         assert template.datatype is None
         assert template.dimensions is None
 
     def test_template_attributes_reuse_attribute_walk(self) -> None:
-        (template,) = document_project(_Dataset).dataset.variables
+        template = document_project(_Dataset).defs["_Variable"]
         names = {a.name for a in template.attributes}
         assert names == {"long_name", "units"}
         long_name = next(a for a in template.attributes if a.name == "long_name")
@@ -321,16 +326,28 @@ class TestProjectVariablesAndDimensions:
         assert long_name.required is True
 
     def test_template_carries_variable_model_rules(self) -> None:
-        (template,) = document_project(_Dataset).dataset.variables
+        template = document_project(_Dataset).defs["_Variable"]
         assert template.rules is not None
         assert any("dimensions" in r.description for r in template.rules)
 
-    def test_dimensions_hold_exactly_one_template(self) -> None:
+    def test_dimensions_slot_is_a_ref_to_the_template(self) -> None:
         doc = document_project(_Dataset)
-        assert len(doc.dataset.dimensions) == 1
-        (template,) = doc.dataset.dimensions
+        (ref,) = doc.dataset.dimensions
+        assert isinstance(ref, NodeRef)
+        assert ref.ref == "_Dimension"
+        template = doc.defs["_Dimension"]
+        assert isinstance(template, DimensionDoc)
         assert template.name is None
         assert template.size is None
+
+    def test_variable_template_is_shared_not_duplicated(self) -> None:
+        # The dataset and the group both use the same `_Variable` model, so it is
+        # documented once in `defs` and both slots reference that single entry.
+        doc = document_project(_Dataset)
+        (dataset_ref,) = doc.dataset.variables
+        (group_ref,) = doc.defs["Group"].variables
+        assert dataset_ref.ref == group_ref.ref == "_Variable"
+        assert isinstance(doc.defs["_Variable"], VariableDoc)
 
     def test_roundtrips_through_json(self) -> None:
         doc = document_project(_Dataset)
@@ -522,9 +539,9 @@ class TestProjectGroups:
         assert isinstance(ref, NodeRef)
         assert ref.ref == "Group"
 
-    def test_defs_holds_single_group_template(self) -> None:
+    def test_defs_registers_group_variable_and_dimension_templates(self) -> None:
         doc = document_project(_Dataset)
-        assert set(doc.defs) == {"Group"}
+        assert set(doc.defs) == {"_Variable", "_Dimension", "Group"}
         assert isinstance(doc.defs["Group"], GroupDoc)
 
     def test_group_template_reuses_attribute_and_variable_walks(self) -> None:
@@ -535,9 +552,12 @@ class TestProjectGroups:
         group_title = template.attributes[0]
         assert group_title.description == "The group title"
         assert group_title.required is True
-        # Reuses the variable/dimension template walks.
-        assert len(template.variables) == 1
-        assert len(template.dimensions) == 1
+        # References the shared variable/dimension templates rather than
+        # re-expanding them in place.
+        (var_ref,) = template.variables
+        (dim_ref,) = template.dimensions
+        assert isinstance(var_ref, NodeRef) and var_ref.ref == "_Variable"
+        assert isinstance(dim_ref, NodeRef) and dim_ref.ref == "_Dimension"
 
     def test_group_recursion_is_noderef_back_to_template(self) -> None:
         template = document_project(_Dataset).defs["Group"]
@@ -545,14 +565,15 @@ class TestProjectGroups:
         assert isinstance(ref, NodeRef)
         assert ref.ref == "Group"
 
-    def test_dataset_without_groups_has_empty_slot_and_defs(self) -> None:
+    def test_dataset_without_groups_has_no_group_def(self) -> None:
         class NoGroups(BaseModel, VocalDatasetMixin):
             attributes: _GlobalAttributes
             variables: list[_Variable]
 
         doc = document_project(NoGroups)
         assert doc.dataset.groups == []
-        assert doc.defs == {}
+        # The variable template still registers; only the group def is absent.
+        assert "Group" not in doc.defs
 
     def test_roundtrips_through_json(self) -> None:
         doc = document_project(_Dataset)

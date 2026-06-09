@@ -13,7 +13,7 @@ inline (no separate lint pass) and surfaced on the returned ``ProjectDoc``.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from pydantic import BaseModel
 from pydantic.fields import FieldInfo
@@ -29,6 +29,7 @@ from .ir import (
     NodeRef,
     ProjectDoc,
     RuleDoc,
+    TemplateDef,
     VariableDoc,
 )
 from .rules import attribute_rules, model_rules
@@ -99,56 +100,47 @@ def _document_attributes(
 
 
 def _variable_template(
-    model: type[BaseModel] | None, diagnostics: list[str]
-) -> list[VariableDoc]:
-    """Document the variable *template* — what every variable must look like.
+    model: type[BaseModel], defs: dict[str, TemplateDef], diagnostics: list[str]
+) -> VariableDoc:
+    """Build the variable *template* — what every variable must look like.
 
-    The project does not enumerate concrete variables, so this returns exactly
-    one ``VariableDoc`` derived from the ``Variable`` model (or an empty list
-    when the dataset declares no ``variables`` field). The template carries the
-    rule-bearing attribute specs (reusing the attribute walk, so constraints and
-    attribute-bound rules compose in automatically) and the variable model's own
-    structural rules; ``name`` / ``datatype`` / ``dimensions`` stay ``None``.
+    Carries the rule-bearing attribute specs (reusing the attribute walk, so
+    constraints and attribute-bound rules compose in automatically) and the
+    variable model's own structural rules; ``name`` / ``datatype`` /
+    ``dimensions`` stay ``None``. Registered once in ``defs`` and referenced from
+    every container's ``variables`` slot (see :func:`_project_template`).
     """
-    if model is None:
-        return []
     record_undescribed(model, diagnostics)
-    return [
-        VariableDoc(
-            attributes=_document_attributes(
-                _field(model, "attributes", diagnostics), diagnostics
-            ),
-            rules=model_rules(model) or None,
-        )
-    ]
+    return VariableDoc(
+        attributes=_document_attributes(
+            _field(model, "attributes", diagnostics), diagnostics
+        ),
+        rules=model_rules(model) or None,
+    )
 
 
 def _dimension_template(
-    model: type[BaseModel] | None, diagnostics: list[str]
-) -> list[DimensionDoc]:
-    """Document the dimension spec as a single template ``DimensionDoc``.
-
-    Like the variable template, the project does not fix concrete dimensions, so
-    this returns one ``DimensionDoc`` carrying only the dimension model's
-    structural rules (``name`` / ``size`` stay ``None``), or an empty list when
-    the dataset declares no ``dimensions`` field.
-    """
-    if model is None:
-        return []
+    model: type[BaseModel], defs: dict[str, TemplateDef], diagnostics: list[str]
+) -> DimensionDoc:
+    """Build the dimension *template*: only the dimension model's structural
+    rules (``name`` / ``size`` stay ``None``). Registered once in ``defs`` and
+    referenced from every container's ``dimensions`` slot."""
     record_undescribed(model, diagnostics)
-    return [DimensionDoc(rules=model_rules(model) or None)]
+    return DimensionDoc(rules=model_rules(model) or None)
 
 
 def _group_template(
-    group_model: type[BaseModel], name: str, diagnostics: list[str]
+    group_model: type[BaseModel], defs: dict[str, TemplateDef], diagnostics: list[str]
 ) -> GroupDoc:
     """Build the single ``GroupDoc`` template for the recursive group model.
 
     A group mirrors the dataset's structure, so the template reuses the
-    attribute / variable / dimension walks and carries the group model's own
-    structural rules. Its own recursive ``groups`` slot is a ``NodeRef`` back to
-    itself (``name``), keeping the template finite — the only recursive type in
-    a vocal standard is ``Group``.
+    attribute walk and *references* the shared variable / dimension templates
+    (registered once in ``defs`` — a group's ``Variable`` is the same model the
+    dataset uses, so it is documented once, not re-expanded here). It carries the
+    group model's own structural rules. Its own recursive ``groups`` slot is a
+    ``NodeRef`` back to itself, keeping the template finite — the only recursive
+    type in a vocal standard is ``Group``.
     """
     record_undescribed(group_model, diagnostics)
     nested = _field(group_model, "groups", diagnostics)
@@ -157,32 +149,41 @@ def _group_template(
             _field(group_model, "attributes", diagnostics), diagnostics
         ),
         rules=model_rules(group_model) or None,
-        variables=_variable_template(
-            _field(group_model, "variables", diagnostics), diagnostics
+        variables=_project_template(
+            group_model, "variables", defs, diagnostics, _variable_template
         ),
-        dimensions=_dimension_template(
-            _field(group_model, "dimensions", diagnostics), diagnostics
+        dimensions=_project_template(
+            group_model, "dimensions", defs, diagnostics, _dimension_template
         ),
-        groups=[NodeRef(ref=name)] if nested is not None else [],
+        groups=[NodeRef(ref=group_model.__name__)] if nested is not None else [],
     )
 
 
-def _project_groups(
-    container: type[BaseModel], defs: dict[str, GroupDoc], diagnostics: list[str]
-) -> list[GroupDoc | NodeRef]:
-    """Document a container's recursive ``groups`` slot in project mode.
+def _project_template(
+    container: type[BaseModel],
+    field_name: str,
+    defs: dict[str, TemplateDef],
+    diagnostics: list[str],
+    build: Callable[
+        [type[BaseModel], dict[str, TemplateDef], list[str]], TemplateDef
+    ],
+) -> list[NodeRef]:
+    """Document a container's ``field_name`` slot as a single ``NodeRef``.
 
-    The slot holds a single ``NodeRef`` to the group template rather than
-    expanding the recursive ``Group`` type inline; the template is emitted once
-    into the root ``defs`` registry, keyed by the group model's name. Returns an
-    empty list when the container declares no ``groups`` field.
+    The referenced model's template is built once via ``build`` and registered
+    in ``defs`` under the model's type name; repeat occurrences of the same model
+    — the shared ``Variable`` / ``Dimension`` reused by every group, or the
+    recursive ``Group`` itself — resolve to that one entry instead of being
+    re-expanded. Returns an empty list when the container declares no such field.
+    Variables, dimensions and groups are all represented this way in project
+    mode, so a renderer dereferences every slot uniformly.
     """
-    group_model = _field(container, "groups", diagnostics)
-    if group_model is None:
+    model = _field(container, field_name, diagnostics)
+    if model is None:
         return []
-    name = group_model.__name__
+    name = model.__name__
     if name not in defs:
-        defs[name] = _group_template(group_model, name, diagnostics)
+        defs[name] = build(model, defs, diagnostics)
     return [NodeRef(ref=name)]
 
 
@@ -191,13 +192,15 @@ def document_project(dataset: type[BaseModel]) -> ProjectDoc:
 
     Accepts the ``Dataset`` *class* directly (the core owns no importing). The
     global attributes are documented along with the dataset's own model-bound
-    (structural) rules, the ``meta`` section's field specs, the variable and
-    dimension templates, and the group template (referenced from the dataset
-    and registered in ``defs``). Documentation gaps found along the way —
+    (structural) rules and the ``meta`` section's field specs. The variable,
+    dimension and group templates are each registered once in ``defs`` and
+    referenced (via ``NodeRef``) from the dataset and from any group that reuses
+    the same model, so a shared ``Variable`` is documented once rather than
+    re-expanded under every group. Documentation gaps found along the way —
     undescribed validators and field-name/mixin mismatches — are collected
     non-fatally into ``diagnostics``.
     """
-    defs: dict[str, GroupDoc] = {}
+    defs: dict[str, TemplateDef] = {}
     diagnostics: list[str] = []
     record_undescribed(dataset, diagnostics)
     doc = DatasetDoc(
@@ -206,13 +209,13 @@ def document_project(dataset: type[BaseModel]) -> ProjectDoc:
         ),
         meta=_document_attributes(_field(dataset, "meta", diagnostics), diagnostics),
         rules=model_rules(dataset) or None,
-        variables=_variable_template(
-            _field(dataset, "variables", diagnostics), diagnostics
+        variables=_project_template(
+            dataset, "variables", defs, diagnostics, _variable_template
         ),
-        dimensions=_dimension_template(
-            _field(dataset, "dimensions", diagnostics), diagnostics
+        dimensions=_project_template(
+            dataset, "dimensions", defs, diagnostics, _dimension_template
         ),
-        groups=_project_groups(dataset, defs, diagnostics),
+        groups=_project_template(dataset, "groups", defs, diagnostics, _group_template),
     )
     # De-duplicate while preserving first-seen order: a recursive group's slot is
     # re-resolved when its template is built, which can re-report the same gap.

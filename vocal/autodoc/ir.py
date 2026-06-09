@@ -79,9 +79,13 @@ class DimensionDoc(BaseModel):
     Product mode fills the concrete ``name`` and ``size`` (``size`` is ``None``
     for an unlimited dimension). Project mode emits a single template carrying
     only the dimension model's structural ``rules`` (``name`` / ``size`` stay
-    ``None`` because the standard does not fix concrete dimensions).
+    ``None`` because the standard does not fix concrete dimensions). In project
+    mode the template is registered once in :attr:`ProjectDoc.defs` and the
+    container's ``dimensions`` slot holds a ``NodeRef`` to it; the ``kind`` tag
+    discriminates the ``DimensionDoc | NodeRef`` slot union.
     """
 
+    kind: Literal["dimension"] = "dimension"
     name: str | None = None
     size: int | None = None
 
@@ -96,10 +100,15 @@ class VariableDoc(BaseModel):
     look like: its ``attributes`` are the rule-bearing attribute specs (reusing
     the attribute walk) and ``rules`` are the variable model's structural rules;
     ``name`` / ``datatype`` / ``dimensions`` stay ``None`` because the standard
-    does not enumerate concrete variables. Product mode fills the concrete
+    does not enumerate concrete variables. The template is registered once in
+    :attr:`ProjectDoc.defs` and every container's ``variables`` slot holds a
+    ``NodeRef`` to it (so the one shared ``Variable`` model is documented once,
+    not re-expanded under each group); the ``kind`` tag discriminates the
+    ``VariableDoc | NodeRef`` slot union. Product mode fills the concrete
     ``name`` / ``datatype`` / ``dimensions`` and the attributes' concrete values.
     """
 
+    kind: Literal["variable"] = "variable"
     name: str | None = None
 
     # Concrete fields (product mode).
@@ -126,6 +135,13 @@ class NodeRef(BaseModel):
     ref: str
 
 
+# A container's ``variables`` / ``dimensions`` slot is either an inlined concrete
+# node (product mode) or a ``NodeRef`` to the single shared template registered
+# in ``defs`` (project mode). Discriminated on ``kind`` so product consumers can
+# ignore the ref arm and the IR round-trips through JSON.
+VariableChild = Annotated[Union[VariableDoc, NodeRef], Field(discriminator="kind")]
+DimensionChild = Annotated[Union[DimensionDoc, NodeRef], Field(discriminator="kind")]
+
 # The single structural location where the recursive group union appears: a
 # child group is either an inlined ``GroupDoc`` (product mode) or a ``NodeRef``
 # to the group template (project mode). Discriminated on ``kind`` so product
@@ -149,8 +165,8 @@ class GroupDoc(BaseModel):
     name: str | None = None
     attributes: list[AttributeDoc] = Field(default_factory=list)
     rules: list[RuleDoc] | None = None
-    variables: list[VariableDoc] = Field(default_factory=list)
-    dimensions: list[DimensionDoc] = Field(default_factory=list)
+    variables: list[VariableChild] = Field(default_factory=list)
+    dimensions: list[DimensionChild] = Field(default_factory=list)
     groups: list[GroupChild] = Field(default_factory=list)
 
 
@@ -163,10 +179,11 @@ class DatasetDoc(BaseModel):
     on the ``Dataset`` model itself — the structural requirements
     (``variable_exists`` / ``dimension_exists`` / … and bespoke model
     validators) that apply to the dataset as a whole rather than to a single
-    attribute. ``variables`` holds exactly one template ``VariableDoc`` in
-    project mode and the N concrete variables in product mode; ``dimensions``
-    likewise. ``groups`` holds a single ``NodeRef`` (project mode, template in
-    ``defs``) or the N inlined ``GroupDoc`` nodes (product mode).
+    attribute. ``variables`` holds a single ``NodeRef`` to the shared
+    ``Variable`` template (project mode, template in ``defs``) or the N concrete
+    variables in product mode; ``dimensions`` likewise. ``groups`` holds a single
+    ``NodeRef`` (project mode, template in ``defs``) or the N inlined
+    ``GroupDoc`` nodes (product mode).
 
     ``meta`` documents the dataset's headline section — file pattern,
     short/canonical name, description and references — as a list of
@@ -178,9 +195,17 @@ class DatasetDoc(BaseModel):
     attributes: list[AttributeDoc] = Field(default_factory=list)
     meta: list[AttributeDoc] = Field(default_factory=list)
     rules: list[RuleDoc] | None = None
-    variables: list[VariableDoc] = Field(default_factory=list)
-    dimensions: list[DimensionDoc] = Field(default_factory=list)
+    variables: list[VariableChild] = Field(default_factory=list)
+    dimensions: list[DimensionChild] = Field(default_factory=list)
     groups: list[GroupChild] = Field(default_factory=list)
+
+
+# A template registered in ``ProjectDoc.defs``: a group, variable or dimension
+# template, discriminated on ``kind`` so the heterogeneous registry round-trips
+# through JSON. A matching ``NodeRef.ref`` resolves against the registry key.
+TemplateDef = Annotated[
+    Union[GroupDoc, VariableDoc, DimensionDoc], Field(discriminator="kind")
+]
 
 
 class ProjectDoc(BaseModel):
@@ -188,16 +213,19 @@ class ProjectDoc(BaseModel):
 
     Carries the documented ``dataset`` plus root-level concerns: ``diagnostics``
     (documentation gaps surfaced during the walk) and the project-only ``defs``
-    registry used to represent recursive groups without infinite expansion.
+    registry used to represent shared/recursive node templates without infinite
+    expansion or duplication.
     """
 
     mode: Literal["project"] = "project"
     dataset: DatasetDoc
     diagnostics: list[str] = Field(default_factory=list)
-    # Project-only registry of reusable node templates: the recursive ``Group``
-    # template lands here, keyed by the referenced type name that the matching
-    # ``NodeRef.ref`` resolves against.
-    defs: dict[str, GroupDoc] = Field(default_factory=dict)
+    # Project-only registry of reusable node templates, keyed by the referenced
+    # model's type name. Holds the recursive ``Group`` template plus the shared
+    # ``Variable`` / ``Dimension`` templates — each documented once even though a
+    # group reuses the same models the dataset does. A matching ``NodeRef.ref``
+    # resolves against the key.
+    defs: dict[str, TemplateDef] = Field(default_factory=dict)
 
 
 class ProductDoc(BaseModel):
