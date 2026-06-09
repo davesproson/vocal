@@ -16,7 +16,8 @@ from pydantic.fields import FieldInfo
 
 from ._introspect import field_model
 from .constraints import normalize_constraints
-from .ir import AttributeDoc, DatasetDoc, ProjectDoc
+from .ir import AttributeDoc, DatasetDoc, ProjectDoc, RuleDoc
+from .rules import attribute_rules
 
 
 def _example(field: FieldInfo) -> Any | None:
@@ -34,12 +35,16 @@ def _example(field: FieldInfo) -> Any | None:
 
 
 def _attribute_doc(
-    name: str, field: FieldInfo, fragment: dict[str, Any]
+    name: str,
+    field: FieldInfo,
+    fragment: dict[str, Any],
+    rules: list[RuleDoc] | None,
 ) -> AttributeDoc:
     """Document a single attribute field as a rule-bearing ``AttributeDoc``.
 
     ``fragment`` is the field's JSON-schema fragment, normalised into the
-    attribute's typed constraint list.
+    attribute's typed constraint list; ``rules`` are the custom validator rules
+    bound to this attribute (``None`` when it has none).
     """
     return AttributeDoc(
         name=name,
@@ -47,6 +52,7 @@ def _attribute_doc(
         example=_example(field),
         required=field.is_required(),
         constraints=normalize_constraints(fragment),
+        rules=rules,
     )
 
 
@@ -55,8 +61,9 @@ def _document_attributes(model: type[BaseModel] | None) -> list[AttributeDoc]:
     if model is None:
         return []
     properties = model.model_json_schema().get("properties", {})
+    rules = attribute_rules(model)
     return [
-        _attribute_doc(name, field, properties.get(name, {}))
+        _attribute_doc(name, field, properties.get(name, {}), rules.get(name))
         for name, field in model.model_fields.items()
     ]
 

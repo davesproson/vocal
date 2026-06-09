@@ -55,9 +55,16 @@ def _bind_validator(binding: Binding | None) -> Callable:
     raise ValueError(f"Unknown binding: {binding}")
 
 
-def vocal_validator(description: str = "", bound: Binding | None = None):
+def vocal_validator(
+    description: str = "", bound: Binding | None = None, **metadata: Any
+):
     """
     A decorator for attaching metadata to a validator function.
+
+    Extra keyword arguments are attached as additional metadata attributes
+    (e.g. ``vocabulary=`` for :func:`in_vocabulary`, so autodoc can enumerate a
+    controlled vocabulary's members). They are set on both the raw function and
+    the bound proxy alongside ``description`` / ``binding``.
     """
 
     def inner[I](func: Callable[[Any, I], I]) -> Validator[I]:
@@ -68,12 +75,16 @@ def vocal_validator(description: str = "", bound: Binding | None = None):
         _func = cast(Validator[I], func)
         _func.description = description
         _func.binding = bound
+        for key, value in metadata.items():
+            setattr(_func, key, value)
         # Also attach to the proxy that binding returns, so the factory's return
         # value is introspectable before it is assigned onto a model (the proxy
         # does not forward attribute access to the function it wraps).
         bound_validator = cast(Validator[I], _bind_validator(bound)(_func))
         bound_validator.description = description
         bound_validator.binding = bound
+        for key, value in metadata.items():
+            setattr(bound_validator, key, value)
         return bound_validator
 
     return inner
@@ -91,11 +102,16 @@ def validate[I](binding: Binding, validator: Validator[I]) -> Validator[I]:
         The validator bound to the given binding
     """
     description = getattr(validator, "description", "")
+    vocabulary = getattr(validator, "vocabulary", None)
     validator.description = description
     validator.binding = binding
     bound_validator = cast(Validator[I], _bind_validator(binding)(validator))
     bound_validator.description = description
     bound_validator.binding = binding
+    # Carry forward any vocabulary metadata so autodoc can still enumerate it.
+    if vocabulary is not None:
+        validator.vocabulary = vocabulary  # type: ignore[attr-defined]
+        bound_validator.vocabulary = vocabulary  # type: ignore[attr-defined]
     return bound_validator
 
 
@@ -337,7 +353,9 @@ def in_vocabulary(vocabulary: Vocabulary, *, attribute: str) -> Validator[str]:
     """
 
     @vocal_validator(
-        description=f"Value must be in {vocabulary}", bound=Attribute(attribute)
+        description=getattr(vocabulary, "description", None) or f"Value must be in {vocabulary}",
+        bound=Attribute(attribute),
+        vocabulary=vocabulary,
     )
     def _validator(cls: Any, value: str) -> str:
         if value not in vocabulary:
