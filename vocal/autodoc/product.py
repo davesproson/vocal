@@ -14,7 +14,7 @@ import json
 import os
 from typing import Any
 
-from .ir import AttributeDoc, DatasetDoc, ProductDoc
+from .ir import AttributeDoc, DatasetDoc, DimensionDoc, ProductDoc, VariableDoc
 from .placeholder import parse_value
 
 
@@ -42,14 +42,51 @@ def _document_attributes(attributes: dict[str, Any]) -> list[AttributeDoc]:
     return [_attribute_doc(name, raw) for name, raw in attributes.items()]
 
 
+def _datatype(raw: Any) -> Any:
+    """Recover a variable's datatype from its ``<dtype>`` notation.
+
+    A product records a variable's datatype as e.g. ``"<float32>"``; strip the
+    angle brackets so the IR carries the bare ``"float32"`` (matching the dtype
+    the placeholder parser reports for derived attribute values). A non-string
+    or already-bare value passes through unchanged.
+    """
+    if isinstance(raw, str):
+        return raw.strip("<>")
+    return raw
+
+
+def _document_variable(raw: dict[str, Any]) -> VariableDoc:
+    """Document a single concrete variable from its raw product JSON.
+
+    The variable's ``meta`` carries its ``name`` and ``datatype``; ``dimensions``
+    is the list of dimension names it spans; its attributes reuse the concrete
+    attribute walk, so they get the same ``AttributeDoc`` shape as the globals.
+    """
+    meta = raw.get("meta", {})
+    return VariableDoc(
+        name=meta.get("name"),
+        datatype=_datatype(meta.get("datatype")),
+        dimensions=raw.get("dimensions"),
+        attributes=_document_attributes(raw.get("attributes", {})),
+    )
+
+
+def _document_dimension(raw: dict[str, Any]) -> DimensionDoc:
+    """Document a single concrete dimension (its ``name`` and ``size``)."""
+    return DimensionDoc(name=raw.get("name"), size=raw.get("size"))
+
+
 def document_product(spec: dict[str, Any] | str | os.PathLike) -> ProductDoc:
     """Document a product-pack spec into a :class:`ProductDoc`.
 
     Accepts the loaded JSON dict or a path to it, walks the raw structure by
     canonical CDM keys, and never imports or validates against the project.
-    Slice 1 documents the global attributes only.
+    Documents the global attributes plus the concrete variables and dimensions.
     """
     data = _load(spec)
-    attributes = data.get("attributes", {})
-    doc = DatasetDoc(attributes=_document_attributes(attributes))
+    doc = DatasetDoc(
+        attributes=_document_attributes(data.get("attributes", {})),
+        variables=[_document_variable(v) for v in data.get("variables", [])],
+        dimensions=[_document_dimension(d) for d in data.get("dimensions", [])],
+    )
     return ProductDoc(dataset=doc)

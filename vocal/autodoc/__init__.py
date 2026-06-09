@@ -16,9 +16,11 @@ from .ir import (
     AttributeDoc,
     ConstraintDoc,
     DatasetDoc,
+    DimensionDoc,
     ProductDoc,
     ProjectDoc,
     RuleDoc,
+    VariableDoc,
 )
 from .placeholder import ParsedValue, parse_value
 from .product import document_product
@@ -29,9 +31,11 @@ __all__ = [
     "AttributeDoc",
     "ConstraintDoc",
     "DatasetDoc",
+    "DimensionDoc",
     "ProductDoc",
     "ProjectDoc",
     "RuleDoc",
+    "VariableDoc",
     "ParsedValue",
     "parse_value",
     "normalize_constraints",

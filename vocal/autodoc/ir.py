@@ -73,19 +73,63 @@ class AttributeDoc(BaseModel):
     datatype: str | None = None
 
 
+class DimensionDoc(BaseModel):
+    """A dimension, in either mode.
+
+    Product mode fills the concrete ``name`` and ``size`` (``size`` is ``None``
+    for an unlimited dimension). Project mode emits a single template carrying
+    only the dimension model's structural ``rules`` (``name`` / ``size`` stay
+    ``None`` because the standard does not fix concrete dimensions).
+    """
+
+    name: str | None = None
+    size: int | None = None
+
+    # Rule-bearing field (project mode): structural rules on the dimension model.
+    rules: list[RuleDoc] | None = None
+
+
+class VariableDoc(BaseModel):
+    """A variable, in either mode.
+
+    Project mode emits a single *template* describing what every variable must
+    look like: its ``attributes`` are the rule-bearing attribute specs (reusing
+    the attribute walk) and ``rules`` are the variable model's structural rules;
+    ``name`` / ``datatype`` / ``dimensions`` stay ``None`` because the standard
+    does not enumerate concrete variables. Product mode fills the concrete
+    ``name`` / ``datatype`` / ``dimensions`` and the attributes' concrete values.
+    """
+
+    name: str | None = None
+
+    # Concrete fields (product mode).
+    datatype: str | None = None
+    dimensions: list[str] | None = None
+
+    # Shared: rule-bearing attribute specs (project) or concrete values (product).
+    attributes: list[AttributeDoc] = Field(default_factory=list)
+
+    # Rule-bearing field (project mode): structural rules on the variable model.
+    rules: list[RuleDoc] | None = None
+
+
 class DatasetDoc(BaseModel):
-    """The root container node. Holds the global attributes (slice 1).
+    """The root container node. Holds the global attributes (slice 1),
+    plus the variables and dimensions (slice 5).
 
     ``rules`` carries the container-level (model-bound) validator rules declared
     on the ``Dataset`` model itself — the structural requirements
     (``variable_exists`` / ``dimension_exists`` / … and bespoke model
     validators) that apply to the dataset as a whole rather than to a single
-    attribute. Later slices add ``variables`` / ``dimensions`` / ``groups`` /
-    ``meta``.
+    attribute. ``variables`` holds exactly one template ``VariableDoc`` in
+    project mode and the N concrete variables in product mode; ``dimensions``
+    likewise. Later slices add ``groups`` / ``meta``.
     """
 
     attributes: list[AttributeDoc] = Field(default_factory=list)
     rules: list[RuleDoc] | None = None
+    variables: list[VariableDoc] = Field(default_factory=list)
+    dimensions: list[DimensionDoc] = Field(default_factory=list)
 
 
 class ProjectDoc(BaseModel):
