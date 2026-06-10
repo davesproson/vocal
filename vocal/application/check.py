@@ -38,6 +38,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 
 
 from vocal.application.fetch import fetch_for_file, summarise_outcomes
+from vocal.application.fetch_gate import confirm_file_fetch
 from vocal.checking.checking import CheckReport
 from vocal.conventions_file import import_project_package
 from vocal.exceptions import VocalError
@@ -407,6 +408,16 @@ def command(
             "a project path manually. Use one or the other.\n"
         )
         raise typer.Exit(code=1)
+
+    # Gate the file-driven fetch before the progress spinner: a project URL
+    # declared inside an untrusted file means code that will run on check. The
+    # prompt fires here so it does not fight a transient spinner for the terminal.
+    if fetch:
+        try:
+            confirm_file_fetch(filename, route="check", no_color=no_color)
+        except VocalError as e:
+            _print_error(e)
+            raise typer.Exit(code=1)
 
     if quiet:
         progress_context: Progress | NoopProgress = NoopProgress()

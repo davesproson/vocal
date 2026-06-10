@@ -29,6 +29,7 @@ from vocal.application.github_source import (
     derive_repo_name,
     materialize_repo,
 )
+from vocal.application.fetch_gate import confirm_file_fetch
 from vocal.application.register import (
     install_pack,
     install_project,
@@ -532,6 +533,10 @@ def command(
 
     try:
         if for_file is not None:
+            # Gate the file-driven fetch: a project URL declared inside an
+            # untrusted file means code that will run on check. Fires only the
+            # first time a new project would be installed.
+            confirm_file_fetch(for_file, route="fetch")
             outcomes = fetch_for_file(for_file, git=git, update=update, force=force)
             summarise_outcomes(outcomes)
         else:

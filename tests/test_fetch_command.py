@@ -113,9 +113,12 @@ class TestFetchForFile:
             FetchOutcome("project", "https://host/std.git", "fetched"),
             FetchOutcome("pack", None, "none-declared"),
         ]
-        with patch(
-            "vocal.application.fetch.fetch_for_file", return_value=outcomes
-        ) as fff:
+        with (
+            patch("vocal.application.fetch.confirm_file_fetch"),
+            patch(
+                "vocal.application.fetch.fetch_for_file", return_value=outcomes
+            ) as fff,
+        ):
             result = runner.invoke(_app(), ["--for", nc])
 
         assert result.exit_code == 0
@@ -132,7 +135,10 @@ class TestFetchForFile:
             FetchOutcome("project", "https://host/std.git", "already-present"),
             FetchOutcome("pack", "https://host/pack.git", "fetched"),
         ]
-        with patch("vocal.application.fetch.fetch_for_file", return_value=outcomes):
+        with (
+            patch("vocal.application.fetch.confirm_file_fetch"),
+            patch("vocal.application.fetch.fetch_for_file", return_value=outcomes),
+        ):
             result = runner.invoke(_app(), ["--for", nc])
 
         assert result.exit_code == 0
@@ -141,9 +147,10 @@ class TestFetchForFile:
 
     def test_flags_forwarded_to_fetch_for_file(self, tmp_path: Path) -> None:
         nc = _make_nc(tmp_path, project_url="https://host/std.git")
-        with patch(
-            "vocal.application.fetch.fetch_for_file", return_value=[]
-        ) as fff:
+        with (
+            patch("vocal.application.fetch.confirm_file_fetch"),
+            patch("vocal.application.fetch.fetch_for_file", return_value=[]) as fff,
+        ):
             result = runner.invoke(
                 _app(), ["--for", nc, "--git", "--update", "--force"]
             )

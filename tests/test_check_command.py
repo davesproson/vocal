@@ -381,6 +381,7 @@ class TestFetchFlag:
         )
         spec_check = Mock(return_value=True)
         with (
+            patch("vocal.application.check.confirm_file_fetch"),
             patch("vocal.application.check.fetch_for_file") as fetch_mock,
             patch(
                 "vocal.application.check.Registry.load",
@@ -417,6 +418,7 @@ class TestFetchFlag:
             FetchOutcome("pack", "https://host/packs", "already-present"),
         ]
         with (
+            patch("vocal.application.check.confirm_file_fetch"),
             patch(
                 "vocal.application.check.fetch_for_file", return_value=outcomes
             ),
@@ -454,6 +456,7 @@ class TestFetchFlag:
         spec_check = Mock(return_value=True)
         # No pack registered: with -d the resolver must not raise PackMissing.
         with (
+            patch("vocal.application.check.confirm_file_fetch"),
             patch("vocal.application.check.fetch_for_file") as fetch_mock,
             patch(
                 "vocal.application.check.Registry.load",
@@ -559,6 +562,7 @@ class TestFetchNudge:
             project_url="https://host/mystd.git",
         )
         with (
+            patch("vocal.application.check.confirm_file_fetch"),
             patch("vocal.application.check.fetch_for_file"),
             patch("vocal.application.check.Registry.load", return_value=_registry()),
             patch(
