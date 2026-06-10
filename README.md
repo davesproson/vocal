@@ -264,6 +264,33 @@ fetched, `check` reports a typed error explaining what to fetch or register.
 
 The host and port can be configured with the `--host` and `--port` options.
 
+### Security
+
+The web GUI can fetch projects and packs from URLs, and a fetched *project's*
+Python package is imported — i.e. **runs on this machine** — when a file is
+checked. The running server is therefore a code-execution surface, so it ships
+locked down by default:
+
+- **Binds to `127.0.0.1` by default.** Only your own machine can reach it.
+- **Downloads are disabled by default.** The "Add" affordance and the `/add`
+  fetch route are turned off; the GUI checks files against projects and packs
+  you have already registered (e.g. via `vocal fetch` on the CLI). Pass
+  `--allow-downloads` to let GUI users fetch from URLs:
+
+      $ vocal web --allow-downloads
+
+- **Exposing downloads to the network is refused.** Combining a non-loopback
+  `--host` (e.g. `0.0.0.0` or a LAN address) with `--allow-downloads` would make
+  the GUI an *unauthenticated remote code execution* service, so `vocal web`
+  refuses that combination unless you explicitly acknowledge the risk with
+  `--dangerously-allow-remote`. A non-loopback bind *without* downloads is
+  allowed (a read-only viewer) but prints a warning.
+
+**Residual risk (CSRF).** The Add form carries no CSRF token, so when downloads
+are enabled a malicious web page you visit could issue a cross-origin request to
+the GUI on `localhost` and trigger a fetch. The default-off posture mitigates
+this for the common case; only enable downloads on a machine you trust.
+
 ## Creating example data
 
 *Vocal* can be used to create example data files from *vocal* projects and data product definitions. To do this, use the `build` command:

@@ -4,8 +4,13 @@
 <div class="centered-page">
     <div class="empty-state">
         <h2>No projects registered</h2>
+        {% if allow_user_download %}
         <p>Add a Vocal project to start validating NetCDF files against definitions.</p>
         <a class="btn btn-primary" href="/add">Add project</a>
+        {% else %}
+        <p>Register a Vocal project with <code>vocal fetch</code> to start
+        validating NetCDF files against definitions.</p>
+        {% endif %}
     </div>
 </div>
 {% endblock %}

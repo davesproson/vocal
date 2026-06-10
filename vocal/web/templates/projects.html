@@ -4,7 +4,9 @@
 <div class="container">
     <div class="page-header">
         <h1>Projects</h1>
+        {% if allow_user_download %}
         <a class="btn btn-primary" href="/add">Add</a>
+        {% endif %}
     </div>
 
     {% for project in library.projects %}

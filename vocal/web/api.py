@@ -1,7 +1,7 @@
 import logging
 import os
 
-from fastapi import FastAPI, HTTPException, Request, File, UploadFile, status
+from fastapi import APIRouter, FastAPI, Request, File, UploadFile, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -15,15 +15,27 @@ from vocal.web.utils import check_upload
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI()
 
-app.mount(
-    "/static",
-    StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")),
-    name="static",
-)
+def _download_flag_context(request: Request) -> dict[str, bool]:
+    """Inject ``allow_user_download`` into every template's context.
+
+    Registered as a Jinja2 context processor so the flag is present in *all*
+    rendered templates without per-route plumbing — this is what lets the "Add"
+    affordance be hidden everywhere it appears (and makes "forgot to hide it on
+    one page" structurally impossible). The flag is read from ``app.state`` at
+    render time, defaulting to ``False`` so a stray render without it errs safe.
+    """
+    return {
+        "allow_user_download": getattr(
+            request.app.state, "allow_user_download", False
+        )
+    }
+
+
+router = APIRouter()
 templates = Jinja2Templates(
-    directory=os.path.join(os.path.dirname(__file__), "templates")
+    directory=os.path.join(os.path.dirname(__file__), "templates"),
+    context_processors=[_download_flag_context],
 )
 
 
@@ -39,7 +51,29 @@ def _form_flag(value: object) -> bool:
     return value.strip().lower() in {"1", "true", "on", "yes"}
 
 
-@app.exception_handler(VocalError)
+def _downloads_disabled_response(request: Request) -> HTMLResponse:
+    """Render the 403 served when downloads are disabled.
+
+    Server-side enforcement for the ``--allow-downloads`` gate: hiding the form
+    and nav link is presentation only, so both ``GET /add`` and ``POST /add``
+    refuse here regardless of how the request was crafted. The default-off
+    posture means a drive-by ``POST /add`` (see the CSRF note on ``add_post``)
+    lands here unless the operator opted in.
+    """
+    return templates.TemplateResponse(
+        request=request,
+        name="error.html",
+        context={
+            "message": "Downloading projects and packs is disabled.",
+            "hint": (
+                "Restart 'vocal web' with --allow-downloads to let the GUI "
+                "fetch projects and packs from URLs."
+            ),
+        },
+        status_code=status.HTTP_403_FORBIDDEN,
+    )
+
+
 async def handle_vocal_error(request: Request, exc: VocalError) -> HTMLResponse:
     return templates.TemplateResponse(
         request=request,
@@ -49,7 +83,6 @@ async def handle_vocal_error(request: Request, exc: VocalError) -> HTMLResponse:
     )
 
 
-@app.exception_handler(Exception)
 async def handle_unhandled_error(request: Request, exc: Exception) -> HTMLResponse:
     logger.exception("Unhandled error in %s %s", request.method, request.url.path)
     return templates.TemplateResponse(
@@ -63,19 +96,26 @@ async def handle_unhandled_error(request: Request, exc: Exception) -> HTMLRespon
     )
 
 
-@app.get("/about", response_class=HTMLResponse)
+@router.get("/about", response_class=HTMLResponse)
 async def about(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request=request, name="about.html")
 
 
-@app.get("/add", response_class=HTMLResponse)
+@router.get("/add", response_class=HTMLResponse)
 async def add_get(request: Request) -> HTMLResponse:
+    if not request.app.state.allow_user_download:
+        return _downloads_disabled_response(request)
     return templates.TemplateResponse(request=request, name="add.html")
 
 
-@app.post("/add", response_class=HTMLResponse)
+@router.post("/add", response_class=HTMLResponse)
 async def add_post(request: Request):
     """Fetch whatever a URL points at — project or pack — and land on its tab.
+
+    Gated behind ``--allow-downloads`` (a fetched project's code runs on this
+    machine when a file is checked): when downloads are off this refuses with a
+    403 *before* touching the form, so a cross-origin drive-by POST (this form
+    carries no CSRF token — a documented residual risk) cannot fetch.
 
     The form is URL-only, but the handler accepts optional ``git`` / ``update``
     / ``force`` flags (defaulting off) so a later pack "Update" affordance can
@@ -83,6 +123,9 @@ async def add_post(request: Request):
     the tree, and returns the :class:`ResourceKind` it installed; we redirect to
     ``/projects`` for a project or ``/packs`` for a pack.
     """
+    if not request.app.state.allow_user_download:
+        return _downloads_disabled_response(request)
+
     form = await request.form()
     url = form.get("url")
     git = _form_flag(form.get("git"))
@@ -111,7 +154,7 @@ async def add_post(request: Request):
     return RedirectResponse(url=target, status_code=status.HTTP_302_FOUND)
 
 
-@app.get("/projects", response_class=HTMLResponse)
+@router.get("/projects", response_class=HTMLResponse)
 async def projects(request: Request) -> HTMLResponse:
     try:
         with Registry.open() as registry:
@@ -124,7 +167,7 @@ async def projects(request: Request) -> HTMLResponse:
     )
 
 
-@app.get("/packs", response_class=HTMLResponse)
+@router.get("/packs", response_class=HTMLResponse)
 async def packs(request: Request) -> HTMLResponse:
     try:
         with Registry.open() as registry:
@@ -140,7 +183,7 @@ async def packs(request: Request) -> HTMLResponse:
     )
 
 
-@app.get("/", response_class=HTMLResponse)
+@router.get("/", response_class=HTMLResponse)
 async def root(request: Request):
 
     try:
@@ -155,10 +198,39 @@ async def root(request: Request):
     return templates.TemplateResponse(request=request, name="checker.html")
 
 
-@app.post("/", response_class=JSONResponse)
+@router.post("/", response_class=JSONResponse)
 async def upload(request: Request, file: UploadFile = File(...)) -> HTMLResponse:
     context = await check_upload(file)
 
     return templates.TemplateResponse(
         request=request, name="checked.html", context=context.model_dump()
     )
+
+
+def create_app(*, allow_user_download: bool = False) -> FastAPI:
+    """Build the web-checker app with the download gate set.
+
+    ``allow_user_download`` is stored on ``app.state`` (the idiomatic place for
+    app-scoped config) where the ``/add`` handlers and the template context
+    processor read it. Defaults to ``False`` so the safe posture holds unless a
+    caller — ``vocal web --allow-downloads`` — opts in.
+    """
+    app = FastAPI()
+    app.state.allow_user_download = allow_user_download
+    app.mount(
+        "/static",
+        StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")),
+        name="static",
+    )
+    # Starlette types handlers as taking the base Exception; ours narrows to
+    # VocalError (the documented per-type-handler pattern), so silence the stub.
+    app.add_exception_handler(VocalError, handle_vocal_error)  # type: ignore[arg-type]
+    app.add_exception_handler(Exception, handle_unhandled_error)
+    app.include_router(router)
+    return app
+
+
+# Default instance with downloads disabled, for tooling that imports the app by
+# name. The CLI builds its own via ``create_app`` so the flag is an honest
+# argument rather than a global.
+app = create_app()
