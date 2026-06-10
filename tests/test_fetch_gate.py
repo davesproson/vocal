@@ -80,6 +80,19 @@ PROJECT_URL = "https://host/mystd.git"
 PACK_URL = "https://host/packs"
 
 
+@pytest.fixture(autouse=True)
+def interactive_tty():
+    """Default every shell test to an interactive TTY (can prompt).
+
+    ``confirm_file_fetch`` derives ``can_prompt`` from ``sys.stdin.isatty()``;
+    under the ``CliRunner`` stdin is not a real TTY, so without this the prompt
+    branch would never be reached. The non-interactive tests override this
+    explicitly to exercise the BLOCKED branch.
+    """
+    with patch("vocal.application.fetch_gate._stdin_isatty", return_value=True):
+        yield
+
+
 def _fetch_app() -> typer.Typer:
     app = typer.Typer()
     app.command()(fetch_command)
@@ -308,3 +321,117 @@ class TestWarningPanel:
         assert "─" in result.stderr
         # ...but no red ANSI escape leaks through.
         assert "\x1b[" not in result.stderr
+
+
+class TestNonInteractiveConsent:
+    """``--yes`` consent and the BLOCKED can't-prompt error (#48).
+
+    The gate is state-dependent: ``--fetch -q`` against a *new* project is
+    BLOCKED (it would run untrusted code unattended), but the same command
+    against an already-present project proceeds. ``--yes`` consents up front and
+    satisfies the gate without a prompt on either route.
+    """
+
+    def test_yes_bypasses_prompt_on_fetch_route(self, tmp_path: Path) -> None:
+        nc = _make_nc(tmp_path)
+        confirm = Mock()
+        with (
+            patch(
+                "vocal.application.fetch_gate.Registry.load",
+                return_value=_registry_with(),  # new project
+            ),
+            patch("vocal.application.fetch_gate.typer.confirm", confirm),
+            patch("vocal.application.fetch.fetch_for_file", return_value=[]) as fff,
+        ):
+            result = runner.invoke(_fetch_app(), ["--for", nc, "--yes"])
+
+        assert result.exit_code == 0
+        confirm.assert_not_called()
+        fff.assert_called_once()
+
+    def test_yes_bypasses_prompt_on_check_route_non_tty(self, tmp_path: Path) -> None:
+        # --yes consents even when we could not have prompted (non-TTY stdin).
+        nc = _make_nc(tmp_path)
+        confirm = Mock()
+        with (
+            patch(
+                "vocal.application.fetch_gate.Registry.load",
+                return_value=_registry_with(),
+            ),
+            patch("vocal.application.fetch_gate._stdin_isatty", return_value=False),
+            patch("vocal.application.fetch_gate.typer.confirm", confirm),
+            patch("vocal.application.check.fetch_for_file", return_value=[]) as fff,
+            patch(
+                "vocal.application.check.read_file_conventions",
+                side_effect=typer.Exit(code=0),
+            ),
+        ):
+            result = runner.invoke(_check_app(), [nc, "--fetch", "--yes"])
+
+        assert result.exit_code == 0
+        confirm.assert_not_called()
+        fff.assert_called_once()
+
+    def test_new_project_fetch_quiet_blocks_citing_yes(self, tmp_path: Path) -> None:
+        # A new project with -q and no --yes: cannot prompt → clean BLOCKED error.
+        nc = _make_nc(tmp_path)
+        confirm = Mock()
+        with (
+            patch(
+                "vocal.application.fetch_gate.Registry.load",
+                return_value=_registry_with(),
+            ),
+            patch("vocal.application.fetch_gate.typer.confirm", confirm),
+            patch("vocal.application.check.fetch_for_file") as fff,
+            patch("vocal.application.check.resolve") as resolve_mock,
+        ):
+            result = err_runner.invoke(_check_app(), [nc, "--fetch", "-q"])
+
+        assert result.exit_code == 1
+        assert "--yes" in result.stderr
+        # No prompt, no panel dumped to the pipe, no fetch, no check.
+        confirm.assert_not_called()
+        assert "Security warning" not in result.stderr
+        fff.assert_not_called()
+        resolve_mock.assert_not_called()
+
+    def test_new_project_non_tty_blocks_cleanly(self, tmp_path: Path) -> None:
+        # Non-TTY stdin (not -q) without --yes and a new project → clean error,
+        # not an EOF/abort traceback.
+        nc = _make_nc(tmp_path)
+        with (
+            patch(
+                "vocal.application.fetch_gate.Registry.load",
+                return_value=_registry_with(),
+            ),
+            patch("vocal.application.fetch_gate._stdin_isatty", return_value=False),
+            patch("vocal.application.check.fetch_for_file") as fff,
+            patch("vocal.application.check.resolve"),
+        ):
+            result = err_runner.invoke(_check_app(), [nc, "--fetch"])
+
+        assert result.exit_code == 1
+        assert "--yes" in result.stderr
+        fff.assert_not_called()
+
+    def test_already_present_fetch_quiet_succeeds(self, tmp_path: Path) -> None:
+        # The same -q command proceeds once the project is present: state-dependent.
+        nc = _make_nc(tmp_path)
+        confirm = Mock()
+        with (
+            patch(
+                "vocal.application.fetch_gate.Registry.load",
+                return_value=_registry_with(PROJECT_URL),
+            ),
+            patch("vocal.application.fetch_gate.typer.confirm", confirm),
+            patch("vocal.application.check.fetch_for_file", return_value=[]) as fff,
+            patch(
+                "vocal.application.check.read_file_conventions",
+                side_effect=typer.Exit(code=0),
+            ),
+        ):
+            result = runner.invoke(_check_app(), [nc, "--fetch", "-q"])
+
+        assert result.exit_code == 0
+        confirm.assert_not_called()
+        fff.assert_called_once()

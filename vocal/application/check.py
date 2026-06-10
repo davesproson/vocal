@@ -378,6 +378,15 @@ def command(
         ),
     ),
     quiet: bool = typer.Option(False, "-q", "--quiet", help="Do not print any output."),
+    yes: bool = typer.Option(
+        False,
+        "-y",
+        "--yes",
+        help=(
+            "Consent up front to fetching a project declared inside the file "
+            "(--fetch). Lets the confirmation gate proceed non-interactively."
+        ),
+    ),
     comments: bool = typer.Option(False, "-c", "--comments", help="Print comments."),
     no_color: bool = typer.Option(
         False, "--no-color", help="Do not print colored output."
@@ -414,9 +423,17 @@ def command(
     # prompt fires here so it does not fight a transient spinner for the terminal.
     if fetch:
         try:
-            confirm_file_fetch(filename, route="check", no_color=no_color)
+            confirm_file_fetch(
+                filename, route="check", yes=yes, quiet=quiet, no_color=no_color
+            )
         except VocalError as e:
-            _print_error(e)
+            # A security refusal (e.g. the can't-prompt BLOCKED error under -q)
+            # must always be visible, so render it straight to stderr rather than
+            # via the quiet-respecting Printer — otherwise -q would swallow the
+            # very message that tells the user why nothing happened.
+            typer.echo(f"\n{TS.BOLD}{TS.FAIL}✗{TS.ENDC} {e.message}", err=True)
+            if e.hint:
+                typer.echo(f"  {e.hint}\n", err=True)
             raise typer.Exit(code=1)
 
     if quiet:

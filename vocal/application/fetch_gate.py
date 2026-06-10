@@ -20,15 +20,18 @@ imported/executed, so only a *new project* triggers it. A pack is data (parsed,
 not executed), so a pack-only-new fetch never prompts; the pack URL is still
 listed for transparency when the gate does fire.
 
-This slice (#47) wires the interactive ``PROCEED`` / ``PROMPT`` branches. The
-``BLOCKED`` branch — a new project that cannot be confirmed — together with the
-``--yes`` / ``-q`` / non-TTY plumbing is wired in the non-interactive slice
-(#48); the policy already returns it so the full matrix is testable now.
+For non-interactive use, a ``--yes`` flag consents up front and ``can_prompt``
+(false under ``-q``/``--quiet`` or a non-TTY stdin) reflects whether vocal can
+ask at all. A new project that cannot be confirmed and was not pre-consented is
+the ``BLOCKED`` branch: :func:`confirm_file_fetch` refuses with a clean typed
+:class:`FetchBlocked` error citing ``--yes`` rather than silently executing
+untrusted code or dumping an EOF traceback into a pipe.
 """
 
 from __future__ import annotations
 
 import enum
+import sys
 
 import typer
 from rich.console import Console
@@ -56,6 +59,27 @@ class FetchGateDecision(enum.Enum):
 
 class FetchDeclined(VocalError):
     """The user declined the confirmation gate; abort with nothing fetched."""
+
+
+class FetchBlocked(VocalError):
+    """A new project needs confirming but vocal cannot prompt and no ``--yes``.
+
+    Raised for the ``BLOCKED`` branch: ``-q``/``--quiet`` or a non-TTY stdin
+    means we cannot ask, so rather than silently running untrusted code (or
+    aborting on an EOF), the command refuses with a clean error pointing the user
+    at ``--yes``.
+    """
+
+
+def _stdin_isatty() -> bool:
+    """Whether stdin is an interactive terminal.
+
+    A thin seam over ``sys.stdin.isatty()`` so tests can simulate a non-TTY: the
+    CLI test runner replaces ``sys.stdin`` with a non-TTY stream during a command
+    invocation, so patching ``sys.stdin.isatty`` directly does not survive the
+    call. Patch this instead.
+    """
+    return sys.stdin.isatty()
 
 
 def decide_fetch_gate(
@@ -120,15 +144,28 @@ def _render_warning(
     )
 
 
-def confirm_file_fetch(filename: str, *, route: str, no_color: bool = False) -> None:
+def confirm_file_fetch(
+    filename: str,
+    *,
+    route: str,
+    yes: bool = False,
+    quiet: bool = False,
+    no_color: bool = False,
+) -> None:
     """Gate a file-driven fetch on a one-time confirmation.
 
     Reads ``filename``'s declared ``vocal_project_url`` and the registry,
     computes whether that project is new (not already fetched by normalised URL),
-    and asks :func:`decide_fetch_gate`. On ``PROMPT`` it renders the red warning
-    panel to stderr and prompts ``[y/N]`` (default No); a decline raises
-    :class:`FetchDeclined`, which the caller renders as a clean abort. On
-    ``PROCEED`` it returns silently and the caller fetches as normal.
+    derives whether we can prompt (``can_prompt = not quiet and stdin.isatty()``),
+    and asks :func:`decide_fetch_gate`. The three branches map to:
+
+    - ``PROCEED`` — return silently and the caller fetches as normal (nothing new,
+      or ``--yes`` consented up front);
+    - ``PROMPT`` — render the red warning panel to stderr and prompt ``[y/N]``
+      (default No); a decline raises :class:`FetchDeclined`;
+    - ``BLOCKED`` — a new project but we cannot prompt and no ``--yes``: raise
+      :class:`FetchBlocked` (citing ``--yes``) *before* any panel renders, so no
+      box characters are dumped into a pipe.
 
     Reading errors and a missing ``vocal_project_url`` are *not* handled here:
     the gate returns silently so the subsequent ``fetch_for_file`` surfaces the
@@ -138,6 +175,8 @@ def confirm_file_fetch(filename: str, *, route: str, no_color: bool = False) -> 
     Args:
         filename: the netCDF file whose declared sources are about to be fetched.
         route: ``"check"`` or ``"fetch"`` — selects the opening line.
+        yes: the user consented up front (``--yes``); satisfies the gate.
+        quiet: ``-q``/``--quiet`` is set, so we cannot prompt.
         no_color: render the panel's box without the red ANSI.
     """
     try:
@@ -156,13 +195,24 @@ def confirm_file_fetch(filename: str, *, route: str, no_color: bool = False) -> 
         registry = Registry()
 
     project_new = registry.find_project_by_url(attrs.project_url) is None
+    can_prompt = not quiet and _stdin_isatty()
 
-    # This slice wires PROCEED/PROMPT only: an interactive run can always prompt
-    # and no --yes flag exists yet, so BLOCKED is unreachable here (#48 wires it).
-    decision = decide_fetch_gate(project_new=project_new, yes=False, can_prompt=True)
+    decision = decide_fetch_gate(
+        project_new=project_new, yes=yes, can_prompt=can_prompt
+    )
 
     if decision is FetchGateDecision.PROCEED:
         return
+
+    if decision is FetchGateDecision.BLOCKED:
+        raise FetchBlocked(
+            f"'{filename}' declares a project that is not yet fetched, and its "
+            "code would run when the file is checked.",
+            hint=(
+                "Re-run with --yes to consent to fetching it non-interactively, "
+                "or run interactively to confirm."
+            ),
+        )
 
     console = Console(stderr=True, no_color=no_color)
     _render_warning(console, filename, attrs.project_url, attrs.definitions_url, route)

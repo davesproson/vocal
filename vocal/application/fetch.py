@@ -518,6 +518,16 @@ def command(
         "--force",
         help="Overwrite any existing fetched copy of the resource.",
     ),
+    yes: bool = typer.Option(
+        False,
+        "-y",
+        "--yes",
+        help=(
+            "Consent up front to fetching a project declared inside a file "
+            "(--for). Lets the confirmation gate proceed non-interactively; "
+            "ignored when fetching a URL you typed directly."
+        ),
+    ),
 ) -> None:
     """Fetch a vocal project or pack and register it."""
     if (url is None) == (for_file is None):
@@ -536,7 +546,7 @@ def command(
             # Gate the file-driven fetch: a project URL declared inside an
             # untrusted file means code that will run on check. Fires only the
             # first time a new project would be installed.
-            confirm_file_fetch(for_file, route="fetch")
+            confirm_file_fetch(for_file, route="fetch", yes=yes)
             outcomes = fetch_for_file(for_file, git=git, update=update, force=force)
             summarise_outcomes(outcomes)
         else:
