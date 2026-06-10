@@ -160,6 +160,35 @@ class TestMaterializeRepoRelease:
 
 
 # ---------------------------------------------------------------------------
+# materialize_repo — zip path-traversal guard
+# ---------------------------------------------------------------------------
+
+
+class TestMaterializeRepoTraversal:
+    def test_traversal_member_is_refused(self, tmp_path: Path) -> None:
+        # A malicious zipball whose member climbs out of the extraction
+        # directory must be rejected wholesale, not silently sanitized.
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("owner-repo-abc/conventions.yaml", "x: 1\n")
+            zf.writestr("owner-repo-abc/../../evil.py", "pwned = 1\n")
+        zipball = buf.getvalue()
+
+        target = str(tmp_path / "repo")
+        with patch("requests.get", side_effect=_release_then_zip(zipball)):
+            with pytest.raises(FetchError) as exc_info:
+                materialize_repo(
+                    "https://github.com/owner/repo", target, git=False
+                )
+        assert "escapes" in exc_info.value.message
+
+        # Nothing was written: neither the target tree nor the escaped file
+        # (which would have landed at work_dir's parent, ``tmp_path.parent``).
+        assert not (tmp_path.parent / "evil.py").exists()
+        assert not Path(target).exists()
+
+
+# ---------------------------------------------------------------------------
 # materialize_repo — git clone path
 # ---------------------------------------------------------------------------
 

@@ -84,7 +84,7 @@ class ConventionsFile:
 
         try:
             with open(path, "r") as f:
-                raw = yaml.load(f, Loader=yaml.Loader)
+                raw = yaml.safe_load(f)
         except FileNotFoundError:
             raise InvalidConventionsFile(
                 f"{CONVENTIONS_FILENAME} not found at {path}.",
