@@ -72,6 +72,7 @@ def register_resource(path: str, force: bool = False) -> None:
 def install_project(
     source: str,
     force: bool = False,
+    url: str = "",
 ) -> Project:
     """Install an owned copy of the project at ``source`` under ``~/.vocal``.
 
@@ -97,6 +98,9 @@ def install_project(
             ``conventions.yaml``.
         force: re-install even if a project of the same ``{name}-{major}`` is
             registered, overwriting both the on-disk copy and the registry entry.
+        url: the source (repository) URL the project was fetched from, recorded
+            on the registry record so a later file-declared fetch can tell the
+            project has already been fetched. Empty for a local-path register.
 
     Returns:
         the registered :class:`~vocal.utils.registry.Project`.
@@ -146,6 +150,7 @@ def install_project(
         minor=conventions.minor,
         project_directory=conventions.project_directory,
         local_path=dest,
+        url=url,
     )
     registry.add_project(project, force=force)
     save_registry(registry)

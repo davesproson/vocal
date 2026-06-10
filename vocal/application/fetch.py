@@ -252,7 +252,7 @@ def _install_project_tree(
             hint="Pass --update to refresh it, or --force to overwrite.",
         )
 
-    install_project(download, force=update or force)
+    install_project(download, force=update or force, url=url)
     return ResourceKind.PROJECT
 
 

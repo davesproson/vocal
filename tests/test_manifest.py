@@ -13,6 +13,7 @@ from vocal.manifest import (
     build_manifest,
     load_manifest,
     normalize_pack_url,
+    normalize_project_url,
     versioned_dirname,
 )
 from vocal.versioning import VersionConstraint
@@ -77,6 +78,54 @@ class TestNormalizePackURL:
     def test_rejects_query_or_fragment(self, bad: str) -> None:
         with pytest.raises(InvalidPackURL):
             normalize_pack_url(bad)
+
+
+# ---------------------------------------------------------------------------
+# normalize_project_url
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeProjectURL:
+    def test_lowercases_scheme_and_host(self) -> None:
+        assert (
+            normalize_project_url("HTTPS://GitHub.com/Org/Repo")
+            == "https://github.com/Org/Repo"
+        )
+
+    def test_leaves_path_case_untouched(self) -> None:
+        assert (
+            normalize_project_url("https://github.com/Org/Repo")
+            == "https://github.com/Org/Repo"
+        )
+
+    def test_strips_trailing_slash(self) -> None:
+        assert (
+            normalize_project_url("https://github.com/org/repo/")
+            == "https://github.com/org/repo"
+        )
+
+    def test_strips_trailing_dot_git(self) -> None:
+        assert (
+            normalize_project_url("https://github.com/org/repo.git")
+            == "https://github.com/org/repo"
+        )
+
+    def test_repo_slash_and_dot_git_collapse(self) -> None:
+        plain = normalize_project_url("https://github.com/org/repo")
+        slash = normalize_project_url("https://github.com/org/repo/")
+        dotgit = normalize_project_url("https://github.com/org/repo.git")
+        assert plain == slash == dotgit
+
+    def test_distinct_repos_stay_distinct(self) -> None:
+        assert normalize_project_url(
+            "https://github.com/org/repo"
+        ) != normalize_project_url("https://github.com/org/other")
+
+    def test_strips_surrounding_whitespace(self) -> None:
+        assert (
+            normalize_project_url("  https://github.com/org/repo  ")
+            == "https://github.com/org/repo"
+        )
 
 
 # ---------------------------------------------------------------------------

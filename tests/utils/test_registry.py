@@ -26,6 +26,7 @@ def _project(
     minor: int = 3,
     project_directory: str = "mystd",
     local_path: str = "/cache/projects/mystd",
+    url: str = "",
 ) -> Project:
     return Project(
         name=name,
@@ -33,6 +34,7 @@ def _project(
         minor=minor,
         project_directory=project_directory,
         local_path=local_path,
+        url=url,
     )
 
 
@@ -164,6 +166,51 @@ class TestFindProject:
 
 
 # ---------------------------------------------------------------------------
+# find_project_by_url
+# ---------------------------------------------------------------------------
+
+
+class TestFindProjectByURL:
+    def test_found_by_exact_url(self) -> None:
+        reg = Registry()
+        reg.add_project(_project(url="https://github.com/org/repo"))
+        found = reg.find_project_by_url("https://github.com/org/repo")
+        assert found is not None
+        assert found.key == "MYSTD-2"
+
+    def test_trailing_slash_matches(self) -> None:
+        reg = Registry()
+        reg.add_project(_project(url="https://github.com/org/repo"))
+        assert reg.find_project_by_url("https://github.com/org/repo/") is not None
+
+    def test_dot_git_matches(self) -> None:
+        reg = Registry()
+        reg.add_project(_project(url="https://github.com/org/repo.git"))
+        assert reg.find_project_by_url("https://github.com/org/repo") is not None
+
+    def test_host_case_matches(self) -> None:
+        reg = Registry()
+        reg.add_project(_project(url="https://github.com/org/repo"))
+        assert reg.find_project_by_url("https://GitHub.com/org/repo") is not None
+
+    def test_none_on_distinct_repo(self) -> None:
+        reg = Registry()
+        reg.add_project(_project(url="https://github.com/org/repo"))
+        assert reg.find_project_by_url("https://github.com/org/other") is None
+
+    def test_url_less_record_never_matches(self) -> None:
+        # A legacy / locally-registered record carries no url; it must read as
+        # "not fetched" rather than matching an empty query.
+        reg = Registry()
+        reg.add_project(_project(url=""))
+        assert reg.find_project_by_url("https://github.com/org/repo") is None
+        assert reg.find_project_by_url("") is None
+
+    def test_none_when_empty(self) -> None:
+        assert Registry().find_project_by_url("https://github.com/org/repo") is None
+
+
+# ---------------------------------------------------------------------------
 # find_pack
 # ---------------------------------------------------------------------------
 
@@ -280,6 +327,45 @@ class TestRoundTrip:
         assert pack is not None
         assert pack.local_path == "/cache/packs/host-packs/v3"
         assert pack.manifest.requires_standard.min_minor == 4
+
+    def test_round_trip_preserves_project_url(self, tmp_path: Path) -> None:
+        reg = Registry()
+        reg.add_project(_project(url="https://github.com/org/repo"))
+
+        path = str(tmp_path / "vocal-registry.yaml")
+        reg.save(path)
+        loaded = Registry.load(path)
+
+        assert loaded.projects["MYSTD-2"].url == "https://github.com/org/repo"
+        assert loaded.find_project_by_url("https://github.com/org/repo/") is not None
+
+    def test_legacy_record_without_url_loads_and_is_not_matched(
+        self, tmp_path: Path
+    ) -> None:
+        # Simulate a registry written before the `url` field existed: its
+        # project record has no `url` key at all. It must load (defaulting url to
+        # empty) and read as "not fetched" by the lookup, self-healing on the
+        # next fetch rather than crashing.
+        import yaml
+
+        legacy = {
+            "projects": {
+                "MYSTD-2": {
+                    "name": "MYSTD",
+                    "major": 2,
+                    "minor": 3,
+                    "project_directory": "mystd",
+                    "local_path": "/cache/projects/mystd",
+                }
+            },
+            "packs": [],
+        }
+        path = tmp_path / "vocal-registry.yaml"
+        path.write_text(yaml.dump(legacy))
+
+        loaded = Registry.load(str(path))
+        assert loaded.projects["MYSTD-2"].url == ""
+        assert loaded.find_project_by_url("https://github.com/org/repo") is None
 
     def test_round_trip_has_two_top_level_keys(self, tmp_path: Path) -> None:
         import yaml

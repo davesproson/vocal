@@ -107,6 +107,42 @@ def normalize_pack_url(url: str) -> str:
     return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), path, "", ""))
 
 
+def normalize_project_url(url: str) -> str:
+    """Return the canonical comparison form of a project source URL.
+
+    A project's source URL is compared in two places — the ``url`` recorded on
+    the registry's :class:`~vocal.utils.registry.Project` record at fetch time,
+    and a file's declared ``vocal_project_url`` at check time — to decide
+    whether a file's project has already been fetched and consented to. To avoid
+    a spurious mismatch (and a spurious re-prompt) from trivial differences, both
+    are normalised the same way:
+
+    - scheme and host are lowercased (the path is left case-sensitive);
+    - a single trailing slash is stripped;
+    - a trailing ``.git`` is stripped, so ``…/repo``, ``…/repo/``, and
+      ``…/repo.git`` all collapse to one source.
+
+    Sibling to :func:`normalize_pack_url`; unlike packs, a project URL is a plain
+    repository URL, so query strings and fragments are simply dropped rather than
+    rejected.
+
+    Args:
+        url: the project source (repository) URL.
+
+    Returns:
+        the normalised URL.
+    """
+    parts = urlsplit(url.strip())
+
+    path = parts.path
+    if path.endswith("/"):
+        path = path[:-1]
+    if path.endswith(".git"):
+        path = path[: -len(".git")]
+
+    return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), path, "", ""))
+
+
 def versioned_dirname(version: int) -> str:
     """Return the addressing-convention directory name for a pack version."""
     return f"v{version}"

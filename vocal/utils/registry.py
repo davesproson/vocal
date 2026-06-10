@@ -29,7 +29,7 @@ from typing import Generator, Optional
 
 import yaml
 
-from vocal.manifest import Manifest, normalize_pack_url
+from vocal.manifest import Manifest, normalize_pack_url, normalize_project_url
 from vocal.utils import cache_dir
 
 
@@ -50,6 +50,13 @@ class Project:
     ``local_path`` is the repo root — the directory holding
     ``conventions.yaml`` and the project's ``project_directory`` module — not
     the module subdirectory itself.
+
+    ``url`` is the source (repository) URL the project was fetched from, used to
+    decide whether a file's declared ``vocal_project_url`` has already been
+    fetched and consented to. It is empty for projects registered from a local
+    path (``vocal register``) and for legacy records written before the field
+    existed; a url-less record never matches a lookup and so reads as "not
+    fetched".
     """
 
     name: str
@@ -57,6 +64,7 @@ class Project:
     minor: int
     project_directory: str
     local_path: str
+    url: str = ""
 
     @property
     def key(self) -> str:
@@ -70,6 +78,7 @@ class Project:
             minor=int(d["minor"]),
             project_directory=d["project_directory"],
             local_path=d["local_path"],
+            url=d.get("url", ""),
         )
 
     def to_dict(self) -> dict:
@@ -79,6 +88,7 @@ class Project:
             "minor": self.minor,
             "project_directory": self.project_directory,
             "local_path": self.local_path,
+            "url": self.url,
         }
 
 
@@ -140,6 +150,25 @@ class Registry:
         project = self.projects.get(project_key(name, major))
         if project is not None and project.minor >= min_minor:
             return project
+        return None
+
+    def find_project_by_url(self, url: str) -> Optional[Project]:
+        """Return the registered project whose source ``url`` matches, or ``None``.
+
+        Both the query and the stored ``url`` are compared in normalised form
+        (see :func:`~vocal.manifest.normalize_project_url`), so trailing-slash
+        and ``.git`` variants of the same repository match. A record with no
+        ``url`` (registered from a local path, or a legacy record predating the
+        field) never matches — it reads as "not fetched" — so the upgrade
+        self-heals on the next fetch rather than crashing.
+
+        This answers "is this project URL already fetched and consented to?"
+        purely from the registry, before any download.
+        """
+        normalized = normalize_project_url(url)
+        for project in self.projects.values():
+            if project.url and normalize_project_url(project.url) == normalized:
+                return project
         return None
 
     def find_pack(self, url: str, version: int) -> Optional[Pack]:

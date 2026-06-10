@@ -21,6 +21,7 @@ from vocal.application.register import (
     CannotRegisterPackError,
     CannotRegisterProjectError,
     UnknownResourceKind,
+    install_project,
     register_pack,
     register_project,
     register_resource,
@@ -196,6 +197,44 @@ class TestInstallProject:
         assert registered.local_path == owned
         assert os.path.isabs(registered.local_path)
         assert (Path(owned) / "relmod" / "__init__.py").is_file()
+
+    def test_url_threaded_onto_registry_record(self, tmp_path: Path) -> None:
+        # The fetch path passes the source URL through install_project; it must
+        # land on the stored record so a later file-driven fetch can recognise
+        # the project as already fetched.
+        repo = tmp_path / "myrepo"
+        init_project(
+            str(repo), name="URLP", major=1, minor=0, project_directory="urlmod"
+        )
+        _fill_in_module(repo, "urlmod")
+
+        captured: dict = {}
+        with _install_env(tmp_path, captured):
+            install_project(str(repo), url="https://github.com/org/repo")
+
+        registered = captured["registry"].projects["URLP-1"]
+        assert registered.url == "https://github.com/org/repo"
+        assert (
+            captured["registry"].find_project_by_url(
+                "https://github.com/org/repo.git"
+            )
+            is not None
+        )
+
+    def test_local_register_leaves_url_empty(self, tmp_path: Path) -> None:
+        # A plain `vocal register <path>` has no source URL; the record's url is
+        # empty and never matches a lookup.
+        repo = tmp_path / "myrepo"
+        init_project(
+            str(repo), name="LOCP", major=1, minor=0, project_directory="locmod"
+        )
+        _fill_in_module(repo, "locmod")
+
+        captured: dict = {}
+        with _install_env(tmp_path, captured):
+            register_project(str(repo))
+
+        assert captured["registry"].projects["LOCP-1"].url == ""
 
     def test_duplicate_without_force_raises_and_keeps_install(
         self, tmp_path: Path
