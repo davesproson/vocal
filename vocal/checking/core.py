@@ -173,7 +173,7 @@ def compare_dimensions(d: dict, f: dict, path: str = "") -> list[Check]:
         if dim in file_dims:
             continue
 
-        # The dimension is not in the definition. Checking if there is a
+        # The dimension is not in the file. Checking if there is a
         # dimension with the same name, but different size.
         dims_with_name = [d for d in file_dims if d["name"] == dim["name"]]
         if dims_with_name:

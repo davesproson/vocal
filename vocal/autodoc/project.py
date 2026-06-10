@@ -13,7 +13,7 @@ inline (no separate lint pass) and surfaced on the returned ``ProjectDoc``.
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any, Callable, TypeVar
 
 from pydantic import BaseModel
 from pydantic.fields import FieldInfo
@@ -24,15 +24,26 @@ from .diagnostics import record_mixin_mismatch, record_undescribed
 from .ir import (
     AttributeDoc,
     DatasetDoc,
+    DimensionChild,
     DimensionDoc,
+    GroupChild,
     GroupDoc,
     NodeRef,
     ProjectDoc,
     RuleDoc,
     TemplateDef,
+    VariableChild,
     VariableDoc,
 )
 from .rules import attribute_rules, model_rules
+
+# The project-mode child slot a ``NodeRef`` is placed into: ``VariableChild`` /
+# ``DimensionChild`` / ``GroupChild`` (each a ``XxxDoc | NodeRef`` union). The
+# template walker always emits ``NodeRef``s, but the slot is union-typed for
+# product-mode round-tripping. Constraining the return TypeVar to the three child
+# unions lets it adapt to the call site rather than narrowing to
+# ``list[NodeRef]`` (which list invariance would reject in the union-typed slot).
+_Child = TypeVar("_Child", VariableChild, DimensionChild, GroupChild)
 
 
 def _example(field: FieldInfo) -> Any | None:
@@ -167,7 +178,7 @@ def _project_template(
     build: Callable[
         [type[BaseModel], dict[str, TemplateDef], list[str]], TemplateDef
     ],
-) -> list[NodeRef]:
+) -> list[_Child]:
     """Document a container's ``field_name`` slot as a single ``NodeRef``.
 
     The referenced model's template is built once via ``build`` and registered
