@@ -10,6 +10,7 @@ from typing import Optional
 from pydantic import BaseModel
 
 from vocal.autodoc import (
+    ConstraintDoc,
     DimensionDoc,
     GroupDoc,
     NodeRef,
@@ -144,8 +145,6 @@ class TestDocumentProject:
         assert comment.required is False
 
     def test_attribute_constraints_are_normalized(self) -> None:
-        from vocal.autodoc import ConstraintDoc
-
         revision = _attr(document_project(_Dataset), "revision")
         assert ConstraintDoc(kind="type", detail={"type": "integer"}) in (
             revision.constraints
@@ -277,6 +276,46 @@ class TestDocumentProduct:
         assert title.description is None
         assert title.example is None
         assert title.constraints is None
+
+    def test_concrete_value_is_required_with_no_constraints(self) -> None:
+        # A concrete value declares no optionality, so it keeps required=True and
+        # carries no constraints (the renderer gates its badge on `derived`).
+        title = _attr(document_product(_PRODUCT), "title")
+        assert title.required is True
+        assert title.constraints is None
+
+    def test_optional_placeholder_is_not_required(self) -> None:
+        comment = _attr(document_product(_PRODUCT), "comment")
+        assert comment.derived is True
+        assert comment.required is False
+
+    def test_non_optional_placeholder_is_required(self) -> None:
+        flight_number = _attr(document_product(_PRODUCT), "flight_number")
+        assert flight_number.derived is True
+        assert flight_number.required is True
+
+    def test_placeholder_regex_surfaces_as_pattern_constraint(self) -> None:
+        spec = {
+            "attributes": {
+                "fn": "<str: derived_from_file optional,regex=[a-z][0-9]{3}>"
+            }
+        }
+        fn = _attr(document_product(spec), "fn")
+        assert fn.required is False
+        assert fn.constraints == [
+            ConstraintDoc(kind="pattern", detail={"pattern": "[a-z][0-9]{3}"})
+        ]
+
+    def test_placeholder_length_surfaces_as_length_constraint(self) -> None:
+        spec = {
+            "attributes": {
+                "tags": "<Array[str]: derived_from_file min_len=1,max_len=5>"
+            }
+        }
+        tags = _attr(document_product(spec), "tags")
+        assert tags.constraints == [
+            ConstraintDoc(kind="length", detail={"min_length": 1, "max_length": 5})
+        ]
 
     def test_loads_from_path(self, tmp_path) -> None:
         import json

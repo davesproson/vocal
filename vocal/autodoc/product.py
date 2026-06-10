@@ -14,8 +14,11 @@ import json
 import os
 from typing import Any
 
+from vocal.utils.placeholder import Placeholder
+
 from .ir import (
     AttributeDoc,
+    ConstraintDoc,
     DatasetDoc,
     DimensionDoc,
     GroupDoc,
@@ -33,14 +36,47 @@ def _load(spec: dict[str, Any] | str | os.PathLike) -> dict[str, Any]:
         return json.load(f)
 
 
+def _placeholder_constraints(placeholder: Placeholder) -> list[ConstraintDoc] | None:
+    """Translate a placeholder's constraints into ``ConstraintDoc`` form.
+
+    A placeholder's ``regex`` / ``min_len`` / ``max_len`` map onto the same
+    ``pattern`` / ``length`` constraint vocabulary the project walk emits, so a
+    renderer documents a product's runtime-derived rules with the exact chips it
+    already uses for project specs. Returns ``None`` when the placeholder
+    declares no constraints (so the IR field stays absent rather than empty).
+    """
+    c = placeholder.constraints
+    constraints: list[ConstraintDoc] = []
+    if c.regex is not None:
+        constraints.append(ConstraintDoc(kind="pattern", detail={"pattern": c.regex}))
+    length_detail = {
+        name: value
+        for name, value in (("min_length", c.min_len), ("max_length", c.max_len))
+        if value is not None
+    }
+    if length_detail:
+        constraints.append(ConstraintDoc(kind="length", detail=length_detail))
+    return constraints or None
+
+
 def _attribute_doc(name: str, raw: Any) -> AttributeDoc:
-    """Document a single concrete attribute value as an ``AttributeDoc``."""
+    """Document a single concrete attribute value as an ``AttributeDoc``.
+
+    A runtime-derived placeholder may declare optionality and constraints; carry
+    those onto the doc (``required`` is the inverse of the placeholder's
+    ``optional`` flag) so a renderer can surface them. A concrete value declares
+    neither, so it keeps the default ``required=True`` and no constraints — the
+    renderer gates the required/optional badge on ``derived`` accordingly.
+    """
     parsed = parse_value(raw)
+    placeholder = parsed.placeholder
     return AttributeDoc(
         name=name,
         value=parsed.value,
         derived=parsed.derived,
         datatype=parsed.datatype,
+        required=not placeholder.optional if placeholder else True,
+        constraints=_placeholder_constraints(placeholder) if placeholder else None,
     )
 
 
