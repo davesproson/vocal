@@ -45,6 +45,7 @@ Once installed, the `vocal` command should be available in your `PATH`:
      Compliance checking and metadata management.
 
     ╭─ Commands ────────────────────────────────────────────────────────────────╮
+    │ autodoc    Generate documentation from a project or product.              │
     │ build      Create an example data file from a definition.                 │
     │ check      Check a netCDF file against standard and product definitions.  │
     │ fetch      Fetch a vocal project or pack and register it.                 │
@@ -298,6 +299,32 @@ this for the common case; only enable downloads on a machine you trust.
     $ vocal build -p <project_name> -d <definition> -o <output_file>
 
 This will create a netCDF file with sinusoidal data for each variable in the data product definition.
+
+## Generating documentation
+
+*Vocal* can generate human-readable documentation directly from a project or a product, so the
+documentation never drifts from the definitions it describes. Use the `autodoc` command:
+
+    $ vocal autodoc --project <project_path> -o standard.html
+
+There are two modes, and you must supply exactly one:
+
+- **`--project <path>`** documents the *abstract standard* — it walks the project's pydantic model
+  tree and reports the structure (groups, variables, dimensions and attributes) together with the
+  rules and constraints each must satisfy. Point it at the importable project package (the
+  `project_directory` inside the repo root, e.g. `~/.vocal/projects/FAAM-0/faam`).
+- **`--product <path>`** documents a *concrete instance* — it walks a product-pack JSON definition
+  and reports the actual structure and values, without consulting the project.
+
+The rendered output is controlled by `--format`/`-f` (default `html`) and written to `--out`/`-o`
+(default `autodoc.<ext>`); pass `-o -` to write to stdout so the output can be piped. Add `--open`
+to open the rendered file in a browser:
+
+    $ vocal autodoc --project ~/.vocal/projects/FAAM-0/faam --open
+
+Internally, both modes parse their source into a shared documentation IR (intermediate
+representation) which is then handed to a registered renderer, so additional output formats can be
+added without changing the walkers.
 
 ## Using vocal from Python
 
