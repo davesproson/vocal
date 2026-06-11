@@ -166,6 +166,7 @@ class VarVM:
     datatype: str | None = None
     dims: list[str] = field(default_factory=list)
     long_name: str | None = None
+    required: bool | None = None
     ref: str | None = None
 
 
@@ -274,6 +275,7 @@ def _var_vm(v, mode: str) -> VarVM:
         name, badges, [_attr_vm(a, mode) for a in v.attributes], _rules_vm(v.rules),
         datatype=v.datatype, dims=list(v.dimensions or []),
         long_name=_esc(long_name) if long_name else None,
+        required=v.required,
     )
 
 
@@ -501,6 +503,11 @@ def _var_head_extra(v: VarVM) -> str:
         bits.append(f'<span class="badge type">{_esc(v.datatype)}</span>')
     if v.dims:
         bits.append(f'<span class="badge dim">dims: {_esc(", ".join(v.dims))}</span>')
+    # Whether a conforming dataset must contain this variable; absent (None) on
+    # the project template, so only concrete product variables get a badge.
+    if v.required is not None:
+        text, kind = ("required", "req") if v.required else ("optional", "opt")
+        bits.append(f'<span class="badge {kind}">{text}</span>')
     return " ".join(bits)
 
 
@@ -600,9 +607,9 @@ td.num { text-align: right; color: #6a727b; font-variant-numeric: tabular-nums; 
 
 .badge { font-size: 11px; padding: 2px 8px; border-radius: 4px; background: #edf0f3; color: #4a5158; white-space: nowrap; }
 .badge.type { background: #c9d8fb; color: #1f3d80; border: 1px solid #9db4ed; font-family: ui-monospace, monospace; }
-.badge.req { background: #fdeaea; color: #b03535; } .badge.opt { background: #eef1f4; color: #6a727b; }
-.badge.derived { background: #fff4e0; color: #9a6700; } .badge.dim { background: #cfe9d2; color: #246138; border: 1px solid #a6d4ac; }
-.badge.const { background: #e6f1f4; color: #2c5d6e; }
+.badge.req { background: #fdeaea; color: #b03535; } .badge.opt { background: #eef1f4; color: #6a727b; border: 1px solid #c8ced6; }
+.badge.derived { background: #fff4e0; color: #9a6700; border: 1px solid #e8cf9a; } .badge.dim { background: #cfe9d2; color: #246138; border: 1px solid #a6d4ac; }
+.badge.const { background: #e6f1f4; color: #2c5d6e; border: 1px solid #b3d2dc; }
 .badge.varies { background: #eef0ff; color: #5560a0; font-style: italic; }
 code { background: #f0f2f4; padding: 1px 5px; border-radius: 3px; font-size: .9em; font-family: ui-monospace, monospace; }
 .chip { font-size: 12px; background: #f0f2f4; border: 1px solid #e2e5e9; border-radius: 4px; padding: 1px 7px; }

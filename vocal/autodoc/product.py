@@ -101,8 +101,9 @@ def _datatype(raw: Any) -> Any:
 def _document_variable(raw: dict[str, Any]) -> VariableDoc:
     """Document a single concrete variable from its raw product JSON.
 
-    The variable's ``meta`` carries its ``name`` and ``datatype``; ``dimensions``
-    is the list of dimension names it spans; its attributes reuse the concrete
+    The variable's ``meta`` carries its ``name``, ``datatype`` and ``required``
+    flag (whether a conforming dataset must contain it); ``dimensions`` is the
+    list of dimension names it spans; its attributes reuse the concrete
     attribute walk, so they get the same ``AttributeDoc`` shape as the globals.
     """
     meta = raw.get("meta", {})
@@ -110,6 +111,7 @@ def _document_variable(raw: dict[str, Any]) -> VariableDoc:
         name=meta.get("name"),
         datatype=_datatype(meta.get("datatype")),
         dimensions=raw.get("dimensions"),
+        required=meta.get("required"),
         attributes=_document_attributes(raw.get("attributes", {})),
     )
 

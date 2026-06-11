@@ -202,7 +202,7 @@ _PRODUCT = {
     ],
     "variables": [
         {
-            "meta": {"name": "temperature", "datatype": "<float32>"},
+            "meta": {"name": "temperature", "datatype": "<float32>", "required": True},
             "dimensions": ["time"],
             "attributes": {
                 "long_name": "Air temperature",
@@ -210,7 +210,7 @@ _PRODUCT = {
             },
         },
         {
-            "meta": {"name": "spectrum", "datatype": "<int16>"},
+            "meta": {"name": "spectrum", "datatype": "<int16>", "required": False},
             "dimensions": ["time", "bins"],
             "attributes": {"long_name": "A spectrum", "units": "1"},
         },
@@ -353,6 +353,9 @@ class TestProjectVariablesAndDimensions:
         assert template.name is None
         assert template.datatype is None
         assert template.dimensions is None
+        # ``required`` is a per-concrete-variable fact; the abstract template
+        # does not enumerate which variables a dataset must contain.
+        assert template.required is None
 
     def test_template_attributes_reuse_attribute_walk(self) -> None:
         template = document_project(_Dataset).defs["_Variable"]
@@ -408,6 +411,21 @@ class TestProductVariablesAndDimensions:
         temperature = self._var(document_product(_PRODUCT), "temperature")
         assert temperature.datatype == "float32"
         assert temperature.dimensions == ["time"]
+
+    def test_variable_required_flag(self) -> None:
+        doc = document_product(_PRODUCT)
+        assert self._var(doc, "temperature").required is True
+        assert self._var(doc, "spectrum").required is False
+
+    def test_variable_required_absent_is_none(self) -> None:
+        # A variable whose meta omits ``required`` leaves the field absent in the
+        # IR rather than defaulting it to a fact the product never stated.
+        spec = {
+            "variables": [
+                {"meta": {"name": "v", "datatype": "<float32>"}, "dimensions": []}
+            ]
+        }
+        assert self._var(document_product(spec), "v").required is None
 
     def test_variable_attributes_are_concrete(self) -> None:
         temperature = self._var(document_product(_PRODUCT), "temperature")

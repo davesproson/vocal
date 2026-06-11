@@ -105,7 +105,8 @@ class VariableDoc(BaseModel):
     ``NodeRef`` to it (so the one shared ``Variable`` model is documented once,
     not re-expanded under each group); the ``kind`` tag discriminates the
     ``VariableDoc | NodeRef`` slot union. Product mode fills the concrete
-    ``name`` / ``datatype`` / ``dimensions`` and the attributes' concrete values.
+    ``name`` / ``datatype`` / ``dimensions`` / ``required`` and the attributes'
+    concrete values.
     """
 
     kind: Literal["variable"] = "variable"
@@ -114,6 +115,11 @@ class VariableDoc(BaseModel):
     # Concrete fields (product mode).
     datatype: str | None = None
     dimensions: list[str] | None = None
+    # Whether a conforming dataset must contain this variable. A product-mode
+    # fact: the project-mode template is a single abstract ``Variable`` and does
+    # not enumerate concrete variables, so ``required`` only has meaning per
+    # documented concrete variable (stays ``None`` on the template).
+    required: bool | None = None
 
     # Shared: rule-bearing attribute specs (project) or concrete values (product).
     attributes: list[AttributeDoc] = Field(default_factory=list)
