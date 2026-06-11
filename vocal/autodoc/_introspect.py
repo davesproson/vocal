@@ -37,8 +37,42 @@ def field_model(model: type[BaseModel], field_name: str) -> type[BaseModel] | No
 
     Looks the field up by its canonical name (the CDM convention) and unwraps
     the annotation. Returns ``None`` if the field is absent or carries no model.
+    Use this for single-model slots (``attributes`` / ``meta`` / ``variables`` /
+    ``dimensions``); for a slot whose element type is a union of *flavours* (e.g.
+    a ``groups`` field of ``list[ImagerGroup | PlatformGroup]``) use
+    :func:`field_models`, which preserves every member.
     """
     field = model.model_fields.get(field_name)
     if field is None:
         return None
     return model_from_annotation(field.annotation)
+
+
+def models_from_annotation(annotation: Any) -> list[type[BaseModel]]:
+    """Return *every* pydantic model in ``annotation``, in declaration order.
+
+    Like :func:`model_from_annotation` but does not collapse a union to its first
+    member: ``list[A | B | C]`` yields ``[A, B, C]``. This is what a heterogeneous
+    ``groups`` slot needs — each group flavour is a distinct node to document.
+    Duplicates are removed while preserving first-seen order.
+    """
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return [annotation]
+
+    found: dict[type[BaseModel], None] = {}
+    for arg in typing.get_args(annotation):
+        for model in models_from_annotation(arg):
+            found[model] = None
+    return list(found)
+
+
+def field_models(model: type[BaseModel], field_name: str) -> list[type[BaseModel]]:
+    """Return every model class in ``model``'s ``field_name`` field's annotation.
+
+    The plural counterpart of :func:`field_model`: a union-typed slot keeps all
+    its members. Returns ``[]`` if the field is absent or carries no model.
+    """
+    field = model.model_fields.get(field_name)
+    if field is None:
+        return []
+    return models_from_annotation(field.annotation)

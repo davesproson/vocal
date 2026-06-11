@@ -41,9 +41,10 @@ def normalize_constraints(fragment: dict[str, Any]) -> list[ConstraintDoc]:
     Recognises ``type``, ``pattern``, numeric bounds (``minimum`` / ``maximum``
     / ``exclusiveMinimum`` / ``exclusiveMaximum`` collapsed into a single
     ``range`` constraint keyed ``ge`` / ``le`` / ``gt`` / ``lt``), ``minLength``
-    / ``maxLength`` (a ``length`` constraint) and ``enum``. The constraints are
-    returned in a stable order (type, pattern, range, length, enum). Unknown
-    keys are ignored.
+    / ``maxLength`` (a ``length`` constraint), ``const`` (a single-value
+    ``Literal``, e.g. a ``group_type`` discriminator) and ``enum`` (a multi-value
+    ``Literal``). The constraints are returned in a stable order (type, pattern,
+    range, length, const, enum). Unknown keys are ignored.
     """
     if "anyOf" in fragment:
         # Optional/union: constraints live on the non-null arm(s).
@@ -77,6 +78,11 @@ def normalize_constraints(fragment: dict[str, Any]) -> list[ConstraintDoc]:
     }
     if length_detail:
         constraints.append(ConstraintDoc(kind="length", detail=length_detail))
+
+    if "const" in fragment:
+        constraints.append(
+            ConstraintDoc(kind="const", detail={"value": fragment["const"]})
+        )
 
     if "enum" in fragment:
         constraints.append(

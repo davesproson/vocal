@@ -18,7 +18,7 @@ from typing import Any, Callable, TypeVar
 from pydantic import BaseModel
 from pydantic.fields import FieldInfo
 
-from ._introspect import field_model
+from ._introspect import field_model, field_models
 from .constraints import normalize_constraints
 from .diagnostics import record_mixin_mismatch, record_undescribed
 from .ir import (
@@ -95,6 +95,21 @@ def _field(
     return model
 
 
+def _field_flavours(
+    container: type[BaseModel], field_name: str, diagnostics: list[str]
+) -> list[type[BaseModel]]:
+    """Resolve every model a union-typed canonical field allows.
+
+    The plural counterpart of :func:`_field`, for a slot whose element type is a
+    union of *flavours* (a ``groups`` field of ``list[CoreGroup | GenericGroup]``).
+    Each flavour is sanity-checked against its mixin independently.
+    """
+    models = field_models(container, field_name)
+    for model in models:
+        record_mixin_mismatch(field_name, model, diagnostics)
+    return models
+
+
 def _document_attributes(
     model: type[BaseModel] | None, diagnostics: list[str]
 ) -> list[AttributeDoc]:
@@ -143,18 +158,17 @@ def _dimension_template(
 def _group_template(
     group_model: type[BaseModel], defs: dict[str, TemplateDef], diagnostics: list[str]
 ) -> GroupDoc:
-    """Build the single ``GroupDoc`` template for the recursive group model.
+    """Build the ``GroupDoc`` template for one group *flavour*.
 
     A group mirrors the dataset's structure, so the template reuses the
     attribute walk and *references* the shared variable / dimension templates
     (registered once in ``defs`` — a group's ``Variable`` is the same model the
     dataset uses, so it is documented once, not re-expanded here). It carries the
-    group model's own structural rules. Its own recursive ``groups`` slot is a
-    ``NodeRef`` back to itself, keeping the template finite — the only recursive
-    type in a vocal standard is ``Group``.
+    group model's own structural rules. Its ``groups`` slot references each group
+    flavour it actually allows (see :func:`_group_children`) — a standard may
+    nest several distinct group types, not just recurse into itself.
     """
     record_undescribed(group_model, diagnostics)
-    nested = _field(group_model, "groups", diagnostics)
     return GroupDoc(
         attributes=_document_attributes(
             _field(group_model, "attributes", diagnostics), diagnostics
@@ -166,8 +180,44 @@ def _group_template(
         dimensions=_project_template(
             group_model, "dimensions", defs, diagnostics, _dimension_template
         ),
-        groups=[NodeRef(ref=group_model.__name__)] if nested is not None else [],
+        groups=_group_children(group_model, defs, diagnostics),
     )
+
+
+def _group_children(
+    container: type[BaseModel], defs: dict[str, TemplateDef], diagnostics: list[str]
+) -> list[GroupChild]:
+    """Document a container's ``groups`` slot as one ``NodeRef`` per flavour.
+
+    Unlike variables/dimensions (a single shared template), a container may allow
+    several *flavours* of child group — a union of group models, each with its
+    own attributes, rules and allowed children. Every distinct flavour is
+    registered once in ``defs`` (see :func:`_register_group`) and referenced here,
+    so the whole group hierarchy is documented rather than just the first flavour.
+    """
+    children: list[GroupChild] = []
+    for model in _field_flavours(container, "groups", diagnostics):
+        _register_group(model, defs, diagnostics)
+        children.append(NodeRef(ref=model.__name__))
+    return children
+
+
+def _register_group(
+    group_model: type[BaseModel], defs: dict[str, TemplateDef], diagnostics: list[str]
+) -> None:
+    """Register a group flavour's template in ``defs``, breaking reference cycles.
+
+    A placeholder ``GroupDoc`` is reserved under the model's name *before* the
+    template is built, so a group that nests its own type (directly or via
+    another flavour) resolves to the in-progress entry instead of recursing
+    forever — the placeholder is overwritten with the real template once built.
+    Already-registered flavours (shared between containers) are left untouched.
+    """
+    name = group_model.__name__
+    if name in defs:
+        return
+    defs[name] = GroupDoc()  # reserve the slot; overwritten once built below
+    defs[name] = _group_template(group_model, defs, diagnostics)
 
 
 def _project_template(
@@ -226,7 +276,7 @@ def document_project(dataset: type[BaseModel]) -> ProjectDoc:
         dimensions=_project_template(
             dataset, "dimensions", defs, diagnostics, _dimension_template
         ),
-        groups=_project_template(dataset, "groups", defs, diagnostics, _group_template),
+        groups=_group_children(dataset, defs, diagnostics),
     )
     # De-duplicate while preserving first-seen order: a recursive group's slot is
     # re-resolved when its template is built, which can re-report the same gap.

@@ -52,6 +52,13 @@ class TestEnum:
         out = normalize_constraints({"type": "string", "enum": ["a", "b", "c"]})
         assert ConstraintDoc(kind="enum", detail={"values": ["a", "b", "c"]}) in out
 
+    def test_const_constraint(self) -> None:
+        # A single-value Literal (e.g. a `group_type` discriminator) emits
+        # `const`, not `enum` — it must surface as an exact-match constraint
+        # rather than a bare `string` type.
+        out = normalize_constraints({"type": "string", "const": "core"})
+        assert ConstraintDoc(kind="const", detail={"value": "core"}) in out
+
 
 class TestEdgeCases:
     def test_empty_fragment_yields_nothing(self) -> None:

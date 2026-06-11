@@ -121,6 +121,8 @@ def _constraint_rule_text(c: ConstraintDoc) -> str:
         if "le" in detail:
             clauses.append(f"at most {_esc(detail['le'])}")
         return "Value is " + " and ".join(clauses)
+    if c.kind == "const":
+        return f"Value is exactly <code>{_esc(detail.get('value'))}</code>"
     if c.kind == "enum":
         values = ", ".join(_esc(v) for v in detail.get("values", []))
         return f"Value is one of: {values}"
@@ -552,7 +554,7 @@ def _group_counts(g: GroupVM) -> str:
 
 def _group(g: GroupVM) -> str:
     if g.ref:
-        return _ref_line("recursive group", g.ref)
+        return _ref_line("group flavour", g.ref)
     parts = [_model_rules(_scope_label(g.name), g.rules)]
     if g.attrs:
         parts.append("<h3>Attributes</h3>" + _attr_table(g.attrs))

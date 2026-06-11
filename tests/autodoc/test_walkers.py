@@ -653,6 +653,86 @@ class TestProjectGroups:
         assert ProjectDoc.model_validate_json(doc.model_dump_json()) == doc
 
 
+# ---------------------------------------------------------------------------
+# A dataset whose `groups` slot is a *union* of distinct group flavours, each
+# nesting a different set of child flavours (mirroring SPIF: an outer group that
+# nests a structurally-constrained inner group plus a generic, self-recursive
+# one). The walk must document every flavour, not collapse the union.
+# ---------------------------------------------------------------------------
+
+
+class _LeafGroup(BaseModel, VocalGroupMixin):
+    meta: _GroupMeta
+    attributes: _GroupAttributes
+    dimensions: list[_Dimension]
+    variables: list[_Variable]
+    # Self-recursive: nests more of its own flavour.
+    groups: Optional[list["_LeafGroup"]] = None
+
+
+class _CoreFlavour(BaseModel, VocalGroupMixin):
+    meta: _GroupMeta
+    attributes: _GroupAttributes
+    dimensions: list[_Dimension]
+    variables: list[_Variable]
+    groups: Optional[list[_LeafGroup]] = None
+
+    _has_time = variable_has_dimensions("time", ["time"])
+
+
+class _OuterGroup(BaseModel, VocalGroupMixin):
+    meta: _GroupMeta
+    attributes: _GroupAttributes
+    dimensions: list[_Dimension]
+    variables: list[_Variable]
+    # A heterogeneous union of child flavours.
+    groups: list[_CoreFlavour | _LeafGroup]
+
+
+_LeafGroup.model_rebuild()
+
+
+class _UnionDataset(BaseModel, VocalDatasetMixin):
+    attributes: _GlobalAttributes
+    variables: list[_Variable]
+    groups: list[_OuterGroup | _LeafGroup]
+
+
+class TestProjectGroupFlavours:
+    def test_dataset_slot_refs_every_flavour_in_the_union(self) -> None:
+        doc = document_project(_UnionDataset)
+        refs = [g.ref for g in doc.dataset.groups]
+        assert refs == ["_OuterGroup", "_LeafGroup"]
+
+    def test_every_flavour_is_registered_in_defs(self) -> None:
+        doc = document_project(_UnionDataset)
+        assert {"_OuterGroup", "_CoreFlavour", "_LeafGroup"} <= set(doc.defs)
+
+    def test_child_slot_refs_the_actual_child_flavours_not_self(self) -> None:
+        # _OuterGroup nests _CoreFlavour | _LeafGroup — not itself, as the old
+        # self-reference assumption would have produced.
+        outer = document_project(_UnionDataset).defs["_OuterGroup"]
+        assert isinstance(outer, GroupDoc)
+        assert [g.ref for g in outer.groups] == ["_CoreFlavour", "_LeafGroup"]
+
+    def test_self_recursive_flavour_refs_itself(self) -> None:
+        leaf = document_project(_UnionDataset).defs["_LeafGroup"]
+        assert isinstance(leaf, GroupDoc)
+        (ref,) = leaf.groups
+        assert ref.ref == "_LeafGroup"
+
+    def test_constrained_flavour_keeps_its_own_rules(self) -> None:
+        # The structural rule on _CoreFlavour must survive — it is exactly the
+        # kind of per-flavour constraint the union collapse used to discard.
+        core = document_project(_UnionDataset).defs["_CoreFlavour"]
+        assert isinstance(core, GroupDoc)
+        assert core.rules is not None and len(core.rules) == 1
+
+    def test_roundtrips_through_json(self) -> None:
+        doc = document_project(_UnionDataset)
+        assert ProjectDoc.model_validate_json(doc.model_dump_json()) == doc
+
+
 class TestProductGroups:
     def _group(self, doc, name):
         return next(g for g in doc.dataset.groups if g.name == name)
