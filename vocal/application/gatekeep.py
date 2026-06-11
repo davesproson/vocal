@@ -6,7 +6,7 @@ import typer
 
 from vocal.utils.conventions import read_file_conventions
 from vocal.utils.registry import Registry
-from vocal.resolution import ResolvedTarget, resolve
+from vocal.resolution import ResolutionError, ResolvedTarget, resolve_file
 
 
 class PassAction(str, enum.Enum):
@@ -58,16 +58,16 @@ def ensure_file_eligibility(registry: Registry, filepath: str) -> ResolvedTarget
     try:
         attrs = read_file_conventions(filepath)
     except Exception:
+        # The watch folder may hold non-netCDF or unreadable files; those are
+        # simply not eligible rather than an error that should stop the loop.
         return None
 
-    resolved = resolve(
-        registry,
-        filename=filepath,
-        conventions=attrs.conventions,
-        definitions_url=attrs.definitions_url,
-        definitions_version=attrs.definitions_version,
-        project_url=attrs.project_url,
-    )
+    try:
+        resolved = resolve_file(filepath, attrs=attrs, registry=registry)
+    except ResolutionError:
+        # The file self-describes but its project/pack/product is not registered
+        # (or is incompatible): not eligible for processing.
+        return None
 
     if (
         resolved.project is not None
