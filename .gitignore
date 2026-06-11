@@ -138,3 +138,6 @@ dmypy.json
 _build/
 dynamic_content/
 .vscode/
+
+# Default output of `vocal autodoc`
+autodoc.html

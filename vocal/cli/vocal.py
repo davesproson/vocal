@@ -4,7 +4,7 @@ import os
 import sys
 import typer
 
-from vocal.application import build, check, fetch, init, register, release, web
+from vocal.application import autodoc, build, check, fetch, init, register, release, web
 
 app = typer.Typer(
     name="vocal",
@@ -12,6 +12,7 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 
+app.command("autodoc")(autodoc.command)
 app.command("build")(build.command)
 app.command("check")(check.command)
 app.command("fetch")(fetch.command)

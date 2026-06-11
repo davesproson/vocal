@@ -1,8 +1,11 @@
 """A small, dependency-free HTML renderer for the autodoc IR.
 
-This is a *dev tool*, deliberately living outside ``vocal.autodoc`` — that
-package's contract is that the IR is the deliverable and no renderer/CLI ships
-with it. The renderer here exists only so a human can eyeball the IR.
+One of the :mod:`vocal.autodoc.renderers` — a standalone consumer of the IR.
+The IR remains autodoc's core deliverable; renderers live in this subpackage so
+the walkers (:mod:`vocal.autodoc.project` / :mod:`~vocal.autodoc.product`) stay
+free of any output-format concern. The public entry point is :func:`render`
+(``IR root -> HTML string``); file I/O and format selection live in the
+``vocal autodoc`` command, not here.
 
 The layout is a **dense flat grid**, driven from one IR→view-model walk:
 
@@ -23,23 +26,14 @@ rule-bearing specs (type / required / optional / description / constraints) and
 its variable/dimension/group slots are ``NodeRef`` redirects to the templates in
 ``defs``; a **product** node carries concrete facts (constant value / derived /
 optional) with groups inlined.
-
-Usage::
-
-    python scripts/render_autodoc.py --project PATH_TO_PACKAGE [--out out.html] [--open]
-    python scripts/render_autodoc.py --product PATH_TO_PRODUCT_JSON [--out out.html] [--open]
 """
 
 from __future__ import annotations
 
-import argparse
 import html
-import sys
-import webbrowser
 from dataclasses import dataclass, field
-from pathlib import Path
 
-from vocal.autodoc.ir import (
+from ..ir import (
     ConstraintDoc,
     DimensionDoc,
     GroupDoc,
@@ -459,7 +453,7 @@ def _dim_table(dims: list[DimVM]) -> str:
             "<table><thead><tr><th>Name</th><th>Size</th><th>Rules</th></tr>"
             f"</thead><tbody>{rows}</tbody></table>"
         )
-    out += "".join(_ref_line("dimension template", d.ref) for d in refs)
+    out += "".join(_ref_line("dimension template", d.ref) for d in refs if d.ref)
     return out
 
 
@@ -533,7 +527,7 @@ def _variables(vars_: list[VarVM]) -> str:
     out = ""
     if concrete:
         out += '<div class="flatlist">' + "".join(_variable(v) for v in concrete) + "</div>"
-    out += "".join(_ref_line("variable template", v.ref) for v in refs)
+    out += "".join(_ref_line("variable template", v.ref) for v in refs if v.ref)
     return out
 
 
@@ -697,43 +691,3 @@ def render(doc: ProjectDoc | ProductDoc, title: str | None = None) -> str:
     ``short_name`` from the meta section.
     """
     return _document(build_doc(doc), title)
-
-
-# --------------------------------------------------------------------------- #
-# CLI
-# --------------------------------------------------------------------------- #
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Render an autodoc IR to HTML.")
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--project", metavar="PATH", help="path to a vocal project package")
-    group.add_argument("--product", metavar="PATH", help="path to a product-pack JSON")
-    parser.add_argument(
-        "--out", default="autodoc.html", help="output HTML path (default: autodoc.html)"
-    )
-    parser.add_argument("--open", action="store_true", help="open the result in a browser")
-    args = parser.parse_args(argv)
-
-    from vocal.autodoc import document_product, document_project
-
-    title = None
-    if args.project:
-        from vocal.utils import import_project
-
-        doc: ProjectDoc | ProductDoc = document_project(import_project(args.project).Dataset)
-        # A project's name is its package, not anything carried in the IR.
-        title = Path(args.project.rstrip("/")).name
-    else:
-        doc = document_product(args.product)
-
-    out = Path(args.out)
-    out.write_text(render(doc, title), encoding="utf-8")
-    print(f"wrote {out} ({doc.mode})", file=sys.stderr)
-    if args.open:
-        webbrowser.open(out.resolve().as_uri())
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

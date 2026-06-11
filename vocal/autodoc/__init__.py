@@ -7,8 +7,10 @@ Two entry points produce the same node vocabulary in two modes:
 * :func:`document_product` walks a product-pack JSON into a *concrete instance*
   (actual values).
 
-Both return a serialisable IR (see :mod:`vocal.autodoc.ir`). No renderer and no
-CLI live here — the IR is the deliverable.
+Both return a serialisable IR (see :mod:`vocal.autodoc.ir`) — the package's core
+deliverable. Renderers that turn that IR into a concrete output format live in
+the standalone :mod:`vocal.autodoc.renderers` subpackage; format selection and
+file I/O live in the ``vocal autodoc`` command. No CLI lives here.
 """
 
 from .constraints import normalize_constraints
