@@ -241,7 +241,7 @@ class Registry:
     @classmethod
     def load(cls, path: str = get_default_registry_path()) -> "Registry":
         with open(path, "r") as f:
-            return cls.from_dict(yaml.load(f, Loader=yaml.Loader))
+            return cls.from_dict(yaml.safe_load(f))
 
     def save(self, path: str = get_default_registry_path()) -> None:
         with open(path, "w") as f:

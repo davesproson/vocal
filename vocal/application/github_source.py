@@ -202,6 +202,24 @@ def get_latest_release(api_url: str) -> dict:
     return releases[0]
 
 
+def _assert_safe_zip_members(zip_ref: zipfile.ZipFile, dest: str) -> None:
+    """Reject a downloaded archive whose members would escape ``dest``.
+
+    ``zipfile.extractall`` silently sanitizes traversal entries (absolute paths
+    or ``..`` components) by dropping the offending components, which both hides
+    a malicious archive and can desync the flatten step below. We instead fail
+    loud: if any member resolves outside ``dest``, the whole fetch is refused.
+    """
+    dest_root = os.path.realpath(dest)
+    for name in zip_ref.namelist():
+        resolved = os.path.realpath(os.path.join(dest_root, name))
+        if resolved != dest_root and not resolved.startswith(dest_root + os.sep):
+            raise FetchError(
+                f"Refusing to extract release archive: member {name!r} "
+                "escapes the extraction directory."
+            )
+
+
 def fetch_http(url: str, target: str) -> None:
     """
     Fetch a repository over HTTP by downloading the latest GitHub release zip
@@ -243,6 +261,7 @@ def fetch_http(url: str, target: str) -> None:
                 names = zip_ref.namelist()
                 if not names:
                     raise FetchError("Downloaded release archive is empty.")
+                _assert_safe_zip_members(zip_ref, work_dir)
                 extracted_root = names[0].split("/")[0]
                 with flip_to_dir(work_dir):
                     zip_ref.extractall(".")

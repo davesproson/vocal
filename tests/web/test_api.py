@@ -41,7 +41,7 @@ from vocal.application.install import derive_url_slug
 from vocal.application.resource import ResourceKind
 from vocal.manifest import ManifestProduct, build_manifest
 from vocal.utils.registry import Pack, Project, Registry
-from vocal.web.api import app
+from vocal.web.api import app, create_app
 from vocal.web.models import CheckContext, ResolverError
 
 
@@ -86,7 +86,17 @@ def _make_project(name: str = "test_project") -> Project:
 
 @pytest.fixture
 def client() -> TestClient:
-    return TestClient(app, raise_server_exceptions=True)
+    # Downloads enabled: the /add and rendering tests exercise the fetch route.
+    # The default module-level ``app`` has downloads disabled (the safe posture),
+    # so build an explicitly-enabled app for these tests.
+    return TestClient(create_app(allow_user_download=True), raise_server_exceptions=True)
+
+
+@pytest.fixture
+def client_no_downloads() -> TestClient:
+    # The default-off posture: matches the module-level ``app`` but built
+    # explicitly so the intent is local to the gate tests.
+    return TestClient(create_app(allow_user_download=False), raise_server_exceptions=True)
 
 
 # ---------------------------------------------------------------------------
@@ -154,7 +164,9 @@ class TestAddPost:
         assert "https://example.com/bad" in response.text
 
     def test_unknown_failure_renders_error_page(self, client: TestClient) -> None:
-        client_no_raise = TestClient(app, raise_server_exceptions=False)
+        client_no_raise = TestClient(
+            create_app(allow_user_download=True), raise_server_exceptions=False
+        )
         with patch("vocal.web.api.fetch", side_effect=RuntimeError("kaboom")):
             response = client_no_raise.post(
                 "/add",
@@ -162,6 +174,68 @@ class TestAddPost:
             )
         assert response.status_code == 500
         assert "We couldn't check that file" in response.text
+
+
+# ---------------------------------------------------------------------------
+# Download gate — /add refuses and the Add button hides when downloads are off
+# ---------------------------------------------------------------------------
+
+
+class TestDownloadGate:
+    """With ``--allow-downloads`` off, /add is refused server-side on both verbs
+    and the Add affordance is absent from every page that renders it."""
+
+    def test_get_add_returns_403(self, client_no_downloads: TestClient) -> None:
+        response = client_no_downloads.get("/add")
+        assert response.status_code == 403
+        assert "disabled" in response.text
+
+    def test_post_add_returns_403_without_fetching(
+        self, client_no_downloads: TestClient
+    ) -> None:
+        with patch("vocal.web.api.fetch") as fetch_mock:
+            response = client_no_downloads.post(
+                "/add", data={"url": "https://example.com/project"}
+            )
+        assert response.status_code == 403
+        # The gate fires before any fetch — the RCE surface never opens.
+        fetch_mock.assert_not_called()
+
+    def test_projects_page_hides_add_button(
+        self, client_no_downloads: TestClient
+    ) -> None:
+        with patch("vocal.web.api.Registry.open", lambda: _open_registry({})):
+            response = client_no_downloads.get("/projects")
+        assert response.status_code == 200
+        assert 'href="/add"' not in response.text
+
+    def test_packs_page_hides_add_button(
+        self, client_no_downloads: TestClient
+    ) -> None:
+        pack = _pack(url="https://host/widgets", version=2)
+        with patch(
+            "vocal.web.api.Registry.open",
+            lambda: _open_registry_with_packs([pack]),
+        ):
+            response = client_no_downloads.get("/packs")
+        assert response.status_code == 200
+        assert 'href="/add"' not in response.text
+
+    def test_no_projects_page_hides_add_button(
+        self, client_no_downloads: TestClient
+    ) -> None:
+        with patch("vocal.web.api.Registry.open", side_effect=FileNotFoundError):
+            response = client_no_downloads.get("/")
+        assert response.status_code == 200
+        assert 'href="/add"' not in response.text
+
+    def test_projects_page_shows_add_button_when_enabled(
+        self, client: TestClient
+    ) -> None:
+        with patch("vocal.web.api.Registry.open", lambda: _open_registry({})):
+            response = client.get("/projects")
+        assert response.status_code == 200
+        assert 'href="/add"' in response.text
 
 
 # ---------------------------------------------------------------------------

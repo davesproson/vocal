@@ -79,7 +79,7 @@ class ProductDefinition:
         YAML so it does not depend on the project's ``DatasetMeta`` shape.
         """
         with open(self.path, "r") as f:
-            raw = yaml.load(f, Loader=yaml.Loader)
+            raw = yaml.safe_load(f)
         try:
             return raw["meta"]["file_pattern"]
         except (KeyError, TypeError) as err:

@@ -128,7 +128,7 @@ def get_spec(
 
     for d in defs:
         with open(d, "r") as y:
-            spec = yaml.load(y, Loader=yaml.Loader)
+            spec = yaml.safe_load(y)
             try:
                 if spec["meta"]["short_name"] == short_name:
                     return spec
@@ -238,7 +238,7 @@ def dataset_from_partial_yaml(
         return defn
 
     with open(yamlfile, "r") as f:
-        y = yaml.load(f, Loader=yaml.Loader)
+        y = yaml.safe_load(f)
 
         if construct:
             return model.model_construct(**parse_definition(y))
