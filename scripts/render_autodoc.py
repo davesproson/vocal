@@ -519,10 +519,13 @@ def _attr_count(v: VarVM) -> str:
 def _variable(v: VarVM) -> str:
     body = _model_rules(v.name, v.rules) + (_flat_attr_table(v.attrs) if v.attrs else "")
     sub = f'<span class="vsub">{v.long_name}</span>' if v.long_name else ""
-    title = f'<span class="vtitle"><span class="vname">{v.name}</span>{sub}</span>'
+    # Badges sit on the name's row so they follow the variable name directly,
+    # rather than after the (possibly wider) subtitle below it.
+    name_row = f'<span class="vrow"><span class="vname">{v.name}</span>{_var_head_extra(v)}</span>'
+    title = f'<span class="vtitle">{name_row}{sub}</span>'
     return (
         '<details class="grp"><summary><span class="arr"></span>'
-        f'{title}{_var_head_extra(v)}{_attr_count(v)}</summary>'
+        f'{title}{_attr_count(v)}</summary>'
         f'<div class="pad">{body}</div></details>'
     )
 
@@ -623,7 +626,8 @@ details.grp > summary::-webkit-details-marker { display: none; }
 details.grp > summary::marker { content: ""; }
 .arr::before { content: "▸"; display: inline-block; width: 14px; color: #6a727b; }
 details[open] > summary .arr::before { content: "▾"; }
-.vtitle { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.vtitle { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.vrow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .vname { font-weight: 700; }
 .vsub { font: 400 12px/1.3 system-ui, sans-serif; color: #8a929b; }
 .cnt { margin-left: auto; font: 400 12px system-ui, sans-serif; color: #6a727b; }
