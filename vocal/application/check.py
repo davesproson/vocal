@@ -46,9 +46,9 @@ from vocal.resolution import (
     PackMissing,
     ProjectMissing,
     ResolutionError,
-    resolve,
+    resolve_file,
 )
-from vocal.utils.registry import Project, Registry
+from vocal.utils.registry import Project
 from ..checking import ProductChecker
 from ..netcdf import NetCDFReader
 from ..utils import get_error_locs, TextStyles, Printer
@@ -292,19 +292,10 @@ def _run_resolved_checks(
     override = definitions[0] if definitions else None
 
     try:
-        registry = Registry.load()
-    except FileNotFoundError:
-        registry = Registry()
-
-    try:
-        target = resolve(
-            registry,
-            filename=filename,
-            conventions=attrs.conventions,
-            definitions_url=attrs.definitions_url,
-            definitions_version=attrs.definitions_version,
+        target = resolve_file(
+            filename,
+            attrs=attrs,
             definition_override=override,
-            project_url=attrs.project_url,
             filecodec_loader=_load_filecodec,
         )
     except ResolutionError as e:

@@ -237,7 +237,7 @@ class TestCheckFetchRoute:
             ),
             patch("vocal.application.fetch_gate.typer.confirm", return_value=False),
             patch("vocal.application.check.fetch_for_file") as fff,
-            patch("vocal.application.check.resolve") as resolve_mock,
+            patch("vocal.application.check.resolve_file") as resolve_mock,
         ):
             result = runner.invoke(_check_app(), [nc, "--fetch"])
 
@@ -383,7 +383,7 @@ class TestNonInteractiveConsent:
             ),
             patch("vocal.application.fetch_gate.typer.confirm", confirm),
             patch("vocal.application.check.fetch_for_file") as fff,
-            patch("vocal.application.check.resolve") as resolve_mock,
+            patch("vocal.application.check.resolve_file") as resolve_mock,
         ):
             result = err_runner.invoke(_check_app(), [nc, "--fetch", "-q"])
 
@@ -406,7 +406,7 @@ class TestNonInteractiveConsent:
             ),
             patch("vocal.application.fetch_gate._stdin_isatty", return_value=False),
             patch("vocal.application.check.fetch_for_file") as fff,
-            patch("vocal.application.check.resolve"),
+            patch("vocal.application.check.resolve_file"),
         ):
             result = err_runner.invoke(_check_app(), [nc, "--fetch"])
 

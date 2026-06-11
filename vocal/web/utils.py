@@ -8,10 +8,10 @@ from fastapi import UploadFile, HTTPException, status
 from vocal.checking import ProductChecker
 from vocal.conventions_file import import_project_package
 from vocal.netcdf.writer import NetCDFReader
-from vocal.resolution import ResolutionError, ResolvedTarget, resolve
+from vocal.resolution import ResolutionError, ResolvedTarget, resolve_file
 from vocal.utils import get_error_locs
 from vocal.utils.conventions import FileConventions, read_file_conventions
-from vocal.utils.registry import Project, Registry
+from vocal.utils.registry import Project
 from vocal.web.models import (
     Check,
     CheckContext,
@@ -174,18 +174,9 @@ async def check_upload(file: UploadFile) -> CheckContext:
             return context
 
         try:
-            registry = Registry.load()
-        except FileNotFoundError:
-            registry = Registry()
-
-        try:
-            target = resolve(
-                registry,
-                filename=file_path,
-                conventions=attrs.conventions,
-                definitions_url=attrs.definitions_url,
-                definitions_version=attrs.definitions_version,
-                project_url=attrs.project_url,
+            target = resolve_file(
+                file_path,
+                attrs=attrs,
                 filecodec_loader=_load_filecodec,
             )
         except ResolutionError as e:

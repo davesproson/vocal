@@ -116,7 +116,7 @@ def _invoke(args, registry: Registry, *, project_module=None):
     if project_module is None:
         project_module = _fake_project_module()
     with (
-        patch("vocal.application.check.Registry.load", return_value=registry),
+        patch("vocal.resolution.Registry.load", return_value=registry),
         patch(
             "vocal.application.check.import_project_package",
             return_value=project_module,
@@ -220,7 +220,7 @@ class TestResolutionFlow:
         )
         spec_check = Mock(return_value=True)
         with (
-            patch("vocal.application.check.Registry.load", return_value=_registry(
+            patch("vocal.resolution.Registry.load", return_value=_registry(
                 project=_project(), pack=_pack()
             )),
             patch(
@@ -250,7 +250,7 @@ class TestResolutionFlow:
         spec_check = Mock(return_value=True)
         with (
             patch(
-                "vocal.application.check.Registry.load",
+                "vocal.resolution.Registry.load",
                 return_value=_registry(project=_project(), pack=_pack()),
             ),
             patch(
@@ -291,7 +291,7 @@ class TestResolutionFlow:
         # No pack registered — with -d the resolver must not raise PackMissing.
         with (
             patch(
-                "vocal.application.check.Registry.load",
+                "vocal.resolution.Registry.load",
                 return_value=_registry(project=_project()),
             ),
             patch(
@@ -328,7 +328,7 @@ class TestManualMode:
             ),
             patch("vocal.application.check.check_against_standard", return_value=True),
             patch("vocal.application.check.check_against_specification", spec_check),
-            patch("vocal.application.check.resolve") as resolve_mock,
+            patch("vocal.application.check.resolve_file") as resolve_mock,
         ):
             result = runner.invoke(
                 _app(), [nc, "-p", "/some/project", "-d", "/some/def.json"]
@@ -360,7 +360,7 @@ class TestFetchFlag:
         nc = _make_nc(tmp_path, conventions="MYSTD-2.3")
         with (
             patch("vocal.application.check.fetch_for_file") as fetch_mock,
-            patch("vocal.application.check.resolve") as resolve_mock,
+            patch("vocal.application.check.resolve_file") as resolve_mock,
         ):
             result = runner.invoke(_app(), [nc, "--fetch", "-p", "/some/project"])
 
@@ -384,7 +384,7 @@ class TestFetchFlag:
             patch("vocal.application.check.confirm_file_fetch"),
             patch("vocal.application.check.fetch_for_file") as fetch_mock,
             patch(
-                "vocal.application.check.Registry.load",
+                "vocal.resolution.Registry.load",
                 return_value=_registry(project=_project(), pack=_pack()),
             ),
             patch(
@@ -423,7 +423,7 @@ class TestFetchFlag:
                 "vocal.application.check.fetch_for_file", return_value=outcomes
             ),
             patch(
-                "vocal.application.check.Registry.load",
+                "vocal.resolution.Registry.load",
                 return_value=_registry(project=_project(), pack=_pack()),
             ),
             patch(
@@ -459,7 +459,7 @@ class TestFetchFlag:
             patch("vocal.application.check.confirm_file_fetch"),
             patch("vocal.application.check.fetch_for_file") as fetch_mock,
             patch(
-                "vocal.application.check.Registry.load",
+                "vocal.resolution.Registry.load",
                 return_value=_registry(project=_project()),
             ),
             patch(
@@ -481,7 +481,7 @@ class TestFetchFlag:
     ) -> None:
         """A file with no vocal_project_url surfaces the typed error pre-check."""
         nc = _make_nc(tmp_path)  # no vocal_project_url
-        with patch("vocal.application.check.resolve") as resolve_mock:
+        with patch("vocal.application.check.resolve_file") as resolve_mock:
             result = runner.invoke(_app(), [nc, "--fetch"])
 
         assert result.exit_code == 1
@@ -539,7 +539,7 @@ class TestFetchNudge:
         )
         with (
             patch(
-                "vocal.application.check.Registry.load",
+                "vocal.resolution.Registry.load",
                 return_value=_registry(project=_project(), pack=_pack()),
             ),
             patch(
@@ -564,7 +564,7 @@ class TestFetchNudge:
         with (
             patch("vocal.application.check.confirm_file_fetch"),
             patch("vocal.application.check.fetch_for_file"),
-            patch("vocal.application.check.Registry.load", return_value=_registry()),
+            patch("vocal.resolution.Registry.load", return_value=_registry()),
             patch(
                 "vocal.application.check.import_project_package",
                 return_value=_fake_project_module(),

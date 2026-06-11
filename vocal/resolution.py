@@ -51,6 +51,7 @@ from typing import Any, Callable, Mapping, Optional
 
 from vocal.exceptions import VocalError
 from vocal.manifest import ManifestProduct, normalize_pack_url
+from vocal.utils.conventions import FileConventions, read_file_conventions
 from vocal.utils.registry import Pack, Project, Registry, project_key
 from vocal.versioning import InvalidVersion, Version, VersionConstraint
 
@@ -190,6 +191,64 @@ def resolve(
     schema_path = os.path.join(pack.local_path, product.schema)
     return ResolvedTarget(
         project=project, schema_path=schema_path, pack=pack, product=product
+    )
+
+
+def _load_registry() -> Registry:
+    """Load the machine-local registry, falling back to an empty one.
+
+    A machine that has never fetched anything has no registry file; the check
+    surfaces treat that as "nothing registered" rather than an error, so a
+    missing file resolves to an empty :class:`Registry`.
+    """
+    try:
+        return Registry.load()
+    except FileNotFoundError:
+        return Registry()
+
+
+def resolve_file(
+    filename: str,
+    *,
+    attrs: Optional[FileConventions] = None,
+    registry: Optional[Registry] = None,
+    definition_override: Optional[str] = None,
+    filecodec_loader: FilecodecLoader = _default_filecodec_loader,
+) -> ResolvedTarget:
+    """Read a file's vocal-managed attributes and resolve them against a registry.
+
+    The shared spine of every check surface — ``vocal check``, the web checker,
+    and the gatekeeper — each of which needs to turn a path on disk into a
+    :class:`ResolvedTarget`: read the file's :class:`FileConventions`, then drive
+    :func:`resolve` with them. Reading the attributes and mapping them onto the
+    resolver's keyword arguments is the part that was otherwise copy-pasted per
+    surface; everything *around* the resolution (precondition policy, how errors
+    are rendered) legitimately differs and stays with the caller.
+
+    ``attrs`` and ``registry`` are accepted pre-built for callers that already
+    hold them — the CLI and web layers read the attributes first (to drive a
+    ``--fetch`` nudge and a precondition check respectively) and load the
+    registry through their own test seam. Callers with neither (the gatekeeper)
+    pass just ``filename`` and let this read the file and load the registry.
+
+    Raises the typed :class:`ResolutionError` subclasses from :func:`resolve`,
+    plus whatever :func:`read_file_conventions` raises when the file cannot be
+    read.
+    """
+    if attrs is None:
+        attrs = read_file_conventions(filename)
+    if registry is None:
+        registry = _load_registry()
+
+    return resolve(
+        registry,
+        filename=filename,
+        conventions=attrs.conventions,
+        definitions_url=attrs.definitions_url,
+        definitions_version=attrs.definitions_version,
+        definition_override=definition_override,
+        project_url=attrs.project_url,
+        filecodec_loader=filecodec_loader,
     )
 
 
