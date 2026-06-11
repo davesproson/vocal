@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/FAAM-146/vocal"
+Repository = "https://github.com/davesproson/vocal"
 
 [project.scripts]
 vocal = "vocal.cli.vocal:main"
@@ -31,6 +31,7 @@ dev = [
     "mypy>=1.14.1,<2",
     "types-requests>=2.32.0.20241016,<3",
     "types-pyyaml>=6.0.12.20241230,<7",
+    "pytest-watcher>=0.6.3",
 ]
 
 [tool.hatch.build.targets.sdist]
