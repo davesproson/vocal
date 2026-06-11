@@ -162,7 +162,6 @@ class DimVM:
 @dataclass
 class VarVM:
     name: str
-    badges: list[tuple[str, str]]
     attrs: list[AttrVM]
     rules: list[RuleVM]
     datatype: str | None = None
@@ -259,14 +258,8 @@ def _dim_vm(d, mode: str) -> DimVM:
 
 def _var_vm(v, mode: str) -> VarVM:
     if isinstance(v, NodeRef):
-        return VarVM("", [], [], [], ref=v.ref)
-    badges: list[tuple[str, str]] = []
+        return VarVM("", [], [], ref=v.ref)
     name = _esc(v.name) if v.name else _esc("<variable template>")
-    if mode == "product":
-        if v.datatype:
-            badges.append((f"type: {v.datatype}", "type"))
-        if v.dimensions:
-            badges.append(("dims: " + ", ".join(v.dimensions), "dim"))
     # Surface the concrete long_name as a subheading (it still appears in the
     # attribute list below — we only lift a copy up to the header).
     long_name = next(
@@ -274,7 +267,7 @@ def _var_vm(v, mode: str) -> VarVM:
         None,
     )
     return VarVM(
-        name, badges, [_attr_vm(a, mode) for a in v.attributes], _rules_vm(v.rules),
+        name, [_attr_vm(a, mode) for a in v.attributes], _rules_vm(v.rules),
         datatype=v.datatype, dims=list(v.dimensions or []),
         long_name=_esc(long_name) if long_name else None,
         required=v.required,
@@ -554,7 +547,7 @@ def _group_counts(g: GroupVM) -> str:
 
 def _group(g: GroupVM) -> str:
     if g.ref:
-        return _ref_line("group flavour", g.ref)
+        return _ref_line("group template", g.ref)
     parts = [_model_rules(_scope_label(g.name), g.rules)]
     if g.attrs:
         parts.append("<h3>Attributes</h3>" + _attr_table(g.attrs))
