@@ -494,7 +494,7 @@ def _run_check_upload(nc_path: str, registry: Registry) -> CheckContext:
     with open(nc_path, "rb") as fh:
         upload = UploadFile(filename=Path(nc_path).name, file=fh)
         with (
-            patch.object(web_utils.Registry, "load", return_value=registry),
+            patch("vocal.resolution.Registry.load", return_value=registry),
             patch.object(
                 web_utils,
                 "import_project_package",
