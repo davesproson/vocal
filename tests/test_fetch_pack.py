@@ -153,11 +153,11 @@ def _pack_env(cache_root: Path, captured: dict) -> Iterator[str]:
 
 
 @pytest.fixture
-def registers_into():
+def registers_into() -> Iterator[dict[str, Registry]]:
     """Redirect install's and fetch's registry I/O to one in-memory registry."""
-    captured: dict = {"registry": Registry()}
+    captured: dict[str, Registry] = {"registry": Registry()}
 
-    def _load():
+    def _load() -> Registry:
         return captured["registry"]
 
     def _save(r: Registry) -> None:

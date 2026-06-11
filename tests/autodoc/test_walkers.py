@@ -359,6 +359,7 @@ class TestProjectVariablesAndDimensions:
 
     def test_template_attributes_reuse_attribute_walk(self) -> None:
         template = document_project(_Dataset).defs["_Variable"]
+        assert isinstance(template, VariableDoc)
         names = {a.name for a in template.attributes}
         assert names == {"long_name", "units"}
         long_name = next(a for a in template.attributes if a.name == "long_name")
@@ -387,7 +388,10 @@ class TestProjectVariablesAndDimensions:
         # documented once in `defs` and both slots reference that single entry.
         doc = document_project(_Dataset)
         (dataset_ref,) = doc.dataset.variables
-        (group_ref,) = doc.defs["Group"].variables
+        group = doc.defs["Group"]
+        assert isinstance(group, GroupDoc)
+        (group_ref,) = group.variables
+        assert isinstance(dataset_ref, NodeRef) and isinstance(group_ref, NodeRef)
         assert dataset_ref.ref == group_ref.ref == "_Variable"
         assert isinstance(doc.defs["_Variable"], VariableDoc)
 
@@ -397,12 +401,18 @@ class TestProjectVariablesAndDimensions:
 
 
 class TestProductVariablesAndDimensions:
-    def _var(self, doc, name):
-        return next(v for v in doc.dataset.variables if v.name == name)
+    def _var(self, doc: ProductDoc, name: str) -> VariableDoc:
+        return next(
+            v
+            for v in doc.dataset.variables
+            if isinstance(v, VariableDoc) and v.name == name
+        )
 
     def test_documents_every_concrete_variable(self) -> None:
         doc = document_product(_PRODUCT)
-        assert {v.name for v in doc.dataset.variables} == {
+        assert {
+            v.name for v in doc.dataset.variables if isinstance(v, VariableDoc)
+        } == {
             "temperature",
             "spectrum",
         }
@@ -439,7 +449,11 @@ class TestProductVariablesAndDimensions:
 
     def test_documents_every_concrete_dimension(self) -> None:
         doc = document_product(_PRODUCT)
-        dims = {d.name: d.size for d in doc.dataset.dimensions}
+        dims = {
+            d.name: d.size
+            for d in doc.dataset.dimensions
+            if isinstance(d, DimensionDoc)
+        }
         assert dims == {"time": None, "bins": 512}
 
     def test_roundtrips_through_json(self) -> None:
@@ -603,6 +617,7 @@ class TestProjectGroups:
 
     def test_group_template_reuses_attribute_and_variable_walks(self) -> None:
         template = document_project(_Dataset).defs["Group"]
+        assert isinstance(template, GroupDoc)
         # Template, so no concrete name.
         assert template.name is None
         assert {a.name for a in template.attributes} == {"group_title"}
@@ -618,6 +633,7 @@ class TestProjectGroups:
 
     def test_group_recursion_is_noderef_back_to_template(self) -> None:
         template = document_project(_Dataset).defs["Group"]
+        assert isinstance(template, GroupDoc)
         (ref,) = template.groups
         assert isinstance(ref, NodeRef)
         assert ref.ref == "Group"

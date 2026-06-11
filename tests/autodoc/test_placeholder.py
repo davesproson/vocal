@@ -24,23 +24,27 @@ class TestDerivedPlaceholders:
         assert parsed.derived is True
         assert parsed.datatype == dtype
         assert parsed.value is None
+        assert parsed.placeholder is not None
         assert parsed.placeholder.is_array is False
 
     def test_array_placeholder_wraps_datatype(self) -> None:
         parsed = parse_value("<Array[str]: derived_from_file>")
         assert parsed.derived is True
         assert parsed.datatype == "Array[str]"
+        assert parsed.placeholder is not None
         assert parsed.placeholder.is_array is True
 
     def test_optional_placeholder_flagged(self) -> None:
         parsed = parse_value("<str: derived_from_file optional>")
         assert parsed.derived is True
+        assert parsed.placeholder is not None
         assert parsed.placeholder.optional is True
 
     def test_constraints_carried_on_placeholder(self) -> None:
         # The constraints are read straight off the canonical Placeholder model,
         # not re-flattened onto ParsedValue.
         parsed = parse_value("<str: derived_from_file optional,regex=[a-z][0-9]{3}>")
+        assert parsed.placeholder is not None
         assert parsed.placeholder.optional is True
         assert parsed.placeholder.constraints.regex == "[a-z][0-9]{3}"
         assert parsed.placeholder.constraints.min_len is None
@@ -48,6 +52,7 @@ class TestDerivedPlaceholders:
 
     def test_length_constraints_carried_on_placeholder(self) -> None:
         parsed = parse_value("<Array[str]: derived_from_file min_len=1,max_len=5>")
+        assert parsed.placeholder is not None
         assert parsed.placeholder.constraints.min_len == 1
         assert parsed.placeholder.constraints.max_len == 5
         assert parsed.placeholder.constraints.regex is None

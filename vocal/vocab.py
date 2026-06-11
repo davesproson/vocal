@@ -49,7 +49,7 @@ class ListVocabulary:
     def __str__(self) -> str:
         return self.name
 
-    def members(self) -> list[str] | None:
+    def members(self) -> list[str]:
         """An in-memory list vocabulary is always enumerable."""
         return list(self.items)
 
@@ -218,5 +218,5 @@ class CoverageContentTypes:
     def __str__(self) -> str:
         return "Coverage Content Types"
 
-    def members(self) -> list[str] | None:
+    def members(self) -> list[str]:
         return list(self.MEMBERS)

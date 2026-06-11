@@ -151,7 +151,12 @@ class TestVocabularyEnumeration:
 
     def test_rule_doc_for_non_vocab_validator_has_no_members(self) -> None:
         validator = is_exact("z", attribute="thing")
-        doc = rule_doc(validator.wrapped.__func__)
+        # ``wrapped`` is pydantic's descriptor-proxy internal (the classmethod);
+        # ``__func__`` recovers the raw function ``rule_doc`` consumes, mirroring
+        # the ``cls.__dict__[name].__func__`` path the walker uses on a built
+        # model. It is not part of the ``Validator`` protocol surface.
+        func = validator.wrapped.__func__  # type: ignore[attr-defined]
+        doc = rule_doc(func)
         assert isinstance(doc, RuleDoc)
         assert doc.members is None
 
