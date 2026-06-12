@@ -32,7 +32,7 @@ import os
 from typing import Any, Mapping, Optional
 
 import typer
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
@@ -49,8 +49,7 @@ from vocal.resolution import (
     resolve_file,
 )
 from vocal.utils.registry import Project
-from ..checking import ProductChecker
-from ..netcdf import NetCDFReader
+from vocal.checking.shared import check_against_definition, check_against_project
 from ..utils import get_error_locs, TextStyles, Printer
 from ..utils.conventions import read_file_conventions
 
@@ -77,13 +76,13 @@ class NoopProgress:
 
 
 def check_against_standard(
-    model: BaseModel, filename: str, project_name: str = ""
+    model: type[BaseModel], filename: str, project_name: str = ""
 ) -> bool:
     """
     Check a netCDF file against a standard (a vocal/pydantic model).
 
     Args:
-        model (BaseModel): The model to check against.
+        model (type[BaseModel]): The model to check against.
         filename (str): The path of the netCDF file to check.
         project_name (str): The name of the project to check against.
 
@@ -97,15 +96,13 @@ def check_against_standard(
         end="",
     )
 
-    nc = NetCDFReader(filename)
+    result = check_against_project(model, filename)
 
-    try:
-        nc_noval = nc.to_model(model, validate=False)  # type: ignore
-        nc.to_model(model)  # type: ignore
-    except ValidationError as err:
+    if not result.passed:
+        assert result.error is not None and result.nc_noval is not None
         p.print_err(f"{TS.FAIL}{TS.BOLD}ERROR!{TS.ENDC}\n")
 
-        error_locs = get_error_locs(err, nc_noval)
+        error_locs = get_error_locs(result.error, result.nc_noval)
 
         for err_loc, err_msg in zip(*error_locs):
             p.print_err(f"{TS.FAIL}{TS.BOLD}✗{TS.ENDC} {err_loc}: {err_msg}")
@@ -177,10 +174,10 @@ def check_against_specification(filename: str, specification: str) -> bool:
     Returns:
         bool: True if all checks pass, False otherwise.
     """
-    pc = ProductChecker(specification)
-    report = pc.check(filename)
-    print_checks(report, filename, specification)
-    return report.passing
+    result = check_against_definition(specification, filename)
+    assert result.report is not None
+    print_checks(result.report, filename, specification)
+    return result.passed
 
 
 def check_file_against_project(filename: str, project: str) -> bool:
