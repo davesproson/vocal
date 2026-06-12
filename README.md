@@ -49,6 +49,7 @@ Once installed, the `vocal` command should be available in your `PATH`:
     │ build      Create an example data file from a definition.                 │
     │ check      Check a netCDF file against standard and product definitions.  │
     │ fetch      Fetch a vocal project or pack and register it.                 │
+    │ gatekeep   Watch a folder and check files as they arrive.                 │
     │ init       Initialise a vocal project.                                    │
     │ register   Register a vocal project or pack globally.                     │
     │ release    Produce a pack with a manifest, v{Y}/, and latest/.           │
@@ -291,6 +292,52 @@ locked down by default:
 are enabled a malicious web page you visit could issue a cross-origin request to
 the GUI on `localhost` and trigger a fetch. The default-off posture mitigates
 this for the common case; only enable downloads on a machine you trust.
+
+## Watching a folder with the gatekeeper
+
+The `gatekeep` command turns *vocal* into a folder watcher: it polls a directory, checks each
+new file, and routes it to a configurable action depending on whether it passes. It is intended
+to sit in front of an archive or processing pipeline, letting only conforming files through.
+
+    $ vocal gatekeep -w <folder>
+
+Each file is resolved from its own global attributes (exactly as `vocal check` does when given no
+`-p`) and validated against both the standard and the matching product definition. A file that
+resolves and validates is a **pass**; a file that fails validation — *or* that cannot be resolved
+at all (it carries no recognised, registered standard and product) — is a **fail**. The
+gatekeeper makes no distinction between "broken" and "not one of ours": anything that is not
+demonstrably conforming is rejected.
+
+The action taken on each outcome is configurable:
+
+- **Pass** (`--pass-action`/`-pa`): `none` (the default — leave the file in place), `move` (to
+  `--pass-folder`/`-pf`), or `command` (run `--pass-command`/`-pc`).
+- **Fail** (`--fail-action`/`-fa`): `move` (the default — to `--fail-folder`/`-ff`), `delete`, or
+  `command` (run `--fail-command`/`-fc`).
+
+The default fail action is `move` rather than `delete`, and `move` requires its destination
+folder, so a bare `vocal gatekeep -w <folder>` will stop and ask for `--fail-folder`. This is
+deliberate: nothing is deleted or silently dropped until you have said where rejected files
+should go. A typical invocation sorts files into two folders:
+
+    $ vocal gatekeep -w ./incoming -pa move -pf ./accepted -fa move -ff ./rejected
+
+For `command` actions, the file path is substituted for a `{}` token in the command if present,
+or appended as the final argument otherwise; the command is run without a shell. A command that
+overruns `--command-timeout`/`-ct` (default 300 seconds) is killed and treated as a failure, so a
+hung command cannot block the watcher.
+
+The folder is scanned immediately on startup and then every `--frequency`/`-f` seconds (default
+300). A few safeguards keep the watcher well-behaved over long runs:
+
+- A file that is still being written is skipped until it has been left untouched for a short
+  period, so partially-copied files are never checked.
+- Files are de-duplicated by path, size and modification time, so a file that passes and stays in
+  the folder (for example under `--pass-action none`) is checked once, not on every cycle.
+- Only one gatekeeper may watch a given folder at a time; a second invocation on the same folder
+  exits immediately.
+
+The watcher runs until interrupted (Ctrl-C).
 
 ## Creating example data
 
