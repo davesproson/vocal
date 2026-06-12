@@ -121,6 +121,16 @@ class ResolvedTarget:
     pack: Optional[Pack] = None
     product: Optional[ManifestProduct] = None
 
+    @property
+    def is_fully_resolved(self) -> bool:
+        """Whether the target was resolved to a product schema (vs. project-only)."""
+        return (
+            self.project is not None
+            and self.schema_path is not None
+            and self.pack is not None
+            and self.product is not None
+        )
+
 
 def _default_filecodec_loader(project: Project) -> Mapping[str, Mapping[str, Any]]:
     """Import the project's package from its cached repo and return its filecodec.
@@ -267,8 +277,7 @@ def _resolve_project(
     if project is None:
         raise ProjectMissing(
             f"No project registered for {claimed.name}-{claimed.major}",
-            f"Run 'vocal fetch {url_hint}' to register the project, or pass "
-            f"-p <path>.",
+            f"Run 'vocal fetch {url_hint}' to register the project, or pass -p <path>.",
         )
 
     if project.minor < claimed.minor:
