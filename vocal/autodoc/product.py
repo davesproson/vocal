@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any
+from typing import Any, Iterable
 
 from vocal.utils.placeholder import Placeholder
 
@@ -139,7 +139,11 @@ def _document_group(raw: dict[str, Any]) -> GroupDoc:
     )
 
 
-def document_product(spec: dict[str, Any] | str | os.PathLike) -> ProductDoc:
+def document_product(
+    spec: dict[str, Any] | str | os.PathLike,
+    *,
+    satisfies_standards: Iterable[str] = (),
+) -> ProductDoc:
     """Document a product-pack spec into a :class:`ProductDoc`.
 
     Accepts the loaded JSON dict or a path to it, walks the raw structure by
@@ -147,6 +151,11 @@ def document_product(spec: dict[str, Any] | str | os.PathLike) -> ProductDoc:
     Documents the global attributes, the ``meta`` section's concrete values
     (file pattern, names, description, references), plus the concrete variables
     and dimensions.
+
+    ``satisfies_standards`` is the pack's advisory standard-compatibility
+    assertion, taken from the pack manifest (the product JSON carries no such
+    field). The caller supplies it as canonical constraint strings; it is carried
+    onto the doc unchanged for the renderer to surface.
     """
     data = _load(spec)
     doc = DatasetDoc(
@@ -156,4 +165,4 @@ def document_product(spec: dict[str, Any] | str | os.PathLike) -> ProductDoc:
         dimensions=[_document_dimension(d) for d in data.get("dimensions", [])],
         groups=[_document_group(g) for g in data.get("groups") or []],
     )
-    return ProductDoc(dataset=doc)
+    return ProductDoc(dataset=doc, satisfies_standards=list(satisfies_standards))

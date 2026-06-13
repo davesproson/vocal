@@ -88,12 +88,15 @@ def _materialise_project(
     minor: int = 0,
     module: str = "stdmod",
     filecodec: bool = True,
+    defaults: bool = True,
 ) -> None:
     """Materialise a minimal but importable, contract-satisfying project tree.
 
     The tree carries a ``conventions.yaml`` and a Python package exposing
-    ``defaults``, ``models.Dataset``, and (unless ``filecodec`` is False)
-    ``filecodec`` — everything ``install_project``'s validate step requires.
+    ``defaults`` and ``models.Dataset`` — everything ``install_project``'s
+    validate step requires. ``defaults=False`` drops a required export to make a
+    broken package; ``filecodec`` is no longer required and is included only to
+    exercise legacy tolerance.
     """
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
@@ -106,7 +109,9 @@ def _materialise_project(
     )
     mod = root / module
     mod.mkdir(parents=True, exist_ok=True)
-    init_lines = ["from . import defaults", "from . import models"]
+    init_lines = ["from . import models"]
+    if defaults:
+        init_lines.append("from . import defaults")
     if filecodec:
         init_lines.append("filecodec = {}")
     (mod / "__init__.py").write_text("\n".join(init_lines) + "\n")
@@ -470,7 +475,7 @@ class TestFetchProjectFailureSafety:
             # Re-fetch the same identity but with a broken package.
             with patch.multiple(
                 "vocal.application.fetch",
-                materialize_repo=MagicMock(side_effect=_fake_download(filecodec=False)),
+                materialize_repo=MagicMock(side_effect=_fake_download(defaults=False)),
             ):
                 with pytest.raises(MissingProjectExport):
                     fetch_project("https://github.com/u/r", force=True)

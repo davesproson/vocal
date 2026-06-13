@@ -164,6 +164,44 @@ class TestOutput:
         assert out.exists()
         assert "product" in out.read_text()
 
+    def test_product_renders_satisfies_standards_from_sibling_manifest(
+        self, tmp_path: Path
+    ) -> None:
+        # A real product JSON beside a real manifest.json: the command reads the
+        # manifest's satisfies_standards (not the product JSON) and renders them.
+        import json
+
+        (tmp_path / "alpha.json").write_text(json.dumps(_PRODUCT))
+        (tmp_path / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "version": 1,
+                    "url": "https://host/packs",
+                    "filecodec": {"date": {"regex": r"\d{8}"}},
+                    "satisfies_standards": [
+                        {"name": "MYSTD", "major": 2, "min_minor": 3}
+                    ],
+                    "products": [
+                        {
+                            "name": "alpha",
+                            "file_pattern": "thing_{date}.nc",
+                            "schema": "alpha.json",
+                        }
+                    ],
+                }
+            )
+        )
+        out = tmp_path / "doc.html"
+        result = runner.invoke(
+            cli_app,
+            ["autodoc", "--product", str(tmp_path / "alpha.json"), "-o", str(out)],
+        )
+        assert result.exit_code == 0, result.output
+        rendered = out.read_text()
+        assert "Satisfies standards" in rendered
+        assert "MYSTD-2.3+" in rendered
+
     def test_stdout_hatch_writes_to_stdout_and_no_file(self) -> None:
         p_import, p_doc = _patch_project()
         with runner.isolated_filesystem(), p_import, p_doc:

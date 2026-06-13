@@ -8,14 +8,6 @@ from vocal.conventions_file import ConventionsFile
 PACKAGE_INIT = """
 from . import defaults
 from . import models
-
-# filecodec maps the placeholders used in product file_pattern templates to the
-# regex that expands them at check time, e.g.:
-#
-# filecodec = {
-#     'date': {'regex': r'\\d{8}'},
-# }
-filecodec: dict = {}
 """
 
 ATTRIBUTES_TEMPLATE = """

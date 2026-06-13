@@ -1,22 +1,16 @@
-import inspect
-import os
-
-from vocal.utils import import_project
 from vocal.validation import Validator
 
 
 class DatasetUtilsMixin:
-    def _get_vocal_project(self):
-        dataset_file = inspect.getfile(self.__class__)
-        project_dir = os.path.dirname(os.path.dirname(dataset_file))
-        return import_project(project_dir)
+    """Filename helpers for a dataset model.
 
-    def _get_filecodec(self):
-        return self._get_vocal_project().filecodec
+    The ``filecodec`` that expands a product's templated ``file_pattern`` no
+    longer lives in the project — it moved to the pack's ``pack.yaml`` — so it is
+    passed in explicitly by the caller (which sources it from the pack /
+    definitions side) rather than imported from the project package.
+    """
 
-    def get_filename(self, **kwargs):
-        filecodec = self._get_filecodec()
-
+    def get_filename(self, filecodec, **kwargs):
         format_kwargs = {}
         for key, value in filecodec.items():
             try:
@@ -39,10 +33,9 @@ class DatasetUtilsMixin:
             )
         )
 
-    @property
-    def regex(self):
+    def regex(self, filecodec):
         return self.meta.file_pattern.format(
-            **{i: j["regex"] for i, j in self._get_filecodec().items()}
+            **{i: j["regex"] for i, j in filecodec.items()}
         )
 
 

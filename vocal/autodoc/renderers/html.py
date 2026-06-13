@@ -200,6 +200,7 @@ class DocVM:
     groups: list[GroupVM]
     templates: list[TemplateVM]
     diagnostics: list[str]
+    satisfies_standards: list[str]  # product: advisory pack standard assertions
 
 
 def _rules_vm(rules, rule_constraints=()) -> list[RuleVM]:
@@ -341,6 +342,7 @@ def build_doc(doc: ProjectDoc | ProductDoc) -> DocVM:
         groups=[_group_vm(g, doc.mode) for g in ds.groups],
         templates=_templates_vm(defs, doc.mode),
         diagnostics=list(doc.diagnostics),
+        satisfies_standards=list(getattr(doc, "satisfies_standards", []) or []),
     )
 
 
@@ -654,6 +656,14 @@ def _header(vm: DocVM, title: str | None) -> str:
 
 def _document(vm: DocVM, title: str | None) -> str:
     body = [_header(vm, title)]
+    if vm.satisfies_standards:
+        body.append(
+            f'<h2>Satisfies standards <span class="count">'
+            f'{len(vm.satisfies_standards)}</span></h2>'
+            '<div class="rules"><ul>'
+            + "".join(f"<li>{_esc(s)}</li>" for s in vm.satisfies_standards)
+            + "</ul></div>"
+        )
     if vm.meta:
         body.append(f'<h2>Meta <span class="count">{len(vm.meta)}</span></h2>{_attr_table(vm.meta)}')
     if vm.attributes:

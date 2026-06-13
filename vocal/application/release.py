@@ -1,24 +1,32 @@
 """Produce a pack: a self-describing, independently releasable catalogue of
 product definitions.
 
-``vocal release`` reads a directory of YAML product definitions plus an
-importable project, validates each definition against the project's ``Dataset``
-model, and writes a pack to ``<output>/v{Y}/`` with a byte-equal ``<output>/
-latest/`` copy of the most recent release. The pack carries a ``manifest.json``
-recording its identity (base ``url`` and ``version``), the standard it requires
-(``requires_standard`` derived from the project's ``conventions.yaml``), and a
-product index used by ``vocal check`` to route a file to its schema.
+``vocal release`` reads a directory of YAML product definitions (carrying a
+``pack.yaml``) plus an importable project, validates each definition against the
+project's ``Dataset`` model, and writes a pack to ``<output>/v{Y}/`` with a
+byte-equal ``<output>/latest/`` copy of the most recent release. The pack carries
+a ``manifest.json`` recording its identity (base ``url`` and ``version``), the
+routing ``filecodec`` and the advisory ``satisfies_standards`` (both read from
+the definitions repo's ``pack.yaml``), and a product index used by ``vocal
+check`` to route a file to its schema.
+
+The pack's ``satisfies_standards`` is built by auto-recording the *validating
+standard* — the standard whose ``Dataset`` model the definitions were checked
+against, taken as ``<name>-<major>.<min_minor>+`` from the project's
+``conventions.yaml`` — and appending the author's declared extras from
+``pack.yaml``. The pack no longer *requires* a standard be installed to be
+checked; ``satisfies_standards`` is advisory.
 
 Persistent pack fields are sourced from CLI flags on the first release and fall
 back to the prior release's ``manifest.json`` on subsequent releases:
 
-- ``--url`` (the pack's GitHub repository URL) falls back to
-  ``<output>/latest/manifest.json``;
-  the first release in a fresh output directory requires it explicitly. Supplying
-  a ``--url`` that differs (after normalisation) from the prior release is a hard
-  error — changing a pack's published URL must be done deliberately.
-- ``--min-minor`` (``requires_standard.min_minor``) defaults to the project's
-  current ``minor``.
+- ``--url`` (the pack's GitHub repository URL) falls back to ``pack.yaml``'s
+  ``url`` and then to ``<output>/latest/manifest.json``; the first release in a
+  fresh output directory requires one of these. Supplying a ``--url`` that
+  differs (after normalisation) from the prior release is a hard error —
+  changing a pack's published URL must be done deliberately.
+- ``--min-minor`` (the validating standard's ``min_minor``) defaults to the
+  project's current ``minor``.
 """
 
 import glob
@@ -40,6 +48,8 @@ from vocal.manifest import (
     normalize_pack_url,
     versioned_dirname,
 )
+from vocal.pack_config import PackConfig
+from vocal.versioning import VersionConstraint
 from vocal.writers import PackWriter
 
 
@@ -100,6 +110,25 @@ def _resolve_url(url: Optional[str], output_dir: str) -> str:
     return prior_url
 
 
+def _build_satisfies_standards(
+    name: str, major: int, min_minor: int, pack_config: PackConfig
+) -> list[VersionConstraint]:
+    """Build the pack's ``satisfies_standards`` list.
+
+    The *validating standard* — the standard the definitions were checked against
+    at release time, ``<name>-<major>.<min_minor>+`` — is recorded first and
+    automatically, so a pack always asserts at least the standard it was built
+    for. The author's declared extras from ``pack.yaml`` follow, with the
+    validating standard de-duplicated if the author also listed it.
+    """
+    validating = VersionConstraint(name=name, major=major, min_minor=min_minor)
+    constraints = [validating]
+    for extra in pack_config.satisfies_standards:
+        if extra != validating:
+            constraints.append(extra)
+    return constraints
+
+
 def release(
     *,
     project_path: str,
@@ -115,17 +144,19 @@ def release(
     Args:
         project_path: the project repo root (holds ``conventions.yaml``).
         version: the pack release number ``Y``.
-        definitions: the directory of ``*.yaml`` product definitions. Defaults to
-            the current working directory.
+        definitions: the directory of ``*.yaml`` product definitions and the
+            pack's ``pack.yaml``. Defaults to the current working directory.
         output_dir: where to write ``v{Y}/`` and ``latest/``. Defaults to cwd.
-        url: the pack's base URL. Falls back to ``<output>/latest/manifest.json``.
-        min_minor: ``requires_standard.min_minor``. Defaults to the project's
-            current minor.
+        url: the pack's base URL. Falls back to ``pack.yaml``'s ``url`` and then
+            to ``<output>/latest/manifest.json``.
+        min_minor: the validating standard's ``min_minor``. Defaults to the
+            project's current minor.
         force: allow overwriting an existing ``<output>/v{Y}/``.
 
     Raises:
         NoProductDefinitions, FirstReleaseRequiresURL, PackURLMismatch,
-        ReleaseExists, and the project/conventions errors raised while importing.
+        ReleaseExists, InvalidPackConfig, and the project/conventions errors
+        raised while importing.
     """
     project_path = resolve_full_path(project_path)
     conventions = ConventionsFile.load(project_path)
@@ -136,7 +167,12 @@ def release(
     templates = TemplateSet.from_module(module.defaults)
 
     defs_dir = resolve_full_path(definitions) if definitions else os.getcwd()
-    yaml_files = sorted(glob.glob(os.path.join(defs_dir, "*.yaml")))
+    pack_config = PackConfig.load(defs_dir)
+    yaml_files = sorted(
+        f
+        for f in glob.glob(os.path.join(defs_dir, "*.yaml"))
+        if os.path.basename(f) != "pack.yaml"
+    )
     if not yaml_files:
         raise NoProductDefinitions(
             f"No *.yaml product definitions found in {defs_dir}.",
@@ -147,8 +183,11 @@ def release(
     output_dir = resolve_full_path(output_dir)
     os.makedirs(output_dir, exist_ok=True)
 
-    resolved_url = _resolve_url(url, output_dir)
+    resolved_url = _resolve_url(url if url is not None else pack_config.url, output_dir)
     resolved_min_minor = conventions.minor if min_minor is None else min_minor
+    satisfies_standards = _build_satisfies_standards(
+        conventions.name, conventions.major, resolved_min_minor, pack_config
+    )
 
     version_dir = os.path.join(output_dir, versioned_dirname(version))
     if os.path.isdir(version_dir) and not force:
@@ -166,9 +205,8 @@ def release(
     manifest = build_manifest(
         version=version,
         url=resolved_url,
-        standard_name=conventions.name,
-        standard_major=conventions.major,
-        min_minor=resolved_min_minor,
+        filecodec=pack_config.filecodec,
+        satisfies_standards=satisfies_standards,
         products=collection.manifest_products,
     )
 
@@ -205,8 +243,8 @@ def command(
         None,
         "--min-minor",
         help=(
-            "requires_standard.min_minor to write into the manifest. "
-            "Defaults to the project's current minor."
+            "The validating standard's min_minor recorded in the manifest's "
+            "satisfies_standards. Defaults to the project's current minor."
         ),
     ),
     definitions: Optional[str] = typer.Option(

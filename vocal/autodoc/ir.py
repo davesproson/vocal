@@ -239,11 +239,18 @@ class ProductDoc(BaseModel):
 
     Carries the documented ``dataset`` and ``diagnostics``. ``defs`` is unused
     in product mode (groups are inlined), so it is absent here.
+
+    ``satisfies_standards`` lists the standards the pack asserts the product
+    complies with, as canonical constraint strings (e.g. ``"MYSTD-2.4+"``). It is
+    read from the pack manifest (not the product JSON, which carries no such
+    field) and is advisory — a renderer shows it so a reader can see the pack's
+    declared standard compatibility at a glance.
     """
 
     mode: Literal["product"] = "product"
     dataset: DatasetDoc
     diagnostics: list[str] = Field(default_factory=list)
+    satisfies_standards: list[str] = Field(default_factory=list)
 
 
 # Resolve the ``"GroupDoc"`` forward reference in ``GroupChild`` now that every

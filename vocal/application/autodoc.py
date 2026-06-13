@@ -23,10 +23,31 @@ import typer
 from vocal.autodoc import document_product, document_project
 from vocal.autodoc.ir import ProductDoc, ProjectDoc
 from vocal.autodoc.renderers import get_renderer
+from vocal.exceptions import VocalError
+from vocal.manifest import MANIFEST_FILENAME, load_manifest
 from vocal.utils import Printer, TextStyles, import_project
 
 TS = TextStyles()
 p = Printer()
+
+
+def _product_satisfies_standards(product: str) -> list[str]:
+    """Return the standards a product's pack asserts it satisfies.
+
+    ``satisfies_standards`` lives in the pack ``manifest.json``, a sibling of the
+    product schema JSON, not in the product JSON itself. When that manifest is
+    present and readable it is loaded and its constraints returned as canonical
+    strings; when it is absent or malformed the product is still documented (just
+    without the advisory standards section), so this never raises.
+    """
+    manifest_path = Path(product).resolve().parent / MANIFEST_FILENAME
+    if not manifest_path.is_file():
+        return []
+    try:
+        manifest = load_manifest(manifest_path)
+    except VocalError:
+        return []
+    return [str(constraint) for constraint in manifest.satisfies_standards]
 
 
 def command(
@@ -88,7 +109,9 @@ def command(
         title: Optional[str] = Path(project.rstrip("/")).name
     else:
         assert product is not None  # guaranteed by the exactly-one check above
-        doc = document_product(product)
+        doc = document_product(
+            product, satisfies_standards=_product_satisfies_standards(product)
+        )
         title = None
 
     text = renderer.render(doc, title)

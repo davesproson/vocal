@@ -74,7 +74,7 @@ class ProductDefinition:
     def file_pattern(self) -> str:
         """The product's templated ``file_pattern``, read from its YAML ``meta``.
 
-        The pattern is a template; the project's ``filecodec`` supplies the regex
+        The pattern is a template; the pack's ``filecodec`` supplies the regex
         for each placeholder at check time. It is read straight from the source
         YAML so it does not depend on the project's ``DatasetMeta`` shape.
         """

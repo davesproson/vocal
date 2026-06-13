@@ -3,7 +3,8 @@
 Covers load/write round-tripping of ``conventions.yaml``, malformed-file
 rejection, the single project-import path (requiring
 ``<repo>/<project_directory>/__init__.py``), and project-contract enforcement
-(``defaults``, ``models.Dataset``, ``filecodec``).
+(``defaults``, ``models.Dataset``; ``filecodec`` moved to the pack and is no
+longer required).
 """
 
 import os
@@ -184,18 +185,35 @@ class TestValidateProjectContract:
         )
         validate_project_contract(module)  # type: ignore[arg-type]  # does not raise
 
-    @pytest.mark.parametrize("missing", ["defaults", "models", "filecodec"])
+    @pytest.mark.parametrize("missing", ["defaults", "models"])
     def test_missing_top_level_export_named(self, missing: str) -> None:
         attrs = {
             "defaults": object(),
             "models": SimpleNamespace(Dataset=object()),
-            "filecodec": {},
         }
         del attrs[missing]
         module = SimpleNamespace(**attrs)
         with pytest.raises(MissingProjectExport) as exc:
             validate_project_contract(module)  # type: ignore[arg-type]
         assert missing in exc.value.message
+
+    def test_filecodec_no_longer_required(self) -> None:
+        # filecodec moved to the pack; a project without one is valid.
+        module = SimpleNamespace(
+            defaults=object(),
+            models=SimpleNamespace(Dataset=object()),
+        )
+        validate_project_contract(module)  # type: ignore[arg-type]  # does not raise
+
+    def test_legacy_filecodec_tolerated(self) -> None:
+        # A legacy project that still exports a filecodec is accepted; it is
+        # simply ignored, not rejected.
+        module = SimpleNamespace(
+            defaults=object(),
+            models=SimpleNamespace(Dataset=object()),
+            filecodec={"date": {"regex": r"\d{8}"}},
+        )
+        validate_project_contract(module)  # type: ignore[arg-type]  # does not raise
 
     def test_missing_dataset_named(self) -> None:
         module = SimpleNamespace(

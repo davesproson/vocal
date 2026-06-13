@@ -130,6 +130,17 @@ class TestRenderProduct:
         out = render(document_product(_PRODUCT))
         assert "thing" in out  # short_name from meta
 
+    def test_satisfies_standards_section_appears(self) -> None:
+        out = render(
+            document_product(_PRODUCT, satisfies_standards=["MYSTD-2.3+"])
+        )
+        assert "Satisfies standards" in out
+        assert "MYSTD-2.3+" in out
+
+    def test_no_satisfies_standards_section_when_absent(self) -> None:
+        out = render(document_product(_PRODUCT))
+        assert "Satisfies standards" not in out
+
 
 class TestRegistry:
     def test_html_is_registered(self) -> None:

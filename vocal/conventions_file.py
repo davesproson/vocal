@@ -20,7 +20,9 @@ those concerns live entirely on the definitions / pack side.
 
 This module also owns the single project-import path: given a repo root, it
 resolves ``<repo>/<project_directory>/__init__.py``, imports the package, and
-enforces the project contract (``defaults``, ``models.Dataset``, ``filecodec``).
+enforces the project contract (``defaults``, ``models.Dataset``). The
+``filecodec`` no longer lives in the project — it moved to the pack's
+``pack.yaml`` — so a project that still exports one is tolerated and ignored.
 """
 
 from __future__ import annotations
@@ -38,7 +40,9 @@ from vocal.versioning import Version
 CONVENTIONS_FILENAME = "conventions.yaml"
 
 # The exports a project's importable package must expose to be usable by vocal.
-REQUIRED_EXPORTS = ("defaults", "models", "filecodec")
+# ``filecodec`` is deliberately absent: it moved to the pack's ``pack.yaml``. A
+# project that still exports one is tolerated and simply ignored.
+REQUIRED_EXPORTS = ("defaults", "models")
 
 
 class InvalidConventionsFile(VocalError):
@@ -193,7 +197,9 @@ def import_project_package(repo_path: str) -> ModuleType:
 def validate_project_contract(module: ModuleType) -> None:
     """Verify an imported project package exposes the required exports.
 
-    The package must expose ``defaults``, ``models.Dataset``, and ``filecodec``.
+    The package must expose ``defaults`` and ``models.Dataset``. The
+    ``filecodec`` is no longer part of the contract (it moved to the pack); a
+    project that still exports one is tolerated and ignored.
 
     Raises:
         MissingProjectExport: naming the first missing export.
@@ -202,17 +208,13 @@ def validate_project_contract(module: ModuleType) -> None:
         if not hasattr(module, export):
             raise MissingProjectExport(
                 f"Project package is missing required export: '{export}'.",
-                hint=(
-                    "A vocal project package must expose 'defaults', "
-                    "'models.Dataset', and 'filecodec'."
-                ),
+                hint="A vocal project package must expose 'defaults' and "
+                "'models.Dataset'.",
             )
 
     if not hasattr(module.models, "Dataset"):
         raise MissingProjectExport(
             "Project package is missing required export: 'models.Dataset'.",
-            hint=(
-                "A vocal project package must expose 'defaults', "
-                "'models.Dataset', and 'filecodec'."
-            ),
+            hint="A vocal project package must expose 'defaults' and "
+            "'models.Dataset'.",
         )

@@ -334,6 +334,16 @@ class TestDocumentProduct:
         doc = document_product(_PRODUCT)
         assert ProductDoc.model_validate_json(doc.model_dump_json()) == doc
 
+    def test_satisfies_standards_default_empty(self) -> None:
+        # Absent any pack manifest input, the product carries no standards.
+        assert document_product(_PRODUCT).satisfies_standards == []
+
+    def test_satisfies_standards_carried_through(self) -> None:
+        doc = document_product(
+            _PRODUCT, satisfies_standards=["MYSTD-2.3+", "OTHERSTD-1.0+"]
+        )
+        assert doc.satisfies_standards == ["MYSTD-2.3+", "OTHERSTD-1.0+"]
+
 
 # ---------------------------------------------------------------------------
 # Variables + dimensions (slice 5): project templates vs. product concretes.

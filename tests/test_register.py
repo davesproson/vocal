@@ -31,17 +31,23 @@ from vocal.manifest import InvalidManifest, PackInconsistent
 from vocal.utils.registry import Registry, project_key
 
 
-def _fill_in_module(repo: Path, module_name: str, *, filecodec: bool = True) -> None:
+def _fill_in_module(
+    repo: Path, module_name: str, *, filecodec: bool = True, defaults: bool = True
+) -> None:
     """Simulate the maintainer filling in a valid (importable) project module.
 
     ``init`` scaffolds a skeleton; here we overwrite it with a minimal module
-    that satisfies the project contract.
+    that satisfies the project contract. ``defaults=False`` omits a *required*
+    export to simulate a broken package; ``filecodec`` is no longer required and
+    is left in only to exercise legacy tolerance.
     """
     mod = repo / module_name
     if mod.exists():
         shutil.rmtree(mod)
     mod.mkdir(parents=True, exist_ok=True)
-    init_lines = ["from . import defaults", "from . import models"]
+    init_lines = ["from . import models"]
+    if defaults:
+        init_lines.append("from . import defaults")
     if filecodec:
         init_lines.append("filecodec = {}")
     (mod / "__init__.py").write_text("\n".join(init_lines) + "\n")
@@ -124,15 +130,15 @@ class TestInitThenRegister:
         init_project(
             str(repo), name="MYSTD", major=1, minor=0, project_directory="mystd"
         )
-        # Fill in a module missing filecodec.
-        _fill_in_module(repo, "mystd", filecodec=False)
+        # Fill in a module missing a required export (defaults).
+        _fill_in_module(repo, "mystd", defaults=False)
 
         captured: dict = {}
         with _install_env(tmp_path, captured) as vocal_root:
             with pytest.raises(MissingProjectExport) as exc:
                 register_project(str(repo))
 
-        assert "filecodec" in exc.value.message
+        assert "defaults" in exc.value.message
         # Nothing was registered, and no owned copy was left behind.
         assert captured["registry"].projects == {}
         assert not (Path(vocal_root) / "projects" / "MYSTD-1").exists()
@@ -293,7 +299,7 @@ class TestInstallProject:
             before = _snapshot(owned)
 
             # Break the module but keep the same identity, then force-reinstall.
-            _fill_in_module(repo, "safemod", filecodec=False)
+            _fill_in_module(repo, "safemod", defaults=False)
             with pytest.raises(MissingProjectExport):
                 register_project(str(repo), force=True)
 

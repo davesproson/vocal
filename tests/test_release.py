@@ -90,6 +90,22 @@ def _write_definition(defs_dir: Path, name: str, file_pattern: str) -> None:
     )
 
 
+# The pack's own pack.yaml: the routing filecodec (which used to live in the
+# project) plus the author's advisory satisfies_standards extras.
+_PACK_YAML = """\
+filecodec:
+  date:
+    regex: '\\d{8}'
+satisfies_standards:
+  - OTHERSTD-1.0+
+"""
+
+
+def _write_pack_yaml(defs_dir: Path, body: str = _PACK_YAML) -> None:
+    defs_dir.mkdir(parents=True, exist_ok=True)
+    (defs_dir / "pack.yaml").write_text(body)
+
+
 @pytest.fixture
 def project(tmp_path: Path) -> str:
     return _make_project(tmp_path / "project")
@@ -100,6 +116,7 @@ def definitions(tmp_path: Path) -> str:
     defs = tmp_path / "definitions"
     _write_definition(defs, "alpha", "alpha_{date}.nc")
     _write_definition(defs, "bravo", "bravo_{date}.nc")
+    _write_pack_yaml(defs)
     return str(defs)
 
 
@@ -209,11 +226,14 @@ class TestManifestContent:
         assert manifest["schema_version"] == 1
         assert manifest["version"] == 5
         assert manifest["url"] == "https://host/packs"
-        assert manifest["requires_standard"] == {
-            "name": "MYSTD",
-            "major": 2,
-            "min_minor": 3,  # defaults to the project's current minor
-        }
+        # The filecodec comes from pack.yaml, not the project.
+        assert manifest["filecodec"] == {"date": {"regex": r"\d{8}"}}
+        # satisfies_standards = the auto-recorded validating standard (the
+        # project's name+major+current minor) followed by the author's extras.
+        assert manifest["satisfies_standards"] == [
+            {"name": "MYSTD", "major": 2, "min_minor": 3},
+            {"name": "OTHERSTD", "major": 1, "min_minor": 0},
+        ]
 
         products = {p["name"]: p for p in manifest["products"]}
         assert set(products) == {"alpha", "bravo"}
@@ -232,7 +252,37 @@ class TestManifestContent:
             url="https://host/packs",
             min_minor=1,
         )
-        assert _read_manifest(output, "v1")["requires_standard"]["min_minor"] == 1
+        # The override flows into the auto-recorded validating standard.
+        assert _read_manifest(output, "v1")["satisfies_standards"][0] == {
+            "name": "MYSTD",
+            "major": 2,
+            "min_minor": 1,
+        }
+
+    def test_satisfies_standards_dedupes_validating_standard(
+        self, project: str, tmp_path: Path
+    ) -> None:
+        # An author who also lists the validating standard does not get a
+        # duplicate: it is recorded once, from the auto-record.
+        defs = tmp_path / "definitions"
+        _write_definition(defs, "alpha", "alpha_{date}.nc")
+        _write_pack_yaml(
+            defs,
+            "filecodec:\n  date:\n    regex: '\\d{8}'\n"
+            "satisfies_standards:\n  - MYSTD-2.3+\n  - OTHERSTD-1.0+\n",
+        )
+        output = tmp_path / "out"
+        release(
+            project_path=project,
+            version=1,
+            definitions=str(defs),
+            output_dir=str(output),
+            url="https://host/packs",
+        )
+        assert _read_manifest(output, "v1")["satisfies_standards"] == [
+            {"name": "MYSTD", "major": 2, "min_minor": 3},
+            {"name": "OTHERSTD", "major": 1, "min_minor": 0},
+        ]
 
     def test_url_normalised_when_supplied_noncanonical(
         self, project: str, definitions: str, tmp_path: Path
@@ -277,6 +327,24 @@ class TestURLResolution:
                 definitions=definitions,
                 output_dir=str(output),
             )
+
+    def test_url_falls_back_to_pack_yaml(self, project: str, tmp_path: Path) -> None:
+        # No --url and no prior release, but pack.yaml pins the url.
+        defs = tmp_path / "definitions"
+        _write_definition(defs, "alpha", "alpha_{date}.nc")
+        _write_pack_yaml(
+            defs,
+            "filecodec:\n  date:\n    regex: '\\d{8}'\n"
+            "url: https://host/from-pack\n",
+        )
+        output = tmp_path / "out"
+        release(
+            project_path=project,
+            version=1,
+            definitions=str(defs),
+            output_dir=str(output),
+        )
+        assert _read_manifest(output, "v1")["url"] == "https://host/from-pack"
 
     def test_url_mismatch_raises(
         self, project: str, definitions: str, tmp_path: Path
@@ -346,6 +414,9 @@ class TestReleaseExists:
 def test_no_product_definitions_raises(project: str, tmp_path: Path) -> None:
     empty = tmp_path / "empty"
     empty.mkdir()
+    # A pack.yaml is present (so PackConfig loads) but there are no product
+    # definition YAMLs alongside it.
+    _write_pack_yaml(empty)
     with pytest.raises(NoProductDefinitions):
         release(
             project_path=project,
