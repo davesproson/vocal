@@ -1,88 +1,78 @@
-"""Check-time resolution: turn a file's claims plus the local registry into a
-concrete ``(project, pack, product)`` target.
+"""Check-time resolution: turn a file's claims plus the local registry into the
+two independent axes a check must verify.
 
-``vocal check`` (and the web check endpoint) needs to answer a single question
-about a netCDF file: *what should this file be validated against?* The file
-self-describes through its global attributes — its ``Conventions`` string names
-the standard and the minor it claims, and the optional ``vocal_definitions_url``
-/ ``vocal_definitions_version`` pair pins the pack it was authored against. This
-module owns the logic that resolves those claims against the machine-local
-:class:`~vocal.utils.registry.Registry` and returns a :class:`ResolvedTarget`,
-or raises one of the typed errors below when something does not line up.
+``vocal check`` (and the web checker, and the gatekeeper) needs to answer one
+question about a netCDF file: *what should this file be validated against?* The
+file self-describes through its global attributes, and those claims split into
+two axes that never consult each other:
 
-The resolver is pure with respect to the application layer: it takes a registry
-and the file's attribute values as plain arguments and returns data. The only
-side input it needs from a project is its ``filecodec`` (to expand templated
-``file_pattern`` entries when routing a file to a product); that lookup is
-injected as a callable so the resolver can be driven entirely from fake
-registries and synthetic attribute dicts in tests.
+- **A standards axis.** A file may claim many standards. ``vocal_project_url``
+  is a whitespace-separated list of repository URLs and is the authoritative set
+  of *mandatory* standards: each names (via the registry's
+  :meth:`~vocal.utils.registry.Registry.find_project_by_url`) a project the file
+  must be verified against. Standards named only in ``Conventions`` are
+  *opportunistic* — verified if their project is installed, skipped with a
+  :class:`ResolutionWarning` if not (so external co-conventions such as CF and
+  ACDD, which have no URL and no installed project, simply fall out). The
+  **major** of every URL-claimed standard is sourced from the matching
+  ``Conventions`` token *by name*, never from the URL lookup.
 
-The six-step resolution flow (see the parent PRD's "Check resolution flow"):
+- **A product axis.** A file *is* a single product, so it declares exactly one
+  pack via ``vocal_definitions_url`` (+ optional ``vocal_definitions_version``).
+  The pack's product schema is matched to the file using the pack manifest's own
+  embedded ``filecodec`` — the pack is self-contained and needs no project to
+  route a file to a product.
 
-1. Parse ``Conventions``: tokenise on whitespace and pick the vocal-managed
-   token, parsing it into a :class:`~vocal.versioning.Version`.
-2. Look up a registered project with the matching ``{name, major}`` whose
-   ``minor`` is at least the file's claimed minor — :class:`ProjectMissing` if
-   absent, :class:`ProjectTooOld` if too old.
-3. If ``vocal_definitions_url`` is present, look up the registered pack by
-   normalised URL: with ``vocal_definitions_version`` also present, the lookup
-   is by ``(url, version)``; with the version absent, it resolves to the highest
-   registered version for that URL — :class:`PackMissing` if none match.
-4. Verify the pack's ``requires_standard`` is satisfied by the registered
-   project — :class:`PackIncompatible` otherwise, naming the failing sub-check.
-5. Match the file to a product by the manifest's ``file_pattern`` entries,
-   expanded with the project's ``filecodec`` — :class:`ProductNotFound` if none
-   match.
-6. Return a :class:`ResolvedTarget` carrying the project, pack, product, and the
-   absolute path of the schema to validate against.
+The resolver collects per-claim failures rather than raising on the first
+problem, so a surface can report everything in one pass. It raises only when
+there is *nothing to check at all* — no resolvable target, no pack, and no
+failure to report.
 
-When an explicit ``-d``/``definition_override`` is supplied, steps 3–5 are
-replaced by "load the schema at that path directly": the project is still
-resolved (steps 1–2), but no pack lookup or compatibility check is performed and
-the user takes responsibility for the chosen product schema.
+A claimed standard that is installed but at a minor *older* than the file claims
+cannot be fully verified and — because non-breaking minors are forward-only (a
+file conforming to ``STD-1.X`` conforms to ``STD-1.(X+n)`` but not the reverse)
+— its model must not be run lest it spuriously reject a legitimately
+newer-minor file. Such a claim is recorded as an *unverifiable*
+:class:`ProjectTarget` (``verifiable=False``) carrying an ``--update`` hint; the
+check spine turns that into an INDETERMINATE verdict. The gate that matters is
+**installed-vs-not**, not mandatory-vs-opportunistic.
+
+The resolver is pure with respect to the application and filesystem layers when
+driven through :func:`resolve_file` with an explicit ``attrs`` and ``registry``,
+so it can be exercised entirely from synthetic registries, :class:`FileConventions`,
+and manifests in tests.
 """
 
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
-from types import ModuleType
-from typing import Any, Callable, Mapping, Optional
+from dataclasses import dataclass, field
+from typing import Optional
 
 from vocal.exceptions import VocalError
 from vocal.manifest import ManifestProduct, normalize_pack_url
 from vocal.utils.conventions import FileConventions, read_file_conventions
 from vocal.utils.registry import Pack, Project, Registry, project_key
-from vocal.versioning import InvalidVersion, Version, VersionConstraint
-
-# A loader that maps a registered project to its ``filecodec`` — the mapping of
-# template placeholder names to ``{"regex": ...}`` entries used to expand a
-# product's ``file_pattern`` at match time. Injected so the resolver stays
-# testable without importing a real project package.
-FilecodecLoader = Callable[[Project], Mapping[str, Mapping[str, Any]]]
+from vocal.versioning import InvalidVersion, Version
 
 
 class ResolutionError(VocalError):
-    """Base class for the resolver's typed failures.
+    """Base class for the resolver's typed, per-claim failures.
 
     Each subclass carries a stable ``code`` drawn from the shared resolver-error
-    vocabulary, used by the web API to tag the failure category, plus the
-    ``message`` and ``hint`` from :class:`~vocal.exceptions.VocalError`.
+    vocabulary (used by the web API to tag the failure category), plus the
+    ``message`` and ``hint`` from :class:`~vocal.exceptions.VocalError`. These
+    are *collected* into a :class:`Resolution`'s ``failures`` rather than raised,
+    so a surface can report every unresolved claim at once.
     """
 
     code: str = "resolution_error"
 
 
 class ProjectMissing(ResolutionError):
-    """No registered project matches the standard the file claims."""
+    """A mandatory standard's project is not installed (or not at the claimed major)."""
 
     code = "project_missing"
-
-
-class ProjectTooOld(ResolutionError):
-    """The registered project's minor is older than the file's claimed minor."""
-
-    code = "project_too_old"
 
 
 class PackMissing(ResolutionError):
@@ -91,117 +81,91 @@ class PackMissing(ResolutionError):
     code = "pack_missing"
 
 
-class PackIncompatible(ResolutionError):
-    """The pack's ``requires_standard`` is not satisfied by the registered project."""
-
-    code = "pack_incompatible"
-
-
 class ProductNotFound(ResolutionError):
     """The file matched no product pattern in the resolved pack."""
 
     code = "product_not_found"
 
 
-@dataclass(frozen=True)
-class ResolvedTarget:
-    """The outcome of resolving a file against the registry.
+class NothingToCheck(ResolutionError):
+    """The file carries no recognisable vocal claim at all.
 
-    ``project`` is always present. ``schema_path`` is the absolute path of the
-    product schema JSON the file should be validated against — sourced from the
-    matched pack product, or directly from a ``-d`` override. ``pack`` and
-    ``product`` are populated on the full resolver flow and ``None`` when a
-    ``-d`` override short-circuits pack resolution. ``schema_path`` is ``None``
-    only when neither a pack nor an override was supplied (project-only
-    resolution).
+    Raised — not collected — when resolution produces no project target, no
+    pack, and no failure to report: there is literally nothing to verify. A
+    surface renders this as "not a vocal-managed file", distinct from a verdict.
+    """
+
+    code = "nothing_to_check"
+
+
+@dataclass(frozen=True)
+class ProjectTarget:
+    """A standard the file is to be verified against, along the standards axis.
+
+    ``mandatory`` is ``True`` when the standard came from ``vocal_project_url``
+    and ``False`` for an opportunistic ``Conventions``-only claim.
+    ``claimed_version`` is the :class:`~vocal.versioning.Version` the file
+    claimed via its ``Conventions`` token, or ``None`` for a URL-claimed standard
+    the file names no version for.
+
+    ``verifiable`` is ``False`` when the project is installed but at a minor
+    *older* than the file claims: the model must not be run (it could spuriously
+    reject a legitimately newer-minor file), so the check spine treats an
+    unverifiable target as INDETERMINATE. ``hint`` carries the ``--update``
+    nudge in that case.
     """
 
     project: Project
-    schema_path: Optional[str]
-    pack: Optional[Pack] = None
-    product: Optional[ManifestProduct] = None
-
-    @property
-    def is_fully_resolved(self) -> bool:
-        """Whether the target was resolved to a product schema (vs. project-only)."""
-        return (
-            self.project is not None
-            and self.schema_path is not None
-            and self.pack is not None
-            and self.product is not None
-        )
+    mandatory: bool
+    claimed_version: Optional[Version]
+    verifiable: bool = True
+    hint: Optional[str] = None
 
 
-def _default_filecodec_loader(project: Project) -> Mapping[str, Mapping[str, Any]]:
-    """Import the project's package from its cached repo and return its filecodec.
+@dataclass(frozen=True)
+class PackTarget:
+    """The single product the file is to be verified against, along the product axis.
 
-    Imported lazily so the application's project-import machinery is only loaded
-    when a real project must be read — tests inject their own loader.
+    ``schema_path`` is the absolute path of the product schema JSON to validate
+    the file against, sourced from the matched pack product.
     """
-    from vocal.conventions_file import import_project_package
 
-    module: ModuleType = import_project_package(project.local_path)
-    return module.filecodec
+    pack: Pack
+    product: ManifestProduct
+    schema_path: str
 
 
-def resolve(
-    registry: Registry,
-    *,
-    filename: str,
-    conventions: Optional[str],
-    definitions_url: Optional[str] = None,
-    definitions_version: Optional[int] = None,
-    definition_override: Optional[str] = None,
-    project_url: Optional[str] = None,
-    filecodec_loader: FilecodecLoader = _default_filecodec_loader,
-) -> ResolvedTarget:
-    """Resolve a file's claims against ``registry`` into a :class:`ResolvedTarget`.
+@dataclass(frozen=True)
+class ResolutionWarning:
+    """A non-fatal note about a claim that was not (fully) verified.
 
-    Args:
-        registry: the local registry of fetched projects and packs.
-        filename: the netCDF file's name — only the basename is used, for product
-            pattern matching.
-        conventions: the file's ``Conventions`` global attribute, or ``None``.
-        definitions_url: the file's ``vocal_definitions_url`` (a pack base URL),
-            or ``None``.
-        definitions_version: the file's ``vocal_definitions_version``, or ``None``.
-        definition_override: an explicit ``-d`` product schema path. When given,
-            pack resolution (steps 3–5) is skipped and this path becomes the
-            target schema.
-        project_url: the file's ``vocal_project_url``, used only to populate the
-            ``vocal fetch`` hint on project-related errors.
-        filecodec_loader: maps a resolved project to its ``filecodec``. Defaults
-            to importing the project's package.
-
-    Returns:
-        a :class:`ResolvedTarget`.
-
-    Raises:
-        ProjectMissing, ProjectTooOld, PackMissing, PackIncompatible,
-        ProductNotFound: per the resolution flow.
+    Warnings never change a verdict on their own; they explain what was skipped
+    (an opportunistic standard whose project isn't installed) or that a pack's
+    advisory ``satisfies_standards`` assertion doesn't intersect the file's
+    claimed standards. ``code`` tags the category for a surface to render.
     """
-    project, claimed = _resolve_project(registry, conventions, project_url)
 
-    # -d override: the user has chosen the product schema explicitly. Resolve the
-    # project for the model, then trust the supplied path (steps 3–5 skipped).
-    if definition_override is not None:
-        return ResolvedTarget(project=project, schema_path=definition_override)
+    code: str
+    message: str
+    hint: Optional[str] = None
 
-    # No pack reference and no override: resolve the project alone. The CLI
-    # layer requires -d in this case; the web layer rejects it. A bare
-    # definitions version with no URL cannot name a pack, so it is treated the
-    # same way.
-    if definitions_url is None:
-        return ResolvedTarget(project=project, schema_path=None)
 
-    pack = _resolve_pack(registry, definitions_url, definitions_version)
-    _check_compatibility(pack, project)
-    product = _match_product(pack, project, filename, filecodec_loader)
+@dataclass
+class Resolution:
+    """The outcome of resolving a file's claims along both axes.
 
-    schema_path = os.path.join(pack.local_path, product.schema)
-    return ResolvedTarget(
-        project=project, schema_path=schema_path, pack=pack, product=product
-    )
+    ``projects`` holds every standards-axis target (verifiable and unverifiable
+    alike — the check spine filters on ``verifiable``). ``pack`` is the single
+    product-axis target, or ``None`` when the file declares no pack (or the pack
+    could not be resolved — in which case ``failures`` explains why).
+    ``failures`` are the typed, per-claim problems for mandatory claims;
+    ``warnings`` are advisory notes.
+    """
+
+    projects: list[ProjectTarget] = field(default_factory=list)
+    pack: Optional[PackTarget] = None
+    failures: list[ResolutionError] = field(default_factory=list)
+    warnings: list[ResolutionWarning] = field(default_factory=list)
 
 
 def _load_registry() -> Registry:
@@ -222,95 +186,64 @@ def resolve_file(
     *,
     attrs: Optional[FileConventions] = None,
     registry: Optional[Registry] = None,
-    definition_override: Optional[str] = None,
-    filecodec_loader: FilecodecLoader = _default_filecodec_loader,
-) -> ResolvedTarget:
-    """Read a file's vocal-managed attributes and resolve them against a registry.
+) -> Resolution:
+    """Resolve a file's claims into a :class:`Resolution` along both axes.
 
-    The shared spine of every check surface — ``vocal check``, the web checker,
-    and the gatekeeper — each of which needs to turn a path on disk into a
-    :class:`ResolvedTarget`: read the file's :class:`FileConventions`, then drive
-    :func:`resolve` with them. Reading the attributes and mapping them onto the
-    resolver's keyword arguments is the part that was otherwise copy-pasted per
-    surface; everything *around* the resolution (precondition policy, how errors
-    are rendered) legitimately differs and stays with the caller.
+    The shared spine of every check surface. Reads the file's
+    :class:`FileConventions` and the machine-local :class:`Registry` when not
+    supplied; callers that already hold them (the CLI and web layers read the
+    attributes first to drive their preconditions) pass them in, which also makes
+    the resolver pure and fully driveable from synthetic inputs in tests.
 
-    ``attrs`` and ``registry`` are accepted pre-built for callers that already
-    hold them — the CLI and web layers read the attributes first (to drive a
-    ``--fetch`` nudge and a precondition check respectively) and load the
-    registry through their own test seam. Callers with neither (the gatekeeper)
-    pass just ``filename`` and let this read the file and load the registry.
+    Args:
+        filename: the netCDF file's name — only the basename is used, for product
+            pattern matching.
+        attrs: the file's vocal-managed attributes; read from ``filename`` when
+            ``None``.
+        registry: the local registry; loaded from disk (or empty) when ``None``.
 
-    Raises the typed :class:`ResolutionError` subclasses from :func:`resolve`,
-    plus whatever :func:`read_file_conventions` raises when the file cannot be
-    read.
+    Returns:
+        a :class:`Resolution` carrying ``projects``, ``pack``, ``failures``, and
+        ``warnings``.
+
+    Raises:
+        NothingToCheck: the file carries no recognisable vocal claim — no
+            resolvable project target, no pack, and no failure to report.
     """
     if attrs is None:
         attrs = read_file_conventions(filename)
     if registry is None:
         registry = _load_registry()
 
-    return resolve(
-        registry,
-        filename=filename,
-        conventions=attrs.conventions,
-        definitions_url=attrs.definitions_url,
-        definitions_version=attrs.definitions_version,
-        definition_override=definition_override,
-        project_url=attrs.project_urls[0] if attrs.project_urls else None,
-        filecodec_loader=filecodec_loader,
-    )
+    claimed = _parse_conventions(attrs.conventions)
 
+    resolution = Resolution()
+    covered: set[str] = set()
 
-def _resolve_project(
-    registry: Registry, conventions: Optional[str], project_url: Optional[str]
-) -> tuple[Project, Version]:
-    """Steps 1–2: identify the standard from ``Conventions`` and look it up.
+    _resolve_mandatory(attrs.project_urls, claimed, registry, resolution, covered)
+    _resolve_opportunistic(claimed, registry, resolution, covered)
+    _resolve_product_axis(attrs, filename, registry, claimed, resolution)
 
-    Returns the registered :class:`Project` and the :class:`Version` the file
-    claimed. Raises :class:`ProjectMissing` / :class:`ProjectTooOld`.
-    """
-    claimed = _select_version_token(conventions, registry)
-    url_hint = project_url or "<vocal_project_url>"
-
-    project = registry.projects.get(project_key(claimed.name, claimed.major))
-    if project is None:
-        raise ProjectMissing(
-            f"No project registered for {claimed.name}-{claimed.major}",
-            f"Run 'vocal fetch {url_hint}' to register the project, or pass -p <path>.",
+    if not resolution.projects and resolution.pack is None and not resolution.failures:
+        raise NothingToCheck(
+            "The file carries no recognisable vocal claim.",
+            "Expected a vocal_project_url, a vocal_definitions_url, or a "
+            "Conventions token naming an installed standard. Pass -p/-d to check "
+            "the file explicitly.",
         )
 
-    if project.minor < claimed.minor:
-        raise ProjectTooOld(
-            f"File claims {claimed.name}-{claimed.major}.{claimed.minor} but "
-            f"registered project is at {project.name}-{project.major}."
-            f"{project.minor}",
-            f"Update the registered project: 'vocal fetch {url_hint} --update'.",
-        )
-
-    return project, claimed
+    return resolution
 
 
-def _select_version_token(conventions: Optional[str], registry: Registry) -> Version:
-    """Pick the vocal-managed token out of a ``Conventions`` string.
+def _parse_conventions(conventions: Optional[str]) -> list[Version]:
+    """Tokenise a ``Conventions`` string into the standard versions it claims.
 
-    The string may carry co-conventions (e.g. ``"CF-1.8 ACDD-1.3 MYSTD-1.2"``).
     Tokens are split on whitespace; each is parsed as a :class:`Version` and
-    non-conforming tokens are ignored. The vocal token is the first parseable
-    token whose ``name`` matches a registered project's name. When none match a
-    registered name (e.g. the standard is not fetched at all), the last
-    parseable token is used — vocal tokens conventionally trail the CF/ACDD
-    tokens — so the resulting :class:`ProjectMissing` still names the standard.
-
-    Raises:
-        ProjectMissing: ``Conventions`` is absent or carries no parseable token.
+    non-conforming tokens (and an absent attribute) are silently dropped. The
+    order in which tokens appear is preserved.
     """
     if not conventions:
-        raise ProjectMissing(
-            "No Conventions attribute found on the file.",
-            "Pass -p <path> and -d <path> to check the file explicitly.",
-        )
-
+        return []
     parsed: list[Version] = []
     for token in conventions.split():
         token = token.rstrip(",")
@@ -318,90 +251,243 @@ def _select_version_token(conventions: Optional[str], registry: Registry) -> Ver
             parsed.append(Version.parse(token))
         except InvalidVersion:
             continue
+    return parsed
 
-    if not parsed:
-        raise ProjectMissing(
-            f"No recognisable standard version in Conventions: {conventions!r}",
-            "Pass -p <path> and -d <path> to check the file explicitly.",
+
+def _find_token(claimed: list[Version], name: str) -> Optional[Version]:
+    """Return the first claimed version whose ``name`` matches, or ``None``."""
+    for version in claimed:
+        if version.name == name:
+            return version
+    return None
+
+
+def _resolve_mandatory(
+    project_urls: list[str],
+    claimed: list[Version],
+    registry: Registry,
+    resolution: Resolution,
+    covered: set[str],
+) -> None:
+    """Resolve the mandatory standards declared by ``vocal_project_url``.
+
+    Each URL establishes mandatoriness and (via ``find_project_by_url``) the
+    project *name*; the **major** is sourced from the matching ``Conventions``
+    token by name. A URL with no installed project, or whose claimed major is not
+    installed, is a :class:`ProjectMissing` failure carrying the URL as the fetch
+    hint. A claim installed but too old becomes an unverifiable target.
+    """
+    for url in project_urls:
+        installed = registry.find_project_by_url(url)
+        if installed is None:
+            resolution.failures.append(
+                ProjectMissing(
+                    f"No project registered for {url}",
+                    f"Run 'vocal fetch {url}' to register the standard, "
+                    f"or pass -p <path>.",
+                )
+            )
+            continue
+
+        name = installed.name
+        covered.add(name)
+        token = _find_token(claimed, name)
+
+        # A URL'd standard the file names no version for has no version
+        # constraint: verify against the single installed project at that URL.
+        if token is None:
+            resolution.projects.append(
+                ProjectTarget(project=installed, mandatory=True, claimed_version=None)
+            )
+            continue
+
+        project = registry.projects.get(project_key(name, token.major))
+        if project is None:
+            resolution.failures.append(
+                ProjectMissing(
+                    f"No project registered for {name}-{token.major}",
+                    f"Run 'vocal fetch {url}' to register it, or pass -p <path>.",
+                )
+            )
+            continue
+
+        resolution.projects.append(
+            _project_target(project, token, mandatory=True, url=url)
         )
 
-    registered_names = {project.name for project in registry.projects.values()}
-    for version in parsed:
-        if version.name in registered_names:
-            return version
 
-    return parsed[-1]
+def _resolve_opportunistic(
+    claimed: list[Version],
+    registry: Registry,
+    resolution: Resolution,
+    covered: set[str],
+) -> None:
+    """Resolve the opportunistic standards named only in ``Conventions``.
+
+    A ``Conventions`` standard not already covered by a URL is verified when its
+    ``{name, major}`` project is installed, recorded as an unverifiable target
+    when installed-but-too-old, and skipped with a :class:`ResolutionWarning`
+    when not installed (which is how external co-conventions fall out).
+    """
+    for token in claimed:
+        if token.name in covered:
+            continue
+        covered.add(token.name)
+
+        project = registry.projects.get(project_key(token.name, token.major))
+        if project is None:
+            resolution.warnings.append(
+                ResolutionWarning(
+                    code="standard_not_verified",
+                    message=(
+                        f"{token} was not verified: no matching project is "
+                        f"installed."
+                    ),
+                    hint=f"Run 'vocal fetch' for {token.name}-{token.major} to "
+                    f"verify it.",
+                )
+            )
+            continue
+
+        resolution.projects.append(
+            _project_target(project, token, mandatory=False, url=None)
+        )
+
+
+def _project_target(
+    project: Project, token: Version, *, mandatory: bool, url: Optional[str]
+) -> ProjectTarget:
+    """Build a :class:`ProjectTarget` for an installed project, marking it
+    unverifiable when its minor is older than the claimed minor."""
+    if project.minor < token.minor:
+        if url is not None:
+            hint = f"Update the registered project: 'vocal fetch {url} --update'."
+        else:
+            hint = (
+                f"Update the registered project to {token.name}-{token.major}."
+                f"{token.minor} or later, then re-check ('--update')."
+            )
+        return ProjectTarget(
+            project=project,
+            mandatory=mandatory,
+            claimed_version=token,
+            verifiable=False,
+            hint=hint,
+        )
+    return ProjectTarget(project=project, mandatory=mandatory, claimed_version=token)
+
+
+def _resolve_product_axis(
+    attrs: FileConventions,
+    filename: str,
+    registry: Registry,
+    claimed: list[Version],
+    resolution: Resolution,
+) -> None:
+    """Resolve the single pack declared by ``vocal_definitions_url``.
+
+    Looks up the pack (exact version, else the highest registered for the URL),
+    matches the file to a product via the pack's *embedded* ``filecodec``, and
+    emits an advisory warning when the pack's ``satisfies_standards`` doesn't
+    intersect the file's claimed standards. Pack/product problems are collected
+    as failures; the pack is mandatory once named.
+    """
+    if attrs.definitions_url is None:
+        return
+
+    pack = _resolve_pack(
+        registry, attrs.definitions_url, attrs.definitions_version, resolution
+    )
+    if pack is None:
+        return
+
+    _check_satisfies(pack, claimed, resolution)
+
+    product = pack.manifest.find_product(filename)
+    if product is None:
+        patterns = ", ".join(p.file_pattern for p in pack.manifest.products)
+        resolution.failures.append(
+            ProductNotFound(
+                f"File {os.path.basename(filename)!r} did not match any product "
+                f"pattern in pack",
+                f"Verify the filename matches one of: {patterns}.",
+            )
+        )
+        return
+
+    schema_path = os.path.join(pack.local_path, product.schema)
+    resolution.pack = PackTarget(
+        pack=pack, product=product, schema_path=schema_path
+    )
 
 
 def _resolve_pack(
-    registry: Registry, definitions_url: str, definitions_version: Optional[int]
-) -> Pack:
-    """Step 3: look up the registered pack for the file's declared URL.
+    registry: Registry,
+    definitions_url: str,
+    definitions_version: Optional[int],
+    resolution: Resolution,
+) -> Optional[Pack]:
+    """Look up the registered pack for the file's declared URL, collecting a
+    :class:`PackMissing` failure when none matches.
 
-    With an explicit ``definitions_version``, look up ``(url, version)`` exactly.
-    With the version absent, resolve to the highest registered version for the
-    URL — the file carried no precise pin, so the newest local version is used.
-    Raises :class:`PackMissing` (hinting the repo-URL fetch form) when no
-    matching pack is registered.
+    With an explicit version, look up ``(url, version)`` exactly; with the
+    version absent, resolve to the highest registered version for the URL.
     """
     normalized = normalize_pack_url(definitions_url)
 
     if definitions_version is None:
         pack = registry.find_latest_pack(definitions_url)
-        if pack is None:
-            raise PackMissing(
-                f"No pack registered for {normalized}",
+    else:
+        pack = registry.find_pack(definitions_url, definitions_version)
+
+    if pack is None:
+        suffix = (
+            f" version {definitions_version}"
+            if definitions_version is not None
+            else ""
+        )
+        resolution.failures.append(
+            PackMissing(
+                f"No pack registered for {normalized}{suffix}",
                 f"Run 'vocal fetch {normalized}' to register it.",
             )
-        return pack
-
-    pack = registry.find_pack(definitions_url, definitions_version)
-    if pack is None:
-        raise PackMissing(
-            f"No pack registered for {normalized} version {definitions_version}",
-            f"Run 'vocal fetch {normalized}' to register it.",
         )
+        return None
     return pack
 
 
-def _check_compatibility(pack: Pack, project: Project) -> None:
-    """Step 4: verify the pack's ``requires_standard`` matches the project.
+def _check_satisfies(
+    pack: Pack, claimed: list[Version], resolution: Resolution
+) -> None:
+    """Emit an advisory warning when the pack's ``satisfies_standards`` doesn't
+    intersect the file's claimed standards.
 
-    Three sub-checks; the message names the one that failed.
+    The assertion is advisory and never a failure: the file is independently
+    checked against the pack schema regardless. A warning is emitted only when
+    the pack asserts standards *and none* are ``.satisfied_by()`` any claimed
+    version (the claimed minor participates, so CF/ACDD — which satisfy no vocal
+    constraint — are harmless).
     """
-    requires: VersionConstraint = pack.manifest.requires_standard
+    constraints = pack.manifest.satisfies_standards
+    if not constraints:
+        return
 
-    if requires.name != project.name or requires.major != project.major:
-        raise PackIncompatible(
-            f"Pack targets {requires.name}-{requires.major} but registered "
-            f"project is {project.name}-{project.major}",
-            f"Register a project matching the pack's target standard, or pin to "
-            f"a pack built for {project.name}-{project.major}.",
+    intersects = any(
+        constraint.satisfied_by(version)
+        for constraint in constraints
+        for version in claimed
+    )
+    if intersects:
+        return
+
+    asserted = ", ".join(str(constraint) for constraint in constraints)
+    resolution.warnings.append(
+        ResolutionWarning(
+            code="satisfies_standards_unmet",
+            message=(
+                f"Pack asserts it satisfies {asserted}, none of which the file "
+                f"claims."
+            ),
+            hint="Advisory only; the file is still checked against the pack schema.",
         )
-
-    if requires.min_minor > project.minor:
-        raise PackIncompatible(
-            f"Pack requires {requires} but registered project is at "
-            f"{project.major}.{project.minor}",
-            f"Update the project to {requires.major}.{requires.min_minor} or "
-            f"later, or pin to an older pack.",
-        )
-
-
-def _match_product(
-    pack: Pack,
-    project: Project,
-    filename: str,
-    filecodec_loader: FilecodecLoader,
-) -> ManifestProduct:
-    """Step 5: route the file to a product via ``file_pattern`` + ``filecodec``."""
-    filecodec = filecodec_loader(project)
-    product = pack.manifest.find_product(filename, filecodec)
-    if product is None:
-        patterns = ", ".join(p.file_pattern for p in pack.manifest.products)
-        raise ProductNotFound(
-            f"File {os.path.basename(filename)!r} did not match any product "
-            f"pattern in pack",
-            f"Verify the filename matches one of: {patterns}.",
-        )
-    return product
+    )

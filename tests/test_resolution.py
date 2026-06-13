@@ -1,10 +1,12 @@
-"""Unit tests for vocal/resolution.py — the check-time resolver.
+"""Unit tests for vocal/resolution.py — the two-axis check-time resolver.
 
-Every path is driven by a fake :class:`Registry` and synthetic file-attribute
-arguments, with the project's ``filecodec`` injected as a plain dict, so the
-resolver is exercised through its public ``resolve`` surface without importing
-a real project package or touching the filesystem. Packs are built through the
-``manifest`` module so the tests don't reach into the manifest's internal shape.
+Every path is driven through the public :func:`resolve_file` surface with a
+synthetic :class:`FileConventions` and a fake :class:`Registry`, with packs
+built through the ``manifest`` module so the tests never reach into the
+manifest's internal shape, import a real project package, or touch the
+filesystem. Assertions are made on the returned :class:`Resolution` — its
+``projects``, ``pack``, ``failures``, and ``warnings`` — never on private
+helpers or intermediate state.
 """
 
 import os
@@ -13,30 +15,37 @@ import pytest
 
 from vocal.manifest import ManifestProduct, build_manifest
 from vocal.resolution import (
-    PackIncompatible,
+    NothingToCheck,
     PackMissing,
+    PackTarget,
     ProductNotFound,
     ProjectMissing,
-    ProjectTooOld,
-    ResolvedTarget,
-    resolve,
+    ProjectTarget,
+    Resolution,
+    resolve_file,
 )
+from vocal.utils.conventions import FileConventions
 from vocal.utils.registry import Pack, Project, Registry
+from vocal.versioning import Version, VersionConstraint
+
+# The pack's own filecodec, expanding the {date} placeholder in the products'
+# file_patterns below.
+FILECODEC = {"date": {"regex": r"\d{8}"}}
+
+MYSTD_URL = "https://github.com/org/mystd"
+PACK_URL = "https://host/packs"
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-# A project whose filecodec defines a single {date} placeholder, expanded into
-# the product file_patterns below.
-FILECODEC = {"date": {"regex": r"\d{8}"}}
-
 
 def _project(
     name: str = "MYSTD",
     major: int = 2,
     minor: int = 3,
+    url: str = MYSTD_URL,
     local_path: str = "/cache/projects/mystd",
 ) -> Project:
     return Project(
@@ -45,17 +54,16 @@ def _project(
         minor=minor,
         project_directory="mystd",
         local_path=local_path,
+        url=url,
     )
 
 
 def _pack(
-    url: str = "https://host/packs",
+    url: str = PACK_URL,
     version: int = 3,
-    name: str = "MYSTD",
-    major: int = 2,
-    min_minor: int = 3,
-    local_path: str = "/cache/packs/host-packs/v3",
+    satisfies=None,
     products=None,
+    local_path: str = "/cache/packs/host-packs/v3",
 ) -> Pack:
     if products is None:
         products = [
@@ -63,372 +71,299 @@ def _pack(
                 name="foo", file_pattern="foo_{date}", schema="product_foo.json"
             )
         ]
+    if satisfies is None:
+        satisfies = [VersionConstraint(name="MYSTD", major=2, min_minor=3)]
     manifest = build_manifest(
         version=version,
         url=url,
-        standard_name=name,
-        standard_major=major,
-        min_minor=min_minor,
+        filecodec=FILECODEC,
+        satisfies_standards=satisfies,
         products=products,
     )
     return Pack(manifest=manifest, local_path=local_path)
 
 
-def _registry(project: Project | None = None, pack: Pack | None = None) -> Registry:
+def _registry(*items) -> Registry:
     registry = Registry()
-    if project is not None:
-        registry.add_project(project)
-    if pack is not None:
-        registry.add_pack(pack)
+    for item in items:
+        if isinstance(item, Project):
+            registry.add_project(item)
+        elif isinstance(item, Pack):
+            registry.add_pack(item)
     return registry
 
 
-def _codec(project: Project):
-    """A filecodec_loader that ignores the project and returns FILECODEC."""
-    return FILECODEC
+def _attrs(
+    conventions=None,
+    project_urls=None,
+    definitions_url=None,
+    definitions_version=None,
+) -> FileConventions:
+    return FileConventions(
+        conventions=conventions,
+        project_urls=project_urls or [],
+        definitions_url=definitions_url,
+        definitions_version=definitions_version,
+    )
+
+
+def _resolve(filename="foo_20260522.nc", *, attrs, registry) -> Resolution:
+    return resolve_file(filename, attrs=attrs, registry=registry)
+
+
+def _verifiable(resolution: Resolution) -> list[ProjectTarget]:
+    return [t for t in resolution.projects if t.verifiable]
 
 
 # ---------------------------------------------------------------------------
-# Happy path
+# Mandatory standards axis (vocal_project_url)
 # ---------------------------------------------------------------------------
 
 
-class TestHappyPath:
-    def test_full_flow_resolves_project_pack_and_product(self) -> None:
-        project = _project()
-        pack = _pack(local_path="/cache/packs/host-packs/v3")
-        registry = _registry(project, pack)
+class TestMandatoryProjects:
+    def test_url_selects_mandatory_project_major_from_conventions_token(self) -> None:
+        project = _project(major=2, minor=3)
+        registry = _registry(project)
 
-        target = resolve(
-            registry,
-            filename="foo_20260522.nc",
-            conventions="CF-1.8 MYSTD-2.3",
-            definitions_url="https://host/packs",
-            definitions_version=3,
-            filecodec_loader=_codec,
+        resolution = _resolve(
+            attrs=_attrs(conventions="CF-1.8 MYSTD-2.3", project_urls=[MYSTD_URL]),
+            registry=registry,
         )
 
-        assert isinstance(target, ResolvedTarget)
+        assert len(resolution.projects) == 1
+        target = resolution.projects[0]
         assert target.project is project
-        assert target.pack is pack
-        assert target.product is not None
-        assert target.product.name == "foo"
-        assert target.schema_path == os.path.join(pack.local_path, "product_foo.json")
+        assert target.mandatory is True
+        assert target.claimed_version == Version("MYSTD", 2, 3)
+        assert target.verifiable is True
+        assert resolution.failures == []
 
-    def test_project_minor_above_claimed_minor_resolves(self) -> None:
-        # File claims 2.1; registered project is at 2.3 — newer is fine.
+    def test_url_major_sourced_from_token_not_url_lookup(self) -> None:
+        # The URL's installed project is MYSTD-2, but the file claims MYSTD-3:
+        # the claimed major is not installed, so it is a ProjectMissing failure.
+        project = _project(major=2, minor=3)
+        registry = _registry(project)
+
+        resolution = _resolve(
+            attrs=_attrs(conventions="MYSTD-3.0", project_urls=[MYSTD_URL]),
+            registry=registry,
+        )
+
+        assert resolution.projects == []
+        assert len(resolution.failures) == 1
+        failure = resolution.failures[0]
+        assert isinstance(failure, ProjectMissing)
+        assert failure.message == "No project registered for MYSTD-3"
+        assert failure.hint is not None and MYSTD_URL in failure.hint
+
+    def test_url_with_no_installed_project_is_missing_with_url_hint(self) -> None:
+        registry = _registry()  # nothing installed
+
+        resolution = _resolve(
+            attrs=_attrs(conventions="MYSTD-2.3", project_urls=[MYSTD_URL]),
+            registry=registry,
+        )
+
+        assert resolution.projects == []
+        assert len(resolution.failures) == 1
+        failure = resolution.failures[0]
+        assert isinstance(failure, ProjectMissing)
+        assert failure.hint is not None and MYSTD_URL in failure.hint
+        assert failure.code == "project_missing"
+
+    def test_url_without_matching_token_resolves_installed_with_no_version(
+        self,
+    ) -> None:
+        # vocal_project_url present but Conventions names no matching token:
+        # no version constraint, verify the single installed project at the URL.
+        project = _project()
+        registry = _registry(project)
+
+        resolution = _resolve(
+            attrs=_attrs(conventions="CF-1.8", project_urls=[MYSTD_URL]),
+            registry=registry,
+        )
+
+        assert len(resolution.projects) == 1
+        target = resolution.projects[0]
+        assert target.project is project
+        assert target.mandatory is True
+        assert target.claimed_version is None
+        assert target.verifiable is True
+
+
+# ---------------------------------------------------------------------------
+# Opportunistic standards axis (Conventions-only)
+# ---------------------------------------------------------------------------
+
+
+class TestOpportunisticProjects:
+    def test_installed_conventions_standard_is_verified_opportunistically(
+        self,
+    ) -> None:
+        project = _project()
+        registry = _registry(project)
+
+        resolution = _resolve(
+            attrs=_attrs(conventions="MYSTD-2.3"),
+            registry=registry,
+        )
+
+        assert len(resolution.projects) == 1
+        target = resolution.projects[0]
+        assert target.project is project
+        assert target.mandatory is False
+        assert target.verifiable is True
+
+    def test_uninstalled_opportunistic_standard_is_skipped_with_warning(self) -> None:
+        # OTHER is named in Conventions but no project is installed for it.
+        project = _project()
+        registry = _registry(project)
+
+        resolution = _resolve(
+            attrs=_attrs(conventions="MYSTD-2.3 OTHER-1.0"),
+            registry=registry,
+        )
+
+        # MYSTD is verified; OTHER is skipped with a warning, not a failure.
+        assert [t.project for t in resolution.projects] == [project]
+        assert resolution.failures == []
+        assert len(resolution.warnings) == 1
+        assert "OTHER-1.0" in resolution.warnings[0].message
+        assert resolution.warnings[0].code == "standard_not_verified"
+
+    def test_external_co_conventions_fall_out(self) -> None:
+        # CF/ACDD have no URL and no installed project: they produce warnings,
+        # never failures, and never block resolution of the vocal standard.
+        project = _project()
+        registry = _registry(project)
+
+        resolution = _resolve(
+            attrs=_attrs(conventions="CF-1.8 ACDD-1.3 MYSTD-2.3"),
+            registry=registry,
+        )
+
+        assert [t.project for t in resolution.projects] == [project]
+        assert resolution.failures == []
+        warned = {w.message.split(" ")[0] for w in resolution.warnings}
+        assert "CF-1.8" in warned
+        assert "ACDD-1.3" in warned
+
+
+# ---------------------------------------------------------------------------
+# Too-old → unverifiable target (for mandatory and opportunistic alike)
+# ---------------------------------------------------------------------------
+
+
+class TestTooOld:
+    def test_mandatory_too_old_is_unverifiable_with_update_hint(self) -> None:
+        # Installed MYSTD-2.3; file claims MYSTD-2.5 via a mandatory URL.
         project = _project(minor=3)
-        pack = _pack(min_minor=1)
-        registry = _registry(project, pack)
+        registry = _registry(project)
 
-        target = resolve(
-            registry,
-            filename="foo_20260522.nc",
-            conventions="MYSTD-2.1",
-            definitions_url="https://host/packs",
-            definitions_version=3,
-            filecodec_loader=_codec,
+        resolution = _resolve(
+            attrs=_attrs(conventions="MYSTD-2.5", project_urls=[MYSTD_URL]),
+            registry=registry,
         )
 
-        assert target.project is project
+        assert resolution.failures == []
+        assert len(resolution.projects) == 1
+        target = resolution.projects[0]
+        assert target.verifiable is False
+        assert target.mandatory is True
+        assert target.hint is not None and "--update" in target.hint
+        assert _verifiable(resolution) == []
 
-    def test_vocal_token_selected_among_co_conventions(self) -> None:
-        project = _project()
-        pack = _pack()
-        registry = _registry(project, pack)
+    def test_opportunistic_too_old_is_unverifiable_with_update_hint(self) -> None:
+        # Installed MYSTD-2.3; file claims MYSTD-2.7 via Conventions only.
+        project = _project(minor=3)
+        registry = _registry(project)
 
-        target = resolve(
-            registry,
-            filename="foo_20260522.nc",
-            conventions="CF-1.8 ACDD-1.3 MYSTD-2.3",
-            definitions_url="https://host/packs",
-            definitions_version=3,
-            filecodec_loader=_codec,
+        resolution = _resolve(
+            attrs=_attrs(conventions="MYSTD-2.7"),
+            registry=registry,
         )
 
-        assert target.project is project
+        assert len(resolution.projects) == 1
+        target = resolution.projects[0]
+        assert target.verifiable is False
+        assert target.mandatory is False
+        assert target.hint is not None and "--update" in target.hint
+
+    def test_newer_installed_minor_is_verifiable(self) -> None:
+        # Installed MYSTD-2.5; file claims MYSTD-2.3 — newer is fine.
+        project = _project(minor=5)
+        registry = _registry(project)
+
+        resolution = _resolve(
+            attrs=_attrs(conventions="MYSTD-2.3", project_urls=[MYSTD_URL]),
+            registry=registry,
+        )
+
+        assert len(resolution.projects) == 1
+        assert resolution.projects[0].verifiable is True
 
 
 # ---------------------------------------------------------------------------
-# Version-absent pack resolution (resolves to the latest registered version)
+# Product axis (pack)
 # ---------------------------------------------------------------------------
 
 
-class TestVersionAbsentResolvesToLatest:
-    def test_version_present_resolves_exact_version(self) -> None:
-        # Both v3 and v4 registered; the file pins v3 and gets exactly that.
-        project = _project()
-        v3 = _pack(version=3, min_minor=3, local_path="/cache/packs/host/v3")
-        v4 = _pack(version=4, min_minor=3, local_path="/cache/packs/host/v4")
-        registry = _registry(project, v3)
-        registry.add_pack(v4)
-
-        target = resolve(
-            registry,
-            filename="foo_20260522.nc",
-            conventions="MYSTD-2.3",
-            definitions_url="https://host/packs",
-            definitions_version=3,
-            filecodec_loader=_codec,
-        )
-
-        assert target.pack is v3
-        assert target.schema_path == os.path.join(v3.local_path, "product_foo.json")
-
-    def test_version_absent_resolves_to_highest_registered(self) -> None:
-        # Both v3 and v4 registered; the file omits the version and gets v4.
-        project = _project()
-        v3 = _pack(version=3, min_minor=3, local_path="/cache/packs/host/v3")
-        v4 = _pack(version=4, min_minor=3, local_path="/cache/packs/host/v4")
-        registry = _registry(project, v3)
-        registry.add_pack(v4)
-
-        target = resolve(
-            registry,
-            filename="foo_20260522.nc",
-            conventions="MYSTD-2.3",
-            definitions_url="https://host/packs",
-            definitions_version=None,
-            filecodec_loader=_codec,
-        )
-
-        assert target.pack is v4
-        assert target.schema_path == os.path.join(v4.local_path, "product_foo.json")
-
-    def test_version_absent_single_registered_version(self) -> None:
+class TestProductAxis:
+    def test_pack_matched_off_embedded_codec(self) -> None:
         project = _project()
         pack = _pack(version=3)
         registry = _registry(project, pack)
 
-        target = resolve(
-            registry,
-            filename="foo_20260522.nc",
-            conventions="MYSTD-2.3",
-            definitions_url="https://host/packs",
-            definitions_version=None,
-            filecodec_loader=_codec,
-        )
-
-        assert target.pack is pack
-
-
-# ---------------------------------------------------------------------------
-# Project resolution errors
-# ---------------------------------------------------------------------------
-
-
-class TestProjectErrors:
-    def test_project_missing_when_no_matching_major(self) -> None:
-        # Registry has MYSTD-2; file claims MYSTD-3.
-        registry = _registry(_project(major=2))
-
-        with pytest.raises(ProjectMissing) as exc:
-            resolve(
-                registry,
-                filename="foo_20260522.nc",
-                conventions="MYSTD-3.0",
-                definitions_url="https://host/packs",
-                definitions_version=3,
-                filecodec_loader=_codec,
-            )
-
-        assert exc.value.message == "No project registered for MYSTD-3"
-        assert exc.value.hint == (
-            "Run 'vocal fetch <vocal_project_url>' to register the project, "
-            "or pass -p <path>."
-        )
-        assert exc.value.code == "project_missing"
-
-    def test_project_missing_hint_uses_project_url_when_available(self) -> None:
-        registry = _registry()
-
-        with pytest.raises(ProjectMissing) as exc:
-            resolve(
-                registry,
-                filename="foo_20260522.nc",
-                conventions="MYSTD-2.5",
-                project_url="https://github.com/org/mystd",
-                definition_override="/some/schema.json",
-                filecodec_loader=_codec,
-            )
-
-        assert exc.value.message == "No project registered for MYSTD-2"
-        assert exc.value.hint is not None
-        assert "https://github.com/org/mystd" in exc.value.hint
-
-    def test_project_too_old_when_registered_minor_below_claim(self) -> None:
-        # Registry has MYSTD-2.3; file claims MYSTD-2.5.
-        registry = _registry(_project(minor=3))
-
-        with pytest.raises(ProjectTooOld) as exc:
-            resolve(
-                registry,
-                filename="foo_20260522.nc",
-                conventions="MYSTD-2.5",
-                definitions_url="https://host/packs",
-                definitions_version=3,
-                filecodec_loader=_codec,
-            )
-
-        assert exc.value.message == (
-            "File claims MYSTD-2.5 but registered project is at MYSTD-2.3"
-        )
-        assert exc.value.hint == (
-            "Update the registered project: 'vocal fetch <vocal_project_url> "
-            "--update'."
-        )
-        assert exc.value.code == "project_too_old"
-
-    def test_project_missing_when_conventions_absent(self) -> None:
-        registry = _registry(_project())
-
-        with pytest.raises(ProjectMissing):
-            resolve(
-                registry,
-                filename="foo_20260522.nc",
-                conventions=None,
-                definitions_url="https://host/packs",
-                definitions_version=3,
-                filecodec_loader=_codec,
-            )
-
-
-# ---------------------------------------------------------------------------
-# Pack resolution errors
-# ---------------------------------------------------------------------------
-
-
-class TestPackMissing:
-    def test_pack_missing_when_version_not_registered(self) -> None:
-        project = _project()
-        pack = _pack(version=3)
-        registry = _registry(project, pack)
-
-        with pytest.raises(PackMissing) as exc:
-            resolve(
-                registry,
-                filename="foo_20260522.nc",
+        resolution = _resolve(
+            "foo_20260522.nc",
+            attrs=_attrs(
                 conventions="MYSTD-2.3",
-                definitions_url="https://host/packs",
+                definitions_url=PACK_URL,
+                definitions_version=3,
+            ),
+            registry=registry,
+        )
+
+        assert isinstance(resolution.pack, PackTarget)
+        assert resolution.pack.pack is pack
+        assert resolution.pack.product.name == "foo"
+        assert resolution.pack.schema_path == os.path.join(
+            pack.local_path, "product_foo.json"
+        )
+
+    def test_pack_version_absent_resolves_to_highest_registered(self) -> None:
+        v3 = _pack(version=3, local_path="/cache/packs/host/v3")
+        v4 = _pack(version=4, local_path="/cache/packs/host/v4")
+        registry = _registry(_project(), v3, v4)
+
+        resolution = _resolve(
+            attrs=_attrs(conventions="MYSTD-2.3", definitions_url=PACK_URL),
+            registry=registry,
+        )
+
+        assert resolution.pack is not None
+        assert resolution.pack.pack is v4
+
+    def test_pack_missing_is_a_failure(self) -> None:
+        registry = _registry(_project(), _pack(version=3))
+
+        resolution = _resolve(
+            attrs=_attrs(
+                conventions="MYSTD-2.3",
+                definitions_url=PACK_URL,
                 definitions_version=4,  # not registered
-                filecodec_loader=_codec,
-            )
-
-        assert exc.value.message == "No pack registered for https://host/packs version 4"
-        assert exc.value.hint == "Run 'vocal fetch https://host/packs' to register it."
-        assert exc.value.code == "pack_missing"
-
-    def test_pack_missing_when_url_not_registered(self) -> None:
-        project = _project()
-        pack = _pack(url="https://host/packs")
-        registry = _registry(project, pack)
-
-        with pytest.raises(PackMissing):
-            resolve(
-                registry,
-                filename="foo_20260522.nc",
-                conventions="MYSTD-2.3",
-                definitions_url="https://other/packs",
-                definitions_version=3,
-                filecodec_loader=_codec,
-            )
-
-    def test_pack_missing_when_url_not_registered_and_version_absent(self) -> None:
-        # No version pin and the URL has nothing registered: a repo-URL hint.
-        project = _project()
-        pack = _pack(url="https://host/packs")
-        registry = _registry(project, pack)
-
-        with pytest.raises(PackMissing) as exc:
-            resolve(
-                registry,
-                filename="foo_20260522.nc",
-                conventions="MYSTD-2.3",
-                definitions_url="https://other/packs",
-                definitions_version=None,
-                filecodec_loader=_codec,
-            )
-
-        assert exc.value.message == "No pack registered for https://other/packs"
-        assert exc.value.hint == "Run 'vocal fetch https://other/packs' to register it."
-        assert exc.value.code == "pack_missing"
-
-
-class TestPackIncompatible:
-    def test_min_minor_not_satisfied(self) -> None:
-        # Pack requires MYSTD-2.4+; project is at 2.3.
-        project = _project(minor=3)
-        pack = _pack(name="MYSTD", major=2, min_minor=4)
-        registry = _registry(project, pack)
-
-        with pytest.raises(PackIncompatible) as exc:
-            resolve(
-                registry,
-                filename="foo_20260522.nc",
-                conventions="MYSTD-2.3",
-                definitions_url="https://host/packs",
-                definitions_version=3,
-                filecodec_loader=_codec,
-            )
-
-        assert exc.value.message == (
-            "Pack requires MYSTD-2.4+ but registered project is at 2.3"
+            ),
+            registry=registry,
         )
-        assert exc.value.hint == (
-            "Update the project to 2.4 or later, or pin to an older pack."
-        )
-        assert exc.value.code == "pack_incompatible"
 
-    def test_major_mismatch(self) -> None:
-        # Pack targets MYSTD-3; project is MYSTD-2.
-        project = _project(name="MYSTD", major=2, minor=3)
-        pack = _pack(name="MYSTD", major=3, min_minor=0)
-        registry = _registry(project, pack)
+        assert resolution.pack is None
+        assert len(resolution.failures) == 1
+        failure = resolution.failures[0]
+        assert isinstance(failure, PackMissing)
+        assert failure.code == "pack_missing"
 
-        with pytest.raises(PackIncompatible) as exc:
-            resolve(
-                registry,
-                filename="foo_20260522.nc",
-                conventions="MYSTD-2.3",
-                definitions_url="https://host/packs",
-                definitions_version=3,
-                filecodec_loader=_codec,
-            )
-
-        assert exc.value.message == (
-            "Pack targets MYSTD-3 but registered project is MYSTD-2"
-        )
-        assert exc.value.hint == (
-            "Register a project matching the pack's target standard, or pin to "
-            "a pack built for MYSTD-2."
-        )
-        assert exc.value.code == "pack_incompatible"
-
-    def test_name_mismatch(self) -> None:
-        # Pack targets OTHER-2; project is MYSTD-2.
-        project = _project(name="MYSTD", major=2, minor=3)
-        pack = _pack(name="OTHER", major=2, min_minor=0)
-        registry = _registry(project, pack)
-
-        with pytest.raises(PackIncompatible) as exc:
-            resolve(
-                registry,
-                filename="foo_20260522.nc",
-                conventions="MYSTD-2.3",
-                definitions_url="https://host/packs",
-                definitions_version=3,
-                filecodec_loader=_codec,
-            )
-
-        assert exc.value.message == (
-            "Pack targets OTHER-2 but registered project is MYSTD-2"
-        )
-        assert exc.value.code == "pack_incompatible"
-
-
-class TestProductNotFound:
-    def test_no_product_pattern_matches(self) -> None:
-        project = _project()
+    def test_product_not_found_is_a_failure(self) -> None:
         pack = _pack(
             products=[
                 ManifestProduct(
@@ -439,124 +374,150 @@ class TestProductNotFound:
                 ),
             ]
         )
-        registry = _registry(project, pack)
+        registry = _registry(_project(), pack)
 
-        with pytest.raises(ProductNotFound) as exc:
-            resolve(
-                registry,
-                filename="baz_20260522.nc",
+        resolution = _resolve(
+            "baz_20260522.nc",
+            attrs=_attrs(
                 conventions="MYSTD-2.3",
-                definitions_url="https://host/packs",
+                definitions_url=PACK_URL,
                 definitions_version=3,
-                filecodec_loader=_codec,
-            )
-
-        assert exc.value.message == (
-            "File 'baz_20260522.nc' did not match any product pattern in pack"
+            ),
+            registry=registry,
         )
-        assert exc.value.hint is not None
-        assert "foo_{date}" in exc.value.hint
-        assert "bar_{date}" in exc.value.hint
-        assert exc.value.code == "product_not_found"
+
+        assert resolution.pack is None
+        assert len(resolution.failures) == 1
+        failure = resolution.failures[0]
+        assert isinstance(failure, ProductNotFound)
+        assert failure.hint is not None
+        assert "foo_{date}" in failure.hint and "bar_{date}" in failure.hint
+
+    def test_pack_resolves_without_any_standard_installed(self) -> None:
+        # Story 5: the product check runs even when no standard is installed.
+        pack = _pack(version=3)
+        registry = _registry(pack)
+
+        resolution = _resolve(
+            attrs=_attrs(definitions_url=PACK_URL, definitions_version=3),
+            registry=registry,
+        )
+
+        assert resolution.pack is not None
+        assert resolution.projects == []
 
 
 # ---------------------------------------------------------------------------
-# URL normalisation
+# satisfies_standards (advisory: warning, never a failure)
+# ---------------------------------------------------------------------------
+
+
+class TestSatisfiesStandards:
+    def test_unmet_assertion_warns_not_fails(self) -> None:
+        # Pack asserts MYSTD-2.4+; the file claims only MYSTD-2.3 (below floor),
+        # so no claimed version satisfies the assertion → a warning.
+        pack = _pack(satisfies=[VersionConstraint("MYSTD", 2, 4)])
+        registry = _registry(_project(), pack)
+
+        resolution = _resolve(
+            attrs=_attrs(
+                conventions="MYSTD-2.3",
+                definitions_url=PACK_URL,
+                definitions_version=3,
+            ),
+            registry=registry,
+        )
+
+        assert resolution.pack is not None
+        assert resolution.failures == []
+        codes = {w.code for w in resolution.warnings}
+        assert "satisfies_standards_unmet" in codes
+
+    def test_met_assertion_emits_no_warning(self) -> None:
+        # Pack asserts MYSTD-2.3+; the file claims MYSTD-2.5 → satisfied.
+        pack = _pack(satisfies=[VersionConstraint("MYSTD", 2, 3)])
+        registry = _registry(_project(minor=5), pack)
+
+        resolution = _resolve(
+            attrs=_attrs(
+                conventions="MYSTD-2.5",
+                definitions_url=PACK_URL,
+                definitions_version=3,
+            ),
+            registry=registry,
+        )
+
+        assert resolution.pack is not None
+        codes = {w.code for w in resolution.warnings}
+        assert "satisfies_standards_unmet" not in codes
+
+
+# ---------------------------------------------------------------------------
+# Nothing to check
+# ---------------------------------------------------------------------------
+
+
+class TestNothingToCheck:
+    def test_no_claims_at_all_raises(self) -> None:
+        registry = _registry(_project())
+
+        with pytest.raises(NothingToCheck):
+            _resolve(attrs=_attrs(), registry=registry)
+
+    def test_conventions_only_with_no_installed_match_raises(self) -> None:
+        # CF only, nothing installed for it: a warning would be all there is,
+        # which is nothing to act on → raise.
+        registry = _registry()
+
+        with pytest.raises(NothingToCheck):
+            _resolve(attrs=_attrs(conventions="CF-1.8"), registry=registry)
+
+    def test_mandatory_missing_does_not_raise(self) -> None:
+        # A mandatory URL that isn't installed is a failure to report, not
+        # "nothing to check".
+        registry = _registry()
+
+        resolution = _resolve(
+            attrs=_attrs(conventions="MYSTD-2.3", project_urls=[MYSTD_URL]),
+            registry=registry,
+        )
+
+        assert len(resolution.failures) == 1
+
+
+# ---------------------------------------------------------------------------
+# URL normalisation (pack axis)
 # ---------------------------------------------------------------------------
 
 
 class TestUrlNormalisation:
-    def test_trailing_slash_difference_resolves(self) -> None:
-        project = _project()
-        pack = _pack(url="https://host/packs")
-        registry = _registry(project, pack)
+    def test_pack_trailing_slash_resolves(self) -> None:
+        pack = _pack(url=PACK_URL)
+        registry = _registry(_project(), pack)
 
-        target = resolve(
-            registry,
-            filename="foo_20260522.nc",
-            conventions="MYSTD-2.3",
-            definitions_url="https://host/packs/",  # trailing slash
-            definitions_version=3,
-            filecodec_loader=_codec,
+        resolution = _resolve(
+            attrs=_attrs(
+                conventions="MYSTD-2.3",
+                definitions_url=PACK_URL + "/",
+                definitions_version=3,
+            ),
+            registry=registry,
         )
 
-        assert target.pack is pack
+        assert resolution.pack is not None
+        assert resolution.pack.pack is pack
 
-    def test_host_case_difference_resolves(self) -> None:
-        project = _project()
-        pack = _pack(url="https://host/packs")
-        registry = _registry(project, pack)
-
-        target = resolve(
-            registry,
-            filename="foo_20260522.nc",
-            conventions="MYSTD-2.3",
-            definitions_url="https://HOST/packs",  # uppercase host
-            definitions_version=3,
-            filecodec_loader=_codec,
-        )
-
-        assert target.pack is pack
-
-
-# ---------------------------------------------------------------------------
-# -d override
-# ---------------------------------------------------------------------------
-
-
-class TestDefinitionOverride:
-    def test_override_short_circuits_pack_resolution(self) -> None:
-        # No pack registered at all; -d should still succeed.
-        project = _project()
+    def test_project_url_git_suffix_resolves(self) -> None:
+        # The file declares the .git form; the registry stored the bare form.
+        project = _project(url=MYSTD_URL)
         registry = _registry(project)
 
-        target = resolve(
-            registry,
-            filename="foo_20260522.nc",
-            conventions="MYSTD-2.3",
-            definition_override="/path/to/chosen_schema.json",
-            definitions_url="https://host/packs",
-            definitions_version=99,
-            filecodec_loader=_codec,
+        resolution = _resolve(
+            attrs=_attrs(
+                conventions="MYSTD-2.3", project_urls=[MYSTD_URL + ".git"]
+            ),
+            registry=registry,
         )
 
-        assert target.project is project
-        assert target.schema_path == "/path/to/chosen_schema.json"
-        assert target.pack is None
-        assert target.product is None
-
-    def test_override_still_resolves_project_and_can_fail_project(self) -> None:
-        # Project too old still raises even under -d.
-        registry = _registry(_project(minor=3))
-
-        with pytest.raises(ProjectTooOld):
-            resolve(
-                registry,
-                filename="foo_20260522.nc",
-                conventions="MYSTD-2.5",
-                definition_override="/path/to/chosen_schema.json",
-                filecodec_loader=_codec,
-            )
-
-
-# ---------------------------------------------------------------------------
-# Project-only resolution (no pack reference, no override)
-# ---------------------------------------------------------------------------
-
-
-class TestProjectOnly:
-    def test_no_pack_and_no_override_returns_project_only(self) -> None:
-        project = _project()
-        registry = _registry(project)
-
-        target = resolve(
-            registry,
-            filename="foo_20260522.nc",
-            conventions="MYSTD-2.3",
-            filecodec_loader=_codec,
-        )
-
-        assert target.project is project
-        assert target.schema_path is None
-        assert target.pack is None
-        assert target.product is None
+        assert len(resolution.projects) == 1
+        assert resolution.projects[0].project is project
