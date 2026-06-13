@@ -13,6 +13,7 @@ import pytest
 
 from vocal.manifest import ManifestProduct, build_manifest
 from vocal.utils.registry import Pack, Project, Registry
+from vocal.versioning import VersionConstraint
 
 
 # ---------------------------------------------------------------------------
@@ -49,9 +50,10 @@ def _pack(
     manifest = build_manifest(
         version=version,
         url=url,
-        standard_name=name,
-        standard_major=major,
-        min_minor=min_minor,
+        filecodec={"date": {"regex": r"\d{8}"}},
+        satisfies_standards=[
+            VersionConstraint(name=name, major=major, min_minor=min_minor)
+        ],
         products=[
             ManifestProduct(
                 name="foo", file_pattern="foo_{date}", schema="product_foo.json"
@@ -326,7 +328,7 @@ class TestRoundTrip:
         pack = loaded.find_pack("https://host/packs", 3)
         assert pack is not None
         assert pack.local_path == "/cache/packs/host-packs/v3"
-        assert pack.manifest.requires_standard.min_minor == 4
+        assert pack.manifest.satisfies_standards[0].min_minor == 4
 
     def test_round_trip_preserves_project_url(self, tmp_path: Path) -> None:
         reg = Registry()

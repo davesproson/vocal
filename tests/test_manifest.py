@@ -19,19 +19,16 @@ from vocal.manifest import (
 from vocal.versioning import VersionConstraint
 
 
-# A filecodec mirroring the project-side shape: placeholder -> {"regex": ...}.
-FILECODEC = {
-    "date": {"regex": r"\d{8}"},
-    "platform": {"regex": r"[a-z]+"},
-}
-
-
 def valid_manifest_dict(**overrides):
     data = {
         "schema_version": 1,
         "version": 3,
         "url": "https://host/packs",
-        "requires_standard": {"name": "MYSTD", "major": 2, "min_minor": 4},
+        "filecodec": {
+            "date": {"regex": r"\d{8}"},
+            "platform": {"regex": r"[a-z]+"},
+        },
+        "satisfies_standards": [{"name": "MYSTD", "major": 2, "min_minor": 4}],
         "products": [
             {
                 "name": "foo",
@@ -139,7 +136,11 @@ class TestManifestModel:
         assert m.schema_version == 1
         assert m.version == 3
         assert m.url == "https://host/packs"
-        assert m.requires_standard == VersionConstraint("MYSTD", 2, 4)
+        assert m.filecodec == {
+            "date": {"regex": r"\d{8}"},
+            "platform": {"regex": r"[a-z]+"},
+        }
+        assert m.satisfies_standards == (VersionConstraint("MYSTD", 2, 4),)
         assert m.products == (
             ManifestProduct("foo", "foo_{date}.nc", "product_foo.json"),
         )
@@ -156,10 +157,35 @@ class TestManifestModel:
         m = Manifest.from_dict(valid_manifest_dict())
         d = m.to_dict()
         assert d["schema_version"] == 1
-        assert d["requires_standard"] == {"name": "MYSTD", "major": 2, "min_minor": 4}
+        assert d["filecodec"] == {
+            "date": {"regex": r"\d{8}"},
+            "platform": {"regex": r"[a-z]+"},
+        }
+        assert d["satisfies_standards"] == [
+            {"name": "MYSTD", "major": 2, "min_minor": 4}
+        ]
         assert d["products"] == [
             {"name": "foo", "file_pattern": "foo_{date}.nc", "schema": "product_foo.json"}
         ]
+
+    def test_satisfies_standards_can_be_empty(self) -> None:
+        m = Manifest.from_dict(valid_manifest_dict(satisfies_standards=[]))
+        assert m.satisfies_standards == ()
+        assert Manifest.from_dict(m.to_dict()) == m
+
+    def test_carries_multiple_satisfied_standards(self) -> None:
+        m = Manifest.from_dict(
+            valid_manifest_dict(
+                satisfies_standards=[
+                    {"name": "MYSTD", "major": 2, "min_minor": 4},
+                    {"name": "OTHER", "major": 1, "min_minor": 0},
+                ]
+            )
+        )
+        assert m.satisfies_standards == (
+            VersionConstraint("MYSTD", 2, 4),
+            VersionConstraint("OTHER", 1, 0),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +199,8 @@ class TestFromDictValidation:
             Manifest.from_dict([1, 2, 3])
 
     @pytest.mark.parametrize(
-        "missing", ["schema_version", "version", "url", "requires_standard", "products"]
+        "missing",
+        ["schema_version", "version", "url", "filecodec", "satisfies_standards", "products"],
     )
     def test_rejects_missing_required_field(self, missing: str) -> None:
         data = valid_manifest_dict()
@@ -199,10 +226,30 @@ class TestFromDictValidation:
         with pytest.raises(InvalidManifest):
             Manifest.from_dict(valid_manifest_dict(schema_version=0))
 
-    def test_rejects_malformed_requires_standard(self) -> None:
+    def test_rejects_malformed_satisfies_standards_entry(self) -> None:
         with pytest.raises(InvalidManifest):
             Manifest.from_dict(
-                valid_manifest_dict(requires_standard={"name": "MYSTD", "major": 2})
+                valid_manifest_dict(
+                    satisfies_standards=[{"name": "MYSTD", "major": 2}]
+                )
+            )
+
+    def test_rejects_satisfies_standards_not_a_list(self) -> None:
+        with pytest.raises(InvalidManifest):
+            Manifest.from_dict(
+                valid_manifest_dict(
+                    satisfies_standards={"name": "MYSTD", "major": 2, "min_minor": 4}
+                )
+            )
+
+    def test_rejects_filecodec_not_a_mapping(self) -> None:
+        with pytest.raises(InvalidManifest):
+            Manifest.from_dict(valid_manifest_dict(filecodec=["date"]))
+
+    def test_rejects_filecodec_entry_without_regex(self) -> None:
+        with pytest.raises(InvalidManifest):
+            Manifest.from_dict(
+                valid_manifest_dict(filecodec={"date": {"pattern": r"\d{8}"}})
             )
 
     def test_rejects_products_not_a_list(self) -> None:
@@ -262,7 +309,7 @@ class TestProductLookup:
                 ]
             )
         )
-        product = m.find_product("foo_20260522.nc", FILECODEC)
+        product = m.find_product("foo_20260522.nc")
         assert product is not None
         assert product.name == "foo"
 
@@ -278,7 +325,7 @@ class TestProductLookup:
                 ]
             )
         )
-        assert m.find_product("bar_nope.nc", FILECODEC) is None
+        assert m.find_product("bar_nope.nc") is None
 
     def test_matches_on_basename_only(self) -> None:
         m = Manifest.from_dict(
@@ -292,7 +339,7 @@ class TestProductLookup:
                 ]
             )
         )
-        product = m.find_product("/some/dir/foo_20260522.nc", FILECODEC)
+        product = m.find_product("/some/dir/foo_20260522.nc")
         assert product is not None
 
     def test_selects_correct_product_among_several(self) -> None:
@@ -312,9 +359,25 @@ class TestProductLookup:
                 ]
             )
         )
-        product = m.find_product("bar_aircraft.nc", FILECODEC)
+        product = m.find_product("bar_aircraft.nc")
         assert product is not None
         assert product.name == "bar"
+
+    def test_unknown_placeholder_does_not_match(self) -> None:
+        # A pattern referencing a placeholder absent from the embedded codec
+        # routes to no product (a would-be ProductNotFound for the resolver).
+        m = Manifest.from_dict(
+            valid_manifest_dict(
+                products=[
+                    {
+                        "name": "foo",
+                        "file_pattern": "foo_{mystery}.nc",
+                        "schema": "foo.json",
+                    }
+                ]
+            )
+        )
+        assert m.find_product("foo_anything.nc") is None
 
 
 # ---------------------------------------------------------------------------
@@ -327,23 +390,22 @@ class TestBuildManifest:
         m = build_manifest(
             version=3,
             url="https://host/packs",
-            standard_name="MYSTD",
-            standard_major=2,
-            min_minor=4,
+            filecodec={"date": {"regex": r"\d{8}"}},
+            satisfies_standards=[VersionConstraint("MYSTD", 2, 4)],
             products=[ManifestProduct("foo", "foo_{date}.nc", "foo.json")],
         )
         assert m.schema_version == SCHEMA_VERSION
         assert m.version == 3
-        assert m.requires_standard == VersionConstraint("MYSTD", 2, 4)
+        assert m.filecodec == {"date": {"regex": r"\d{8}"}}
+        assert m.satisfies_standards == (VersionConstraint("MYSTD", 2, 4),)
         assert m.products == (ManifestProduct("foo", "foo_{date}.nc", "foo.json"),)
 
     def test_normalises_url(self) -> None:
         m = build_manifest(
             version=1,
             url="HTTPS://Host/packs/",
-            standard_name="MYSTD",
-            standard_major=2,
-            min_minor=0,
+            filecodec={"date": {"regex": r"\d{8}"}},
+            satisfies_standards=[],
             products=[],
         )
         assert m.url == "https://host/packs"
@@ -352,9 +414,8 @@ class TestBuildManifest:
         m = build_manifest(
             version=7,
             url="https://host/packs",
-            standard_name="MYSTD",
-            standard_major=2,
-            min_minor=4,
+            filecodec={"date": {"regex": r"\d{8}"}},
+            satisfies_standards=[VersionConstraint("MYSTD", 2, 4)],
             products=[ManifestProduct("foo", "foo_{date}.nc", "foo.json")],
         )
         assert Manifest.from_dict(json.loads(m.to_json())) == m

@@ -13,8 +13,14 @@ each versioned release directory (``v{Y}/``). This module owns:
   surfaced as :class:`PackInconsistent`;
 - building a manifest from plain inputs (no project import required);
 - product lookup by filename, expanding templated ``file_pattern`` entries with
-  a project's ``filecodec``;
+  the pack's own embedded ``filecodec``;
 - pack-URL normalisation.
+
+The pack is a self-contained representation of a product: it carries the
+``filecodec`` that routes a file to a product (no longer borrowed from a
+project) and an advisory ``satisfies_standards`` list of version constraints the
+product is asserted to comply with. The pack does not *require* any standard be
+installed to be checked.
 
 The module is pure logic with respect to projects: it never imports a project
 module and has no application-layer dependencies. It reads/writes JSON files
@@ -33,6 +39,10 @@ from urllib.parse import urlsplit, urlunsplit
 
 from vocal.exceptions import VocalError
 from vocal.versioning import VersionConstraint
+
+# A filecodec maps a ``file_pattern`` placeholder name to a ``{"regex": ...}``
+# entry. It mirrors the project-side shape so the pack can own it outright.
+Filecodec = Mapping[str, Mapping[str, Any]]
 
 # The highest manifest ``schema_version`` this build of vocal can parse. A
 # manifest declaring a higher value was written by a newer vocal and is
@@ -161,18 +171,21 @@ class ManifestProduct:
     file_pattern: str
     schema: str
 
-    def matches(
-        self, filename: str, filecodec: Mapping[str, Mapping[str, Any]]
-    ) -> bool:
+    def matches(self, filename: str, filecodec: Filecodec) -> bool:
         """Return whether ``filename`` matches this product's ``file_pattern``.
 
-        The ``file_pattern`` is a template; the project's ``filecodec`` supplies
-        the regex for each placeholder. Only the basename of ``filename`` is
-        considered.
+        The ``file_pattern`` is a template; the pack's embedded ``filecodec``
+        supplies the regex for each placeholder. A pattern referencing a
+        placeholder absent from the codec does not match. Only the basename of
+        ``filename`` is considered.
         """
-        regex = self.file_pattern.format(
-            **{name: codec["regex"] for name, codec in filecodec.items()}
-        )
+        try:
+            regex = self.file_pattern.format(
+                **{name: codec["regex"] for name, codec in filecodec.items()}
+            )
+        except (KeyError, IndexError):
+            # The pattern references a placeholder the codec doesn't define.
+            return False
         return re.match(regex, os.path.basename(filename)) is not None
 
     def to_dict(self) -> dict[str, str]:
@@ -185,24 +198,31 @@ class ManifestProduct:
 
 @dataclass(frozen=True)
 class Manifest:
-    """A pack manifest: the pack's identity, compatibility, and product index."""
+    """A pack manifest: the pack's identity, product index, and routing codec.
+
+    ``filecodec`` is the pack's own placeholder→regex map, used to expand the
+    products' templated ``file_pattern`` entries — it makes the pack
+    self-contained, needing no project to route a file to a product.
+    ``satisfies_standards`` is an advisory list of version constraints the
+    product is asserted to comply with; it never forces a standard to be
+    installed.
+    """
 
     version: int
     url: str
-    requires_standard: VersionConstraint
+    filecodec: Filecodec
+    satisfies_standards: tuple[VersionConstraint, ...]
     products: tuple[ManifestProduct, ...]
     schema_version: int = SCHEMA_VERSION
 
-    def find_product(
-        self, filename: str, filecodec: Mapping[str, Mapping[str, Any]]
-    ) -> Optional[ManifestProduct]:
+    def find_product(self, filename: str) -> Optional[ManifestProduct]:
         """Return the product whose ``file_pattern`` matches ``filename``, or None.
 
-        Patterns are expanded with ``filecodec`` before matching. The first
-        matching product wins.
+        Patterns are expanded with the pack's embedded ``filecodec`` before
+        matching. The first matching product wins.
         """
         for product in self.products:
-            if product.matches(filename, filecodec):
+            if product.matches(filename, self.filecodec):
                 return product
         return None
 
@@ -212,11 +232,17 @@ class Manifest:
             "schema_version": self.schema_version,
             "version": self.version,
             "url": self.url,
-            "requires_standard": {
-                "name": self.requires_standard.name,
-                "major": self.requires_standard.major,
-                "min_minor": self.requires_standard.min_minor,
+            "filecodec": {
+                name: dict(codec) for name, codec in self.filecodec.items()
             },
+            "satisfies_standards": [
+                {
+                    "name": constraint.name,
+                    "major": constraint.major,
+                    "min_minor": constraint.min_minor,
+                }
+                for constraint in self.satisfies_standards
+            ],
             "products": [product.to_dict() for product in self.products],
         }
 
@@ -240,7 +266,7 @@ class Manifest:
             raise InvalidManifest(
                 "Manifest must be a JSON object.",
                 "Expected an object with 'schema_version', 'version', 'url', "
-                "'requires_standard', and 'products'.",
+                "'filecodec', 'satisfies_standards', and 'products'.",
             )
 
         schema_version = _require(data, "schema_version", int)
@@ -257,13 +283,17 @@ class Manifest:
 
         version = _require(data, "version", int)
         url = normalize_pack_url(_require(data, "url", str))
-        requires_standard = _parse_requires_standard(data.get("requires_standard"))
+        filecodec = _parse_filecodec(data.get("filecodec"))
+        satisfies_standards = _parse_satisfies_standards(
+            data.get("satisfies_standards")
+        )
         products = _parse_products(data.get("products"))
 
         return cls(
             version=version,
             url=url,
-            requires_standard=requires_standard,
+            filecodec=filecodec,
+            satisfies_standards=satisfies_standards,
             products=products,
             schema_version=schema_version,
         )
@@ -315,25 +345,22 @@ def build_manifest(
     *,
     version: int,
     url: str,
-    standard_name: str,
-    standard_major: int,
-    min_minor: int,
+    filecodec: Filecodec,
+    satisfies_standards: Iterable[VersionConstraint],
     products: Iterable[ManifestProduct],
 ) -> Manifest:
     """Construct a manifest from plain inputs.
 
-    The builder takes the standard's identity (``standard_name`` /
-    ``standard_major``, typically sourced from a project's ``conventions.yaml``)
-    and ``min_minor`` directly, so it can be exercised independently of any
+    The builder takes the pack's own ``filecodec`` and its advisory
+    ``satisfies_standards`` directly, so it can be exercised independently of any
     project import. ``url`` is normalised before being stored, matching what
     ``vocal release`` writes to disk.
     """
     return Manifest(
         version=version,
         url=normalize_pack_url(url),
-        requires_standard=VersionConstraint(
-            name=standard_name, major=standard_major, min_minor=min_minor
-        ),
+        filecodec={name: dict(codec) for name, codec in filecodec.items()},
+        satisfies_standards=tuple(satisfies_standards),
         products=tuple(products),
     )
 
@@ -356,16 +383,44 @@ def _require(data: Mapping[str, Any], key: str, type_: type) -> Any:
     return value
 
 
-def _parse_requires_standard(value: Any) -> VersionConstraint:
+def _parse_constraint(value: Any, field: str) -> VersionConstraint:
     if not isinstance(value, Mapping):
         raise InvalidManifest(
-            "Manifest field 'requires_standard' must be an object with "
+            f"Manifest field {field!r} must be an object with "
             "'name', 'major', and 'min_minor'."
         )
     name = _require(value, "name", str)
     major = _require(value, "major", int)
     min_minor = _require(value, "min_minor", int)
     return VersionConstraint(name=name, major=major, min_minor=min_minor)
+
+
+def _parse_satisfies_standards(value: Any) -> tuple[VersionConstraint, ...]:
+    if not isinstance(value, list):
+        raise InvalidManifest(
+            "Manifest field 'satisfies_standards' must be a list."
+        )
+    return tuple(
+        _parse_constraint(entry, f"satisfies_standards[{index}]")
+        for index, entry in enumerate(value)
+    )
+
+
+def _parse_filecodec(value: Any) -> dict[str, dict[str, Any]]:
+    if not isinstance(value, Mapping):
+        raise InvalidManifest(
+            "Manifest field 'filecodec' must be an object mapping placeholder "
+            "names to {'regex': ...} entries."
+        )
+    codec: dict[str, dict[str, Any]] = {}
+    for name, entry in value.items():
+        if not isinstance(entry, Mapping) or not isinstance(entry.get("regex"), str):
+            raise InvalidManifest(
+                f"Manifest filecodec entry {name!r} must be an object with a "
+                "string 'regex'."
+            )
+        codec[str(name)] = dict(entry)
+    return codec
 
 
 def _parse_products(value: Any) -> tuple[ManifestProduct, ...]:

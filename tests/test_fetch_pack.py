@@ -61,7 +61,8 @@ def _write_version_dir(
         "schema_version": 1,
         "version": manifest_version,
         "url": url,
-        "requires_standard": {"name": "MYSTD", "major": 2, "min_minor": 3},
+        "filecodec": {"date": {"regex": r"\d{8}"}},
+        "satisfies_standards": [{"name": "MYSTD", "major": 2, "min_minor": 3}],
         "products": [
             {"name": "alpha", "file_pattern": "alpha_{date}.nc", "schema": "alpha.json"}
         ],

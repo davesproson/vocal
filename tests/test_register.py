@@ -333,7 +333,8 @@ def _make_pack_dir(
         "schema_version": 1,
         "version": manifest_version,
         "url": "https://host/packs",
-        "requires_standard": {"name": "MYSTD", "major": 2, "min_minor": 3},
+        "filecodec": {"date": {"regex": r"\d{8}"}},
+        "satisfies_standards": [{"name": "MYSTD", "major": 2, "min_minor": 3}],
         "products": [
             {"name": "alpha", "file_pattern": "alpha_{date}.nc", "schema": "alpha.json"}
         ],
