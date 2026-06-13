@@ -1,31 +1,42 @@
 """Integration tests for the ``vocal check`` CLI command.
 
-``vocal check`` is a thin shell over :mod:`vocal.resolution`: it reads a file's
-vocal-managed global attributes, drives the resolver against the local
-registry, and renders the result (or the typed error). These tests exercise the
-command end-to-end through ``typer.testing.CliRunner`` with the registry and
-project import patched, asserting the exit code and — for each of the five
-typed resolver errors — that the locked message and hint reach the output.
+``vocal check`` is a thin adapter over the two-axis check spine: it reads a
+file's vocal-managed global attributes, builds a
+:class:`~vocal.resolution.Resolution` (resolving the un-named axes from the file
+and overriding the named ones from ``-p``/``-d``), runs
+:func:`~vocal.checking.shared.run_check`, and renders the tri-state
+:class:`~vocal.checking.shared.CheckOutcome`.
+
+These tests drive the command end-to-end through ``typer.testing.CliRunner``
+with a synthetic registry and the spine's two check executors patched, asserting
+observable behaviour: the exit code (0 PASS / 1 FAIL / 2 INDETERMINATE), which
+axis was actually checked, and the rendered hints.
 """
 
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import netCDF4
 import typer
 from typer.testing import CliRunner
 
 from vocal.application.check import command
-from vocal.application.fetch import FetchOutcome
+from vocal.checking.shared import (
+    DefinitionCheckResult,
+    ProjectCheckResult,
+)
 from vocal.manifest import ManifestProduct, build_manifest
 from vocal.utils.registry import Pack, Project, Registry
+from vocal.versioning import VersionConstraint
 
 
 runner = CliRunner()
 
-# A project filecodec defining a single {date} placeholder, used to expand the
-# product file_patterns below.
+PROJECT_URL = "https://host/mystd.git"
+PACK_URL = "https://host/packs"
+
+# The pack's own filecodec, expanding the {date} placeholder in the products'
+# file_patterns below.
 FILECODEC = {"date": {"regex": r"\d{8}"}}
 
 
@@ -58,24 +69,28 @@ def _make_nc(
     return path
 
 
-def _project(name: str = "MYSTD", major: int = 2, minor: int = 3) -> Project:
+def _project(
+    name: str = "MYSTD",
+    major: int = 2,
+    minor: int = 3,
+    url: str = PROJECT_URL,
+) -> Project:
     return Project(
         name=name,
         major=major,
         minor=minor,
         project_directory="mystd",
         local_path="/cache/projects/mystd",
+        url=url,
     )
 
 
 def _pack(
-    url: str = "https://host/packs",
+    url: str = PACK_URL,
     version: int = 3,
-    name: str = "MYSTD",
-    major: int = 2,
-    min_minor: int = 3,
-    local_path: str = "/cache/packs/host-packs/v3",
+    satisfies=None,
     products=None,
+    local_path: str = "/cache/packs/host-packs/v3",
 ) -> Pack:
     if products is None:
         products = [
@@ -83,12 +98,13 @@ def _pack(
                 name="foo", file_pattern="foo_{date}", schema="product_foo.json"
             )
         ]
+    if satisfies is None:
+        satisfies = [VersionConstraint(name="MYSTD", major=2, min_minor=3)]
     manifest = build_manifest(
         version=version,
         url=url,
-        standard_name=name,
-        standard_major=major,
-        min_minor=min_minor,
+        filecodec=FILECODEC,
+        satisfies_standards=satisfies,
         products=products,
     )
     return Pack(manifest=manifest, local_path=local_path)
@@ -103,475 +119,277 @@ def _registry(project: Project | None = None, pack: Pack | None = None) -> Regis
     return registry
 
 
-def _fake_project_module() -> SimpleNamespace:
-    """A stand-in for an imported project package exposing the contract surface."""
-    return SimpleNamespace(
-        models=SimpleNamespace(Dataset=object()),
-        filecodec=FILECODEC,
-    )
+def _invoke(
+    args,
+    registry: Registry,
+    *,
+    project_pass: bool = True,
+    pack_pass: bool = True,
+):
+    """Run the command with the registry loaded synthetically and the spine's two
+    check executors patched to return pass/fail without touching netCDF/pydantic.
 
+    The spine's ``run_check`` calls these module-globals, so patching them in
+    ``vocal.checking.shared`` controls every check the command runs.
+    """
 
-def _invoke(args, registry: Registry, *, project_module=None):
-    """Run the command with the registry and project import patched."""
-    if project_module is None:
-        project_module = _fake_project_module()
+    def _fake_project_check(target, filename) -> ProjectCheckResult:
+        # ``error`` non-None marks a failed model check; passed otherwise.
+        return ProjectCheckResult(
+            target=target,
+            error=None if project_pass else _PydErr(),
+            nc_noval=None if project_pass else object(),
+        )
+
+    def _fake_pack_check(target, filename) -> DefinitionCheckResult:
+        return DefinitionCheckResult(target=target, report=_Report(pack_pass))
+
     with (
         patch("vocal.resolution.Registry.load", return_value=registry),
         patch(
-            "vocal.application.check.import_project_package",
-            return_value=project_module,
+            "vocal.checking.shared.check_against_project",
+            side_effect=_fake_project_check,
+        ),
+        patch(
+            "vocal.checking.shared.check_against_definition",
+            side_effect=_fake_pack_check,
         ),
     ):
         return runner.invoke(_app(), args)
 
 
+class _Report:
+    """A stand-in for a structural CheckReport: only ``passing`` and the lists the
+    renderer reads are exercised."""
+
+    def __init__(self, passing: bool) -> None:
+        self.passing = passing
+        self.checks: list = []
+        self.warnings: list = []
+        self.errors: list = []
+        self.comments: list = []
+
+
+class _PydErr(Exception):
+    """A stand-in for a pydantic ValidationError; the renderer is also patched
+    away in tests that exercise a FAIL so error_locs is never reached."""
+
+
 # ---------------------------------------------------------------------------
-# The five typed resolver errors each surface with the locked message + hint.
+# Exit codes: the tri-state verdict drives 0 / 1 / 2.
 # ---------------------------------------------------------------------------
 
 
-class TestResolverErrorsSurface:
-    def test_project_missing(self, tmp_path: Path) -> None:
+class TestExitCodes:
+    def test_pass_exits_zero(self, tmp_path: Path) -> None:
+        """All claims installed and verified, file conforms → PASS → exit 0."""
         nc = _make_nc(
             tmp_path,
             conventions="MYSTD-2.3",
-            project_url="https://host/mystd.git",
-        )
-        result = _invoke([nc], _registry())
-
-        assert result.exit_code == 1
-        assert "No project registered for MYSTD-2" in result.output
-        assert "vocal fetch https://host/mystd.git" in result.output
-        assert "or pass -p <path>" in result.output
-
-    def test_project_too_old(self, tmp_path: Path) -> None:
-        nc = _make_nc(
-            tmp_path,
-            conventions="MYSTD-2.5",
-            project_url="https://host/mystd.git",
-        )
-        result = _invoke([nc], _registry(project=_project(minor=3)))
-
-        assert result.exit_code == 1
-        assert "File claims MYSTD-2.5 but registered project is at MYSTD-2.3" in (
-            result.output
-        )
-        assert "Update the registered project" in result.output
-
-    def test_pack_missing(self, tmp_path: Path) -> None:
-        nc = _make_nc(
-            tmp_path,
-            conventions="MYSTD-2.3",
-            definitions_url="https://host/packs",
-            definitions_version=3,
-        )
-        result = _invoke([nc], _registry(project=_project()))
-
-        assert result.exit_code == 1
-        assert "No pack registered for https://host/packs version 3" in result.output
-        assert "vocal fetch https://host/packs" in result.output
-
-    def test_pack_incompatible(self, tmp_path: Path) -> None:
-        nc = _make_nc(
-            tmp_path,
-            conventions="MYSTD-2.3",
-            definitions_url="https://host/packs",
-            definitions_version=3,
-        )
-        # Pack targets a different major than the registered project.
-        pack = _pack(major=3, min_minor=0)
-        result = _invoke([nc], _registry(project=_project(), pack=pack))
-
-        assert result.exit_code == 1
-        assert "Pack targets MYSTD-3 but registered project is MYSTD-2" in (
-            result.output
-        )
-
-    def test_product_not_found(self, tmp_path: Path) -> None:
-        # File name does not match the pack's only product pattern (foo_{date}).
-        nc = _make_nc(
-            tmp_path,
-            name="unmatched.nc",
-            conventions="MYSTD-2.3",
-            definitions_url="https://host/packs",
+            definitions_url=PACK_URL,
             definitions_version=3,
         )
         result = _invoke([nc], _registry(project=_project(), pack=_pack()))
 
-        assert result.exit_code == 1
-        assert "'unmatched.nc' did not match any product pattern" in result.output
-        assert "Verify the filename matches one of: foo_{date}" in result.output
-
-
-# ---------------------------------------------------------------------------
-# Graceful-degradation matrix and happy path.
-# ---------------------------------------------------------------------------
-
-
-class TestResolutionFlow:
-    def test_full_flow_no_flags(self, tmp_path: Path) -> None:
-        """All three attrs present, project + pack registered, product matches."""
-        nc = _make_nc(
-            tmp_path,
-            name="foo_20260522.nc",
-            conventions="MYSTD-2.3",
-            definitions_url="https://host/packs",
-            definitions_version=3,
-        )
-        spec_check = Mock(return_value=True)
-        with (
-            patch("vocal.resolution.Registry.load", return_value=_registry(
-                project=_project(), pack=_pack()
-            )),
-            patch(
-                "vocal.application.check.import_project_package",
-                return_value=_fake_project_module(),
-            ),
-            patch("vocal.application.check.check_against_standard", return_value=True),
-            patch("vocal.application.check.check_against_specification", spec_check),
-        ):
-            result = runner.invoke(_app(), [nc])
-
         assert result.exit_code == 0
-        # The resolver routed the file to the pack's product schema.
-        spec_check.assert_called_once_with(
-            nc, "/cache/packs/host-packs/v3/product_foo.json"
-        )
+        assert "PASS" in result.output
 
-    def test_conventions_tokenised_picks_vocal_token(self, tmp_path: Path) -> None:
-        """A Conventions string carrying CF/ACDD co-conventions still resolves."""
-        nc = _make_nc(
-            tmp_path,
-            name="foo_20260522.nc",
-            conventions="CF-1.8 ACDD-1.3 MYSTD-2.3",
-            definitions_url="https://host/packs",
-            definitions_version=3,
-        )
-        spec_check = Mock(return_value=True)
-        with (
-            patch(
-                "vocal.resolution.Registry.load",
-                return_value=_registry(project=_project(), pack=_pack()),
-            ),
-            patch(
-                "vocal.application.check.import_project_package",
-                return_value=_fake_project_module(),
-            ),
-            patch("vocal.application.check.check_against_standard", return_value=True),
-            patch("vocal.application.check.check_against_specification", spec_check),
-        ):
-            result = runner.invoke(_app(), [nc])
-
-        assert result.exit_code == 0
-        spec_check.assert_called_once_with(
-            nc, "/cache/packs/host-packs/v3/product_foo.json"
-        )
-
-    def test_definitions_absent_requires_d(self, tmp_path: Path) -> None:
-        """Conventions present but no pack reference and no -d: incomplete."""
-        nc = _make_nc(tmp_path, conventions="MYSTD-2.3")
-        with patch(
-            "vocal.application.check.check_against_standard", return_value=True
-        ):
-            result = _invoke([nc], _registry(project=_project()))
-
-        assert result.exit_code == 1
-        assert "declares no product definitions" in result.output
-        assert "Pass -d" in result.output
-
-    def test_d_override_skips_pack_resolution(self, tmp_path: Path) -> None:
-        """-d overrides the file's declared pack; no pack lookup is performed."""
+    def test_fail_exits_one(self, tmp_path: Path) -> None:
+        """A check ran and the file violated it → FAIL → exit 1."""
         nc = _make_nc(
             tmp_path,
             conventions="MYSTD-2.3",
-            definitions_url="https://host/packs",
+            definitions_url=PACK_URL,
             definitions_version=3,
         )
-        spec_check = Mock(return_value=True)
-        # No pack registered — with -d the resolver must not raise PackMissing.
-        with (
-            patch(
-                "vocal.resolution.Registry.load",
-                return_value=_registry(project=_project()),
-            ),
-            patch(
-                "vocal.application.check.import_project_package",
-                return_value=_fake_project_module(),
-            ),
-            patch("vocal.application.check.check_against_standard", return_value=True),
-            patch("vocal.application.check.check_against_specification", spec_check),
-        ):
-            result = runner.invoke(_app(), [nc, "-d", "/my/override.json"])
-
-        assert result.exit_code == 0
-        spec_check.assert_called_once_with(nc, "/my/override.json")
-
-    def test_conventions_absent_requires_p_and_d(self, tmp_path: Path) -> None:
-        """No Conventions and no -p: the resolver tells the user to pass -p and -d."""
-        nc = _make_nc(tmp_path)  # no attributes at all
-        result = _invoke([nc], _registry())
-
-        assert result.exit_code == 1
-        assert "No Conventions attribute found on the file." in result.output
-        assert "Pass -p <path> and -d <path>" in result.output
-
-
-class TestManualMode:
-    def test_p_and_d_bypass_resolver(self, tmp_path: Path) -> None:
-        """-p (and -d) bypass the resolver entirely, even with no file attrs."""
-        nc = _make_nc(tmp_path)  # no attributes
-        spec_check = Mock(return_value=True)
-        with (
-            patch(
-                "vocal.application.check.import_project_package",
-                return_value=_fake_project_module(),
-            ),
-            patch("vocal.application.check.check_against_standard", return_value=True),
-            patch("vocal.application.check.check_against_specification", spec_check),
-            patch("vocal.application.check.resolve_file") as resolve_mock,
-        ):
-            result = runner.invoke(
-                _app(), [nc, "-p", "/some/project", "-d", "/some/def.json"]
+        # The product schema check fails.
+        with patch("vocal.application.check.print_checks"):
+            result = _invoke(
+                [nc], _registry(project=_project(), pack=_pack()), pack_pass=False
             )
 
-        assert result.exit_code == 0
-        resolve_mock.assert_not_called()
-        spec_check.assert_called_once_with(nc, "/some/def.json")
-
-    def test_manual_mode_reports_failure(self, tmp_path: Path) -> None:
-        nc = _make_nc(tmp_path)
-        with (
-            patch(
-                "vocal.application.check.import_project_package",
-                return_value=_fake_project_module(),
-            ),
-            patch("vocal.application.check.check_against_standard", return_value=False),
-        ):
-            result = runner.invoke(_app(), [nc, "-p", "/some/project"])
-
         assert result.exit_code == 1
+        assert "FAIL" in result.output
 
-
-class TestFetchFlag:
-    """``vocal check <file> --fetch`` runs the fetch pre-step, then checks."""
-
-    def test_fetch_plus_p_errors(self, tmp_path: Path) -> None:
-        """--fetch and -p are opposed modes and cannot be combined."""
-        nc = _make_nc(tmp_path, conventions="MYSTD-2.3")
-        with (
-            patch("vocal.application.check.fetch_for_file") as fetch_mock,
-            patch("vocal.application.check.resolve_file") as resolve_mock,
-        ):
-            result = runner.invoke(_app(), [nc, "--fetch", "-p", "/some/project"])
-
-        assert result.exit_code == 1
-        assert "--fetch cannot be combined with -p" in result.output
-        fetch_mock.assert_not_called()
-        resolve_mock.assert_not_called()
-
-    def test_fetch_runs_prestep_then_checks(self, tmp_path: Path) -> None:
-        """The fetch pre-step runs, then the normal resolved check proceeds."""
-        nc = _make_nc(
-            tmp_path,
-            name="foo_20260522.nc",
-            conventions="MYSTD-2.3",
-            project_url="https://host/mystd.git",
-            definitions_url="https://host/packs",
-            definitions_version=3,
-        )
-        spec_check = Mock(return_value=True)
-        with (
-            patch("vocal.application.check.confirm_file_fetch"),
-            patch("vocal.application.check.fetch_for_file") as fetch_mock,
-            patch(
-                "vocal.resolution.Registry.load",
-                return_value=_registry(project=_project(), pack=_pack()),
-            ),
-            patch(
-                "vocal.application.check.import_project_package",
-                return_value=_fake_project_module(),
-            ),
-            patch("vocal.application.check.check_against_standard", return_value=True),
-            patch("vocal.application.check.check_against_specification", spec_check),
-        ):
-            result = runner.invoke(_app(), [nc, "--fetch"])
-
-        assert result.exit_code == 0
-        fetch_mock.assert_called_once_with(nc)
-        # The resolver still routed the file to the pack's product schema.
-        spec_check.assert_called_once_with(
-            nc, "/cache/packs/host-packs/v3/product_foo.json"
-        )
-
-    def test_fetch_prestep_summary_reaches_output(self, tmp_path: Path) -> None:
-        """The --fetch pre-step prints the same per-resource summary as fetch."""
-        nc = _make_nc(
-            tmp_path,
-            name="foo_20260522.nc",
-            conventions="MYSTD-2.3",
-            project_url="https://host/mystd.git",
-            definitions_url="https://host/packs",
-            definitions_version=3,
-        )
-        outcomes = [
-            FetchOutcome("project", "https://host/mystd.git", "fetched"),
-            FetchOutcome("pack", "https://host/packs", "already-present"),
-        ]
-        with (
-            patch("vocal.application.check.confirm_file_fetch"),
-            patch(
-                "vocal.application.check.fetch_for_file", return_value=outcomes
-            ),
-            patch(
-                "vocal.resolution.Registry.load",
-                return_value=_registry(project=_project(), pack=_pack()),
-            ),
-            patch(
-                "vocal.application.check.import_project_package",
-                return_value=_fake_project_module(),
-            ),
-            patch("vocal.application.check.check_against_standard", return_value=True),
-            patch(
-                "vocal.application.check.check_against_specification",
-                return_value=True,
-            ),
-        ):
-            result = runner.invoke(_app(), [nc, "--fetch"])
-
-        assert result.exit_code == 0
-        assert "project: https://host/mystd.git" in result.output
-        assert "fetched" in result.output
-        assert "pack: https://host/packs" in result.output
-        assert "already present" in result.output
-
-    def test_fetch_plus_d_allowed_and_overrides_product(self, tmp_path: Path) -> None:
-        """--fetch + -d: the pre-step still runs and -d overrides the product."""
-        nc = _make_nc(
-            tmp_path,
-            conventions="MYSTD-2.3",
-            project_url="https://host/mystd.git",
-            definitions_url="https://host/packs",
-            definitions_version=3,
-        )
-        spec_check = Mock(return_value=True)
-        # No pack registered: with -d the resolver must not raise PackMissing.
-        with (
-            patch("vocal.application.check.confirm_file_fetch"),
-            patch("vocal.application.check.fetch_for_file") as fetch_mock,
-            patch(
-                "vocal.resolution.Registry.load",
-                return_value=_registry(project=_project()),
-            ),
-            patch(
-                "vocal.application.check.import_project_package",
-                return_value=_fake_project_module(),
-            ),
-            patch("vocal.application.check.check_against_standard", return_value=True),
-            patch("vocal.application.check.check_against_specification", spec_check),
-        ):
-            result = runner.invoke(_app(), [nc, "--fetch", "-d", "/my/override.json"])
-
-        assert result.exit_code == 0
-        # The pre-step fetches everything the file declares, independent of -d.
-        fetch_mock.assert_called_once_with(nc)
-        spec_check.assert_called_once_with(nc, "/my/override.json")
-
-    def test_fetch_missing_project_url_errors_before_check(
+    def test_indeterminate_exits_two_on_missing_mandatory(
         self, tmp_path: Path
     ) -> None:
-        """A file with no vocal_project_url surfaces the typed error pre-check."""
-        nc = _make_nc(tmp_path)  # no vocal_project_url
-        with patch("vocal.application.check.resolve_file") as resolve_mock:
-            result = runner.invoke(_app(), [nc, "--fetch"])
-
-        assert result.exit_code == 1
-        assert "nothing to fetch" in result.output
-        # The error is raised before the check flow is reached.
-        resolve_mock.assert_not_called()
-
-
-class TestFetchNudge:
-    """A plain ``vocal check`` nudges toward ``--fetch`` on a missing-resource
-    failure when the file carries the URL needed to fetch it."""
-
-    def test_nudge_on_project_missing_with_url(self, tmp_path: Path) -> None:
+        """A mandatory standard (vocal_project_url) is not installed → INDETERMINATE."""
         nc = _make_nc(
             tmp_path,
             conventions="MYSTD-2.3",
-            project_url="https://host/mystd.git",
+            project_url=PROJECT_URL,
         )
         result = _invoke([nc], _registry())
 
-        assert result.exit_code == 1
-        # The resolver's own hint is intact (additive nudge).
-        assert "vocal fetch https://host/mystd.git" in result.output
-        assert "re-run with --fetch" in result.output
+        assert result.exit_code == 2
+        assert "INDETERMINATE" in result.output
 
-    def test_nudge_on_pack_missing_with_url(self, tmp_path: Path) -> None:
+    def test_indeterminate_exits_two_on_too_old(self, tmp_path: Path) -> None:
+        """A claimed standard is installed but at a minor too old → INDETERMINATE."""
         nc = _make_nc(
             tmp_path,
-            conventions="MYSTD-2.3",
-            definitions_url="https://host/packs",
-            definitions_version=3,
+            conventions="MYSTD-2.5",
+            project_url=PROJECT_URL,
         )
-        result = _invoke([nc], _registry(project=_project()))
+        # Installed minor (3) is older than the claimed minor (5).
+        result = _invoke([nc], _registry(project=_project(minor=3)))
 
-        assert result.exit_code == 1
-        assert "vocal fetch https://host/packs" in result.output
-        assert "re-run with --fetch" in result.output
+        assert result.exit_code == 2
+        assert "INDETERMINATE" in result.output
 
-    def test_no_nudge_on_project_missing_without_url(self, tmp_path: Path) -> None:
-        """No vocal_project_url on the file: nothing for --fetch to fetch."""
-        nc = _make_nc(tmp_path, conventions="MYSTD-2.3")
+
+# ---------------------------------------------------------------------------
+# Hints: fetch --for on unresolved mandatory; --update on too-old.
+# ---------------------------------------------------------------------------
+
+
+class TestHints:
+    def test_fetch_for_hint_on_missing_mandatory(self, tmp_path: Path) -> None:
+        nc = _make_nc(tmp_path, conventions="MYSTD-2.3", project_url=PROJECT_URL)
         result = _invoke([nc], _registry())
 
-        assert result.exit_code == 1
-        assert "No project registered for MYSTD-2" in result.output
-        assert "re-run with --fetch" not in result.output
+        assert result.exit_code == 2
+        assert f"vocal fetch --for {nc}" in result.output
 
-    def test_no_nudge_on_success(self, tmp_path: Path) -> None:
+    def test_update_hint_on_too_old(self, tmp_path: Path) -> None:
+        nc = _make_nc(tmp_path, conventions="MYSTD-2.5", project_url=PROJECT_URL)
+        result = _invoke([nc], _registry(project=_project(minor=3)))
+
+        assert result.exit_code == 2
+        assert "--update" in result.output
+
+    def test_no_fetch_for_hint_on_success(self, tmp_path: Path) -> None:
         nc = _make_nc(
             tmp_path,
-            name="foo_20260522.nc",
             conventions="MYSTD-2.3",
-            definitions_url="https://host/packs",
+            definitions_url=PACK_URL,
             definitions_version=3,
         )
-        with (
-            patch(
-                "vocal.resolution.Registry.load",
-                return_value=_registry(project=_project(), pack=_pack()),
-            ),
-            patch(
-                "vocal.application.check.import_project_package",
-                return_value=_fake_project_module(),
-            ),
-            patch("vocal.application.check.check_against_standard", return_value=True),
-            patch("vocal.application.check.check_against_specification", Mock(return_value=True)),
-        ):
-            result = runner.invoke(_app(), [nc])
+        result = _invoke([nc], _registry(project=_project(), pack=_pack()))
 
         assert result.exit_code == 0
-        assert "re-run with --fetch" not in result.output
+        assert "vocal fetch --for" not in result.output
 
-    def test_no_nudge_when_fetch_already_ran(self, tmp_path: Path) -> None:
-        """If --fetch ran and the resource is still missing, don't re-suggest it."""
+
+# ---------------------------------------------------------------------------
+# Per-axis -p/-d override: each overrides one axis; the un-named axis is still
+# resolved from the file.
+# ---------------------------------------------------------------------------
+
+
+class TestPerAxisOverride:
+    def test_p_overrides_standards_pack_still_from_file(self, tmp_path: Path) -> None:
+        """-p replaces the standards axis; the product axis is still file-resolved."""
         nc = _make_nc(
             tmp_path,
             conventions="MYSTD-2.3",
-            project_url="https://host/mystd.git",
+            definitions_url=PACK_URL,
+            definitions_version=3,
         )
-        with (
-            patch("vocal.application.check.confirm_file_fetch"),
-            patch("vocal.application.check.fetch_for_file"),
-            patch("vocal.resolution.Registry.load", return_value=_registry()),
-            patch(
-                "vocal.application.check.import_project_package",
-                return_value=_fake_project_module(),
-            ),
+        # Registry has NO project — but -p supplies one, so the standards axis is
+        # satisfied and the file-resolved pack is still checked.
+        with patch(
+            "vocal.application.check.ConventionsFile.load",
+            return_value=_conv(),
         ):
-            result = runner.invoke(_app(), [nc, "--fetch"])
+            result = _invoke([nc, "-p", "/some/project"], _registry(pack=_pack()))
+
+        assert result.exit_code == 0
+        # The product axis came from the file (the pack schema), not from -d.
+        assert "product_foo.json" in result.output
+
+    def test_d_overrides_product_standards_still_from_file(
+        self, tmp_path: Path
+    ) -> None:
+        """-d replaces the product axis; the standards axis is still file-resolved."""
+        nc = _make_nc(
+            tmp_path,
+            conventions="MYSTD-2.3",
+            # No pack reference on the file at all; -d supplies the product axis.
+        )
+        result = _invoke(
+            [nc, "-d", "/my/override.json"], _registry(project=_project())
+        )
+
+        assert result.exit_code == 0
+        # The standards axis was resolved from the file (the MYSTD-2 model); the
+        # product axis is the overriding schema.
+        assert "MYSTD-2" in result.output
+        assert "override.json" in result.output
+
+    def test_d_override_makes_product_mandatory(self, tmp_path: Path) -> None:
+        """A -d override is mandatory: a failing product schema → FAIL."""
+        nc = _make_nc(tmp_path, conventions="MYSTD-2.3")
+        with patch("vocal.application.check.print_checks"):
+            result = _invoke(
+                [nc, "-d", "/my/override.json"],
+                _registry(project=_project()),
+                pack_pass=False,
+            )
 
         assert result.exit_code == 1
-        assert "No project registered for MYSTD-2" in result.output
-        assert "re-run with --fetch" not in result.output
+
+
+# ---------------------------------------------------------------------------
+# --specified-only: run only the named axes; ignore the other entirely.
+# ---------------------------------------------------------------------------
+
+
+class TestSpecifiedOnly:
+    def test_specified_only_runs_only_named_axis(self, tmp_path: Path) -> None:
+        """-d --specified-only checks only the product axis; the file's standards
+        claim (with no installed project) is ignored rather than forcing INDETERMINATE."""
+        nc = _make_nc(
+            tmp_path,
+            conventions="MYSTD-2.3",
+            project_url=PROJECT_URL,  # mandatory, not installed — would be INDETERMINATE
+        )
+        # Empty registry: were the standards axis resolved, the missing mandatory
+        # project would force INDETERMINATE. --specified-only suppresses it.
+        result = _invoke(
+            [nc, "-d", "/my/override.json", "--specified-only"], _registry()
+        )
+
+        assert result.exit_code == 0
+        assert "override.json" in result.output
+        # The standards axis was not resolved, so no missing-project failure.
+        assert "vocal fetch --for" not in result.output
+
+    def test_specified_only_with_no_axis_is_nothing_to_check(
+        self, tmp_path: Path
+    ) -> None:
+        """--specified-only with neither -p nor -d names nothing → nothing to check."""
+        nc = _make_nc(tmp_path, conventions="MYSTD-2.3")
+        result = _invoke([nc, "--specified-only"], _registry(project=_project()))
+
+        assert result.exit_code == 1
+        assert "Nothing to check" in result.output
+
+
+# ---------------------------------------------------------------------------
+# No implicit fetch: a plain check never fetches.
+# ---------------------------------------------------------------------------
+
+
+class TestNeverFetchesImplicitly:
+    def test_plain_check_does_not_fetch(self, tmp_path: Path) -> None:
+        nc = _make_nc(tmp_path, conventions="MYSTD-2.3", project_url=PROJECT_URL)
+        with patch("vocal.application.check.fetch_for_file") as fetch_mock:
+            result = _invoke([nc], _registry())
+
+        assert result.exit_code == 2
+        fetch_mock.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Helpers used only by override tests.
+# ---------------------------------------------------------------------------
+
+
+def _conv(name: str = "MYSTD", major: int = 2, minor: int = 3, directory: str = "mystd"):
+    from vocal.conventions_file import ConventionsFile
+
+    return ConventionsFile(
+        name=name, major=major, minor=minor, project_directory=directory
+    )

@@ -1,59 +1,70 @@
-"""Check a netCDF file against a standard and a product definition.
+"""Check a netCDF file against the standards and product it claims.
 
-``vocal check`` is a thin CLI shell over :mod:`vocal.resolution`: it reads the
-file's vocal-managed global attributes, hands them to the resolver together
-with the local registry, and renders whatever the resolver returns (or the
-typed error it raises). All of the "what should this file be validated
-against?" logic lives in :mod:`vocal.resolution`; this module only reads
-attributes, drives the resolver, runs pydantic / product-spec validation, and
-prints results.
+``vocal check`` is a thin CLI adapter over the two-axis check spine. It reads the
+file's vocal-managed global attributes, builds a :class:`~vocal.resolution.Resolution`
+along two independent axes — a *standards* axis (the pydantic ``Dataset`` models
+the file is verified against) and a *product* axis (the single pack schema) — hands
+it to :func:`~vocal.checking.shared.run_check`, and renders the resulting tri-state
+:class:`~vocal.checking.shared.CheckOutcome`.
 
-The graceful-degradation matrix (see the parent PRD) governs how CLI flags
-substitute for missing file attributes:
+The verdict drives the exit code: ``0`` on PASS, ``1`` on FAIL, ``2`` on
+INDETERMINATE (something the file claims is not installed, or installed at a minor
+too old to verify, or there was nothing to run). The distinct INDETERMINATE code
+lets a script tell "missing dependency" from "bad file".
 
-- ``-p <path>`` supplied: the user takes over project resolution. The resolver
-  is bypassed entirely; the given project(s) are imported directly and the
-  given ``-d`` definition(s) checked against. This is the only path when the
-  file carries no ``Conventions`` attribute.
-- no ``-p``: the resolver resolves the project from ``Conventions`` and (when
-  ``vocal_definitions_url`` / ``_version`` are present) the pack. An explicit
-  ``-d`` overrides the file's declared pack. When the file declares no pack and
-  no ``-d`` is given, the run is incomplete and ``-d`` is required.
+``-p`` and ``-d`` are a **per-axis, symmetric** override: ``-p`` overrides only
+the standards axis (one or more project repo roots, each treated as a *mandatory*
+standard), ``-d`` overrides only the product axis (a single product schema). The
+un-named axis is still resolved from the file. ``--specified-only`` suppresses
+resolution of the un-named axis entirely, so the file is checked against exactly
+— and only — what ``-p``/``-d`` name.
 
-``--fetch`` bootstraps the file's declared sources before checking: it runs
-:func:`vocal.application.fetch.fetch_for_file` (idempotently) as a pre-step and
-then falls through into the resolve-and-check flow unchanged. It is opposed to
-``-p`` (derive-from-file vs supply-paths) and so cannot be combined with it; it
-*is* compatible with ``-d``, which still only overrides the product at check
-time.
+Nothing is ever fetched implicitly. ``--fetch`` (and ``vocal fetch --for``) are
+the only paths that fetch, and they run strictly as an opt-in pre-step.
 """
 
 import os
-from typing import Any, Mapping, Optional
+from typing import Optional
 
 import typer
-from pydantic import BaseModel
 
 from rich.progress import Progress, SpinnerColumn, TextColumn
-
 
 from vocal.application.fetch import fetch_for_file, summarise_outcomes
 from vocal.application.fetch_gate import confirm_file_fetch
 from vocal.checking.checking import CheckReport
-from vocal.conventions_file import import_project_package
+from vocal.checking.shared import (
+    CheckOutcome,
+    DefinitionCheckResult,
+    ProjectCheckResult,
+    Verdict,
+    run_check,
+)
+from vocal.conventions_file import ConventionsFile
 from vocal.exceptions import VocalError
+from vocal.manifest import ManifestProduct, build_manifest
 from vocal.resolution import (
+    NothingToCheck,
     PackMissing,
+    PackTarget,
+    ProductNotFound,
     ProjectMissing,
+    ProjectTarget,
+    Resolution,
     ResolutionError,
+    ResolutionWarning,
     resolve_file,
 )
-from vocal.utils.registry import Project
-from vocal.checking.shared import check_against_definition, check_against_project
+from vocal.utils.registry import Pack, Project
 from ..utils import get_error_locs, TextStyles, Printer
-from ..utils.conventions import read_file_conventions
+from ..utils.conventions import FileConventions, read_file_conventions
 
 LINE_LEN = 50
+
+# Exit codes: PASS is 0; FAIL and INDETERMINATE are kept distinct so a script can
+# tell "the file is bad" (1) from "the check couldn't be completed" (2).
+EXIT_FAIL = 1
+EXIT_INDETERMINATE = 2
 
 TS = TextStyles()
 p = Printer()
@@ -75,47 +86,187 @@ class NoopProgress:
         pass
 
 
-def check_against_standard(
-    model: type[BaseModel], filename: str, project_name: str = ""
-) -> bool:
+# ---------------------------------------------------------------------------
+# Building the Resolution (file-resolved axes + per-axis -p/-d overrides).
+# ---------------------------------------------------------------------------
+
+# The resolver's failures and warnings are axis-attributable by type/code. When
+# one axis is overridden by a flag, the file-resolved problems for *that* axis are
+# irrelevant (the user replaced it), so they are filtered out by these predicates.
+_PRODUCT_FAILURES = (PackMissing, ProductNotFound)
+
+
+def _is_product_failure(failure: ResolutionError) -> bool:
+    """Whether a resolver failure belongs to the product axis."""
+    return isinstance(failure, _PRODUCT_FAILURES)
+
+
+def _is_product_warning(warning: ResolutionWarning) -> bool:
+    """Whether a resolver warning belongs to the product axis."""
+    return warning.code == "satisfies_standards_unmet"
+
+
+def _override_project_target(path: str) -> ProjectTarget:
+    """Build a mandatory standards-axis target from a supplied project repo root.
+
+    Reads the repo's ``conventions.yaml`` for the standard's identity; the spine
+    imports the package from the same root at check time. A directly supplied
+    project is always run (never "too old" — there is no claimed version to be
+    older than).
     """
-    Check a netCDF file against a standard (a vocal/pydantic model).
+    repo = path.rstrip("/")
+    conventions = ConventionsFile.load(repo)
+    project = Project(
+        name=conventions.name,
+        major=conventions.major,
+        minor=conventions.minor,
+        project_directory=conventions.project_directory,
+        local_path=repo,
+    )
+    return ProjectTarget(
+        project=project, mandatory=True, claimed_version=conventions.version
+    )
 
-    Args:
-        model (type[BaseModel]): The model to check against.
-        filename (str): The path of the netCDF file to check.
-        project_name (str): The name of the project to check against.
 
-    Returns:
-        bool: True if all checks pass, False otherwise.
+def _override_pack_target(schema_path: str) -> PackTarget:
+    """Build a mandatory product-axis target from a supplied product schema path.
+
+    The spine validates against ``schema_path`` directly, so the surrounding pack
+    is a thin synthetic carrier (the override bypasses pack resolution and product
+    routing entirely — the user named the schema explicitly).
     """
+    name = os.path.basename(schema_path)
+    product = ManifestProduct(name=name, file_pattern="", schema=name)
+    manifest = build_manifest(
+        version=0, url="", filecodec={}, satisfies_standards=(), products=(product,)
+    )
+    pack = Pack(manifest=manifest, local_path=os.path.dirname(os.path.abspath(schema_path)))
+    return PackTarget(pack=pack, product=product, schema_path=schema_path)
 
+
+def _build_resolution(
+    filename: str,
+    attrs: FileConventions,
+    project_paths: list[str],
+    definition_path: Optional[str],
+    specified_only: bool,
+) -> Resolution:
+    """Compose a :class:`Resolution` from file-resolved axes and -p/-d overrides.
+
+    Each axis is independent: a named axis (``-p`` standards, ``-d`` product) is
+    taken from the supplied path(s) as mandatory; an un-named axis is resolved from
+    the file — unless ``specified_only`` suppresses it. The file-resolved problems
+    for an overridden axis are dropped (the override replaces them).
+
+    Raises:
+        NothingToCheck: nothing was named and nothing resolved from the file.
+    """
+    override_standards = bool(project_paths)
+    override_product = definition_path is not None
+    has_overrides = override_standards or override_product
+
+    resolve_standards_from_file = not specified_only and not override_standards
+    resolve_product_from_file = not specified_only and not override_product
+
+    file_resolution: Optional[Resolution] = None
+    if resolve_standards_from_file or resolve_product_from_file:
+        try:
+            file_resolution = resolve_file(filename, attrs=attrs)
+        except NothingToCheck:
+            # The file carries nothing of its own. With overrides present that is
+            # fine (we use them); with none, there is genuinely nothing to check.
+            if not has_overrides:
+                raise
+            file_resolution = None
+
+    resolution = Resolution()
+
+    if override_standards:
+        resolution.projects.extend(
+            _override_project_target(path) for path in project_paths
+        )
+    elif resolve_standards_from_file and file_resolution is not None:
+        resolution.projects.extend(file_resolution.projects)
+        resolution.failures.extend(
+            f for f in file_resolution.failures if not _is_product_failure(f)
+        )
+        resolution.warnings.extend(
+            w for w in file_resolution.warnings if not _is_product_warning(w)
+        )
+
+    if override_product:
+        assert definition_path is not None  # established by override_product
+        resolution.pack = _override_pack_target(definition_path)
+    elif resolve_product_from_file and file_resolution is not None:
+        resolution.pack = file_resolution.pack
+        resolution.failures.extend(
+            f for f in file_resolution.failures if _is_product_failure(f)
+        )
+        resolution.warnings.extend(
+            w for w in file_resolution.warnings if _is_product_warning(w)
+        )
+
+    if not resolution.projects and resolution.pack is None and not resolution.failures:
+        raise NothingToCheck(
+            "Nothing to check.",
+            "Name an axis with -p (a project) and/or -d (a product definition); "
+            "--specified-only ignores the file's own claims.",
+        )
+
+    return resolution
+
+
+# ---------------------------------------------------------------------------
+# Rendering a CheckOutcome.
+# ---------------------------------------------------------------------------
+
+
+def _render_project_result(result: ProjectCheckResult, filename: str) -> None:
+    """Render one standards-axis model-check result."""
+    name = f"{result.target.project.name}-{result.target.project.major}"
     p.print_err(
         f"Checking {TS.BOLD}{filename}{TS.ENDC} against "
-        f"{TS.BOLD}{project_name}{TS.ENDC} standard... ",
+        f"{TS.BOLD}{name}{TS.ENDC} standard... ",
         end="",
     )
 
-    result = check_against_project(model, filename)
-
-    if not result.passed:
-        assert result.error is not None and result.nc_noval is not None
-        p.print_err(f"{TS.FAIL}{TS.BOLD}ERROR!{TS.ENDC}\n")
-
-        error_locs = get_error_locs(result.error, result.nc_noval)
-
-        for err_loc, err_msg in zip(*error_locs):
-            p.print_err(f"{TS.FAIL}{TS.BOLD}✗{TS.ENDC} {err_loc}: {err_msg}")
-
-        p.print_err()
-        return False
-    else:
+    if result.passed:
         p.print_err(f"{TS.OKGREEN}{TS.BOLD}OK!{TS.ENDC}\n")
+        return
 
-        return True
+    assert result.error is not None and result.nc_noval is not None
+    p.print_err(f"{TS.FAIL}{TS.BOLD}ERROR!{TS.ENDC}\n")
+    locs, msgs = get_error_locs(result.error, result.nc_noval)
+    for loc, msg in zip(locs, msgs):
+        p.print_err(f"{TS.FAIL}{TS.BOLD}✗{TS.ENDC} {loc}: {msg}")
+    p.print_err()
+
+
+def _render_unverifiable(target: ProjectTarget, filename: str) -> None:
+    """Render a standards-axis claim that is installed but too old to verify.
+
+    Such a target is deliberately not run (an older minor could spuriously reject
+    a legitimately newer-minor file); it forces INDETERMINATE and carries an
+    ``--update`` hint.
+    """
+    name = f"{target.project.name}-{target.project.major}"
+    p.print_err(
+        f"Checking {TS.BOLD}{filename}{TS.ENDC} against "
+        f"{TS.BOLD}{name}{TS.ENDC} standard... ",
+        end="",
+    )
+    p.print_err(f"{TS.WARNING}{TS.BOLD}SKIPPED{TS.ENDC}\n")
+    p.print_warn(
+        f"{TS.BOLD}{TS.WARNING}!{TS.ENDC} {target.claimed_version} could not be "
+        f"verified: the installed project is at an older minor."
+    )
+    if target.hint:
+        p.print_warn(f"  {target.hint}")
+    p.print_err()
 
 
 def print_checks(pc: CheckReport, filename: str, specification: str) -> None:
+    """Render a product-axis structural check report."""
     p.print_err(
         f"Checking {TS.BOLD}{filename}{TS.ENDC} against "
         f"{TS.BOLD}{os.path.basename(specification)}{TS.ENDC} specification... ",
@@ -163,169 +314,92 @@ def print_checks(pc: CheckReport, filename: str, specification: str) -> None:
     p.print_err()
 
 
-def check_against_specification(filename: str, specification: str) -> bool:
+def _render_pack_result(result: DefinitionCheckResult, filename: str) -> None:
+    """Render the product-axis structural check report."""
+    if result.report is None:
+        return
+    print_checks(result.report, filename, result.target.schema_path)
+
+
+def _render_failure(failure: ResolutionError) -> None:
+    """Render an unresolved mandatory claim: its message and the resolver hint."""
+    p.print_err(f"\n{TS.BOLD}{TS.FAIL}✗{TS.ENDC} {failure.message}")
+    if failure.hint:
+        p.print_err(f"  {failure.hint}")
+
+
+def _render_warning(warning: ResolutionWarning) -> None:
+    """Render an advisory resolution warning (an opportunistic standard skipped,
+    or an unmet ``satisfies_standards`` assertion)."""
+    p.print_warn(f"\n{TS.BOLD}{TS.WARNING}!{TS.ENDC} {warning.message}")
+    if warning.hint:
+        p.print_warn(f"  {warning.hint}")
+
+
+def _render_fetch_hint(outcome: CheckOutcome, filename: str, fetched: bool) -> None:
+    """Point the user at ``vocal fetch --for`` when a mandatory resource is missing.
+
+    Only a missing project/pack is fetchable from the file's own declarations;
+    suppressed when ``--fetch`` already ran (re-suggesting it would not help).
     """
-    Check a netCDF file against a product specification.
-
-    Args:
-        specification (str): The path of the specification to check against.
-        filename (str): The path of the netCDF file to check.
-
-    Returns:
-        bool: True if all checks pass, False otherwise.
-    """
-    result = check_against_definition(specification, filename)
-    assert result.report is not None
-    print_checks(result.report, filename, specification)
-    return result.passed
+    if fetched:
+        return
+    if any(isinstance(f, (ProjectMissing, PackMissing)) for f in outcome.failures):
+        p.print_err(
+            f"  Run 'vocal fetch --for {filename}' to fetch what the file declares, "
+            f"then re-check.\n"
+        )
 
 
-def check_file_against_project(filename: str, project: str) -> bool:
-    """
-    Check a file against the standard defined by a project at ``project``.
+def _render_verdict(verdict: Verdict) -> None:
+    """Render the rolled-up tri-state verdict banner."""
+    p.print_err()
+    p.print_line_err(LINE_LEN, "=")
+    if verdict is Verdict.PASS:
+        p.print_err(f"{TS.BOLD}{TS.OKGREEN}✔ PASS{TS.ENDC}")
+    elif verdict is Verdict.FAIL:
+        p.print_err(f"{TS.BOLD}{TS.FAIL}✗ FAIL{TS.ENDC}")
+    else:
+        p.print_err(
+            f"{TS.BOLD}{TS.WARNING}? INDETERMINATE{TS.ENDC} — "
+            f"the check could not be completed."
+        )
+    p.print_line_err(LINE_LEN, "=")
 
-    ``project`` is a project repo root (containing ``conventions.yaml``); its
-    package is imported through the single project-import path.
 
-    Args:
-        filename (str): The path to the netCDF file.
-        project (str): The path to the project repo root.
-
-    Returns:
-        bool: True if the file validates against the project's Dataset model.
-    """
+def _render(
+    resolution: Resolution, outcome: CheckOutcome, filename: str, *, fetched: bool
+) -> None:
+    """Render a full per-axis check outcome and the final verdict."""
     p.print_err()
 
-    try:
-        project_mod = import_project_package(project)
-    except VocalError as e:
-        _print_error(e)
-        raise typer.Exit(code=1)
+    for result in outcome.project_results:
+        _render_project_result(result, filename)
 
-    return check_against_standard(
-        model=project_mod.models.Dataset,
-        filename=filename,
-        project_name=os.path.basename(os.path.normpath(project)),
-    )
+    for target in resolution.projects:
+        if not target.verifiable:
+            _render_unverifiable(target, filename)
 
+    if outcome.pack_result is not None:
+        _render_pack_result(outcome.pack_result, filename)
 
-def _print_error(error: VocalError) -> None:
-    """Render a typed vocal error — its message and actionable hint — to stderr."""
-    p.print_err(f"\n{TS.BOLD}{TS.FAIL}✗{TS.ENDC} {error.message}")
-    if error.hint:
-        p.print_err(f"  {error.hint}\n")
+    for failure in outcome.failures:
+        _render_failure(failure)
 
+    _render_fetch_hint(outcome, filename, fetched)
 
-def _load_filecodec(project: Project) -> Mapping[str, Mapping[str, Any]]:
-    """Import a resolved project's package and return its ``filecodec``.
+    for warning in outcome.warnings:
+        _render_warning(warning)
 
-    Passed to :func:`vocal.resolution.resolve` so that product matching can
-    expand templated ``file_pattern`` entries. Defined here (rather than relying
-    on the resolver's default loader) so tests can patch the import.
-    """
-    return import_project_package(project.local_path).filecodec
+    _render_verdict(outcome.verdict)
 
 
-def _run_manual_checks(
-    filename: str, projects: list[str], definitions: Optional[list[str]]
-) -> bool:
-    """Manual mode: check ``filename`` against explicitly supplied paths.
-
-    The resolver is bypassed: each ``-p`` project is imported directly and each
-    ``-d`` definition checked against. This is the path taken when the file has
-    no ``Conventions`` attribute (the matrix's "absent" row requires both ``-p``
-    and ``-d``).
-    """
-    ok = True
-    for project in projects:
-        ok = check_file_against_project(filename, project.rstrip("/")) and ok
-
-    for definition in definitions or []:
-        ok = check_against_specification(filename, definition) and ok
-
-    return ok
-
-
-def _print_fetch_nudge() -> None:
-    """Layer a "re-run with --fetch" suggestion onto a missing-resource error.
-
-    Additive to the resolver's own ``vocal fetch <url>`` hint: when the file
-    carries the URL needed to fetch the missing project/pack, the one-step
-    ``--fetch`` path is available, so point the user at it.
-    """
-    p.print_err(
-        "  Or re-run with --fetch to fetch the resources the file declares and "
-        "check in one step.\n"
-    )
-
-
-def _carries_missing_url(error: ResolutionError, attrs) -> bool:
-    """Whether the file carries the URL needed to fetch the missing resource.
-
-    The ``--fetch`` nudge only helps when the failure is a missing project or
-    pack *and* the file actually declares the URL ``fetch_for_file`` would use
-    to fetch it.
-    """
-    if isinstance(error, ProjectMissing):
-        return bool(attrs.project_urls)
-    if isinstance(error, PackMissing):
-        return attrs.definitions_url is not None
-    return False
-
-
-def _run_resolved_checks(
-    filename: str, attrs, definitions: Optional[list[str]], *, fetched: bool = False
-) -> bool:
-    """Resolver mode: drive :func:`vocal.resolution.resolve` and render results.
-
-    ``-d`` (the first definition, if any) becomes the resolver's
-    ``definition_override``, short-circuiting pack resolution. Typed resolver
-    errors are rendered with their locked message and hint.
-
-    ``fetched`` records whether the ``--fetch`` pre-step already ran: when it
-    did, re-suggesting ``--fetch`` on a missing-resource failure would be
-    unhelpful, so the nudge is suppressed.
-    """
-    override = definitions[0] if definitions else None
-
-    try:
-        target = resolve_file(
-            filename,
-            attrs=attrs,
-            definition_override=override,
-            filecodec_loader=_load_filecodec,
-        )
-    except ResolutionError as e:
-        _print_error(e)
-        # On a missing project/pack the file itself can fetch, point the user at
-        # the one-step --fetch path — unless --fetch already ran.
-        if not fetched and _carries_missing_url(e, attrs):
-            _print_fetch_nudge()
-        return False
-
-    try:
-        project_mod = import_project_package(target.project.local_path)
-    except VocalError as e:
-        _print_error(e)
-        return False
-
-    p.print_err()
-    project_name = f"{target.project.name}-{target.project.major}"
-    ok = check_against_standard(project_mod.models.Dataset, filename, project_name)
-
-    if target.schema_path is None:
-        # The project resolved, but the file declares no pack and no -d override
-        # was supplied — there is no product definition to check against.
-        p.print_err(
-            f"{TS.BOLD}{TS.FAIL}✗{TS.ENDC} The file declares no product "
-            f"definitions (no vocal_definitions_url / vocal_definitions_version)."
-        )
-        p.print_err(
-            "  Pass -d <path> to supply a product definition to check against.\n"
-        )
-        return False
-
-    return check_against_specification(filename, target.schema_path) and ok
+def _exit_for(verdict: Verdict) -> None:
+    """Raise the typer exit matching the verdict (PASS returns cleanly)."""
+    if verdict is Verdict.FAIL:
+        raise typer.Exit(code=EXIT_FAIL)
+    if verdict is Verdict.INDETERMINATE:
+        raise typer.Exit(code=EXIT_INDETERMINATE)
 
 
 def command(
@@ -334,13 +408,30 @@ def command(
         None,
         "-p",
         "--project",
-        help="Path to one or more vocal projects. Pass multiple times for multiple projects.",
+        help=(
+            "Override the standards axis: path(s) to vocal project repo roots, "
+            "each checked as a mandatory standard. Pass multiple times for "
+            "multiple standards. The product axis is still resolved from the file "
+            "unless --specified-only is given."
+        ),
     ),
-    definition: Optional[list[str]] = typer.Option(
+    definition: Optional[str] = typer.Option(
         None,
         "-d",
         "--definition",
-        help="Product definition(s) to test against. Pass multiple times for multiple definitions.",
+        help=(
+            "Override the product axis: a single product definition (schema) to "
+            "check against, treated as mandatory. The standards axis is still "
+            "resolved from the file unless --specified-only is given."
+        ),
+    ),
+    specified_only: bool = typer.Option(
+        False,
+        "--specified-only",
+        help=(
+            "Check the file against only the axes named by -p/-d, suppressing "
+            "resolution of the un-named axis entirely."
+        ),
     ),
     error_only: bool = typer.Option(
         False,
@@ -380,7 +471,7 @@ def command(
         False, "--no-color", help="Do not print colored output."
     ),
 ) -> None:
-    """Check a netCDF file against standard and product definitions."""
+    """Check a netCDF file against the standards and product it claims."""
     if error_only:
         p.ignore_info = True
         p.ignore_warnings = True
@@ -417,8 +508,7 @@ def command(
         except VocalError as e:
             # A security refusal (e.g. the can't-prompt BLOCKED error under -q)
             # must always be visible, so render it straight to stderr rather than
-            # via the quiet-respecting Printer — otherwise -q would swallow the
-            # very message that tells the user why nothing happened.
+            # via the quiet-respecting Printer.
             typer.echo(f"\n{TS.BOLD}{TS.FAIL}✗{TS.ENDC} {e.message}", err=True)
             if e.hint:
                 typer.echo(f"  {e.hint}\n", err=True)
@@ -434,44 +524,39 @@ def command(
         )
 
     with progress_context as progress:
-        outcomes = []
         if fetch:
             # Ensure the file's declared resources are present, then fall through
-            # into the normal resolve-and-check flow below. The fetch is idempotent
-            # (already-present resources are skipped). -d is unaffected here: the
-            # file's declared pack is still fetched, and -d only overrides the
-            # product at check time.
+            # into the normal resolve-and-check flow below. Idempotent.
             task = progress.add_task(description="Fetching resources...", total=None)
             try:
                 outcomes = fetch_for_file(filename)
             except VocalError as e:
-                _print_error(e)
+                _render_failure(e)
                 raise typer.Exit(code=1)
             finally:
-                # Finish this phase before the next task starts, so phases show
-                # one spinner at a time rather than accumulating.
                 task and progress.remove_task(task)
 
-        if not quiet and outcomes:
-            summarise_outcomes(outcomes)
+            if not quiet and outcomes:
+                summarise_outcomes(outcomes)
 
-        if project:
-            task = progress.add_task(
-                description="Running project checks...", total=None
-            )
+        task = progress.add_task(description="Checking file...", total=None)
+        try:
+            attrs = read_file_conventions(filename)
             try:
-                ok = _run_manual_checks(filename, project, definition)
-            finally:
-                task and progress.remove_task(task)
-        else:
-            task = progress.add_task(
-                description="Running product checks...", total=None
-            )
-            try:
-                attrs = read_file_conventions(filename)
-                ok = _run_resolved_checks(filename, attrs, definition, fetched=fetch)
-            finally:
-                task and progress.remove_task(task)
+                resolution = _build_resolution(
+                    filename,
+                    attrs,
+                    project_paths=project or [],
+                    definition_path=definition,
+                    specified_only=specified_only,
+                )
+            except VocalError as e:
+                _render_failure(e)
+                raise typer.Exit(code=1)
 
-    if not ok:
-        raise typer.Exit(code=1)
+            outcome = run_check(resolution, filename)
+        finally:
+            task and progress.remove_task(task)
+
+    _render(resolution, outcome, filename, fetched=fetch)
+    _exit_for(outcome.verdict)
