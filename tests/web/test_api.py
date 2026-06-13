@@ -39,10 +39,17 @@ from fastapi.testclient import TestClient
 from vocal.application.fetch import FetchError
 from vocal.application.install import derive_url_slug
 from vocal.application.resource import ResourceKind
+from vocal.checking.shared import (
+    CheckOutcome,
+    ProjectCheckResult,
+    Verdict,
+)
 from vocal.manifest import ManifestProduct, build_manifest
+from vocal.resolution import ProjectTarget, Resolution
 from vocal.utils.registry import Pack, Project, Registry
+from vocal.versioning import Version, VersionConstraint
 from vocal.web.api import app, create_app
-from vocal.web.models import CheckContext, ResolverError
+from vocal.web.models import CheckContext, ResolverError, UnverifiedClaim
 
 
 # ---------------------------------------------------------------------------
@@ -365,14 +372,63 @@ class TestUploadPost:
             )
         assert "text/html" in response.headers["content-type"]
 
-    def test_resolver_error_renders_banner_with_message_and_hint(
+    def test_passed_state_renders_distinctly(self, client: TestClient) -> None:
+        context = CheckContext(verdict="pass")
+        with patch("vocal.web.api.check_upload", return_value=context):
+            response = client.post(
+                "/",
+                files={"file": ("test.nc", b"dummy", "application/octet-stream")},
+            )
+        assert response.status_code == 200
+        assert "PASSED" in response.text
+        assert "FAILED" not in response.text
+        assert "COULDN'T VERIFY" not in response.text
+
+    def test_failed_state_renders_distinctly(self, client: TestClient) -> None:
+        context = CheckContext(verdict="fail")
+        with patch("vocal.web.api.check_upload", return_value=context):
+            response = client.post(
+                "/",
+                files={"file": ("test.nc", b"dummy", "application/octet-stream")},
+            )
+        assert response.status_code == 200
+        assert "FAILED" in response.text
+        assert "PASSED" not in response.text
+        assert "COULDN'T VERIFY" not in response.text
+
+    def test_indeterminate_state_renders_distinctly_with_fetch_items(
+        self, client: TestClient
+    ) -> None:
+        context = CheckContext(
+            verdict="indeterminate",
+            unverified=[
+                UnverifiedClaim(
+                    message="No project registered for https://host/mystd.git",
+                    hint="Run 'vocal fetch https://host/mystd.git' to register it.",
+                )
+            ],
+        )
+        with patch("vocal.web.api.check_upload", return_value=context):
+            response = client.post(
+                "/",
+                files={"file": ("test.nc", b"dummy", "application/octet-stream")},
+            )
+        assert response.status_code == 200
+        assert "COULDN'T VERIFY" in response.text
+        assert "PASSED" not in response.text
+        # The fetch/update items are surfaced so the user knows what to install.
+        assert "No project registered for https://host/mystd.git" in response.text
+        assert "vocal fetch https://host/mystd.git" in response.text
+
+    def test_refusal_renders_not_vocal_managed_banner(
         self, client: TestClient
     ) -> None:
         context = CheckContext(
             error=ResolverError(
-                code="pack_missing",
-                message="No pack registered for https://host/packs version 3",
-                hint="Run 'vocal fetch https://host/packs' to register it.",
+                code="not_vocal_managed",
+                message="This file carries no recognisable vocal claim.",
+                hint="Add a vocal_project_url, a vocal_definitions_url, or a "
+                "Conventions token naming an installed standard.",
             )
         )
         with patch("vocal.web.api.check_upload", return_value=context):
@@ -381,13 +437,11 @@ class TestUploadPost:
                 files={"file": ("test.nc", b"dummy", "application/octet-stream")},
             )
         assert response.status_code == 200
-        assert "COULDN'T CHECK FILE" in response.text
-        # message and hint both reach the rendered page.
-        assert "No pack registered for https://host/packs version 3" in response.text
-        # Apostrophes in the hint are HTML-escaped by the template; match the
-        # stable parts of the hint that survive escaping.
-        assert "vocal fetch https://host/packs" in response.text
-        assert "to register it." in response.text
+        # A refusal is a distinct state, not one of the three verdicts.
+        assert "NOT A VOCAL-MANAGED FILE" in response.text
+        assert "This file carries no recognisable vocal claim." in response.text
+        assert "PASSED" not in response.text
+        assert "FAILED" not in response.text
 
     def test_unknown_check_failure_renders_error_page(
         self, client: TestClient
@@ -405,10 +459,22 @@ class TestUploadPost:
 
 
 # ---------------------------------------------------------------------------
-# check_upload — resolver-driven flow, asserting the typed error shape
+# check_upload — resolver-driven flow, asserting the tri-state verdict
 # ---------------------------------------------------------------------------
+#
+# These tests drive ``check_upload`` directly against real netCDF files and a
+# controlled in-memory registry, asserting the observable outcome: the verdict
+# (``pass`` / ``fail`` / ``indeterminate``), whether the file was refused
+# upfront, and the fetch/update items surfaced for an incomplete check. No
+# project package or pack schema is read from disk — cases that would run a
+# model/schema check either resolve to "nothing runnable" (INDETERMINATE) or
+# patch ``run_check`` so the surface's verdict-mapping is what is under test,
+# not the spine's validation mechanics (those are covered by the spine's own
+# tests). The surface never fetches: no fetch is mocked, and there is no fetch
+# path to mock.
 
-FILECODEC = {"date": {"regex": r"\d{8}"}}
+MYSTD_URL = "https://host/mystd.git"
+PACKS_URL = "https://host/packs"
 
 
 def _make_nc(
@@ -434,22 +500,26 @@ def _make_nc(
     return path
 
 
-def _project(name: str = "MYSTD", major: int = 2, minor: int = 3) -> Project:
+def _project(
+    name: str = "MYSTD",
+    major: int = 2,
+    minor: int = 3,
+    url: str = "",
+) -> Project:
     return Project(
         name=name,
         major=major,
         minor=minor,
         project_directory="mystd",
         local_path="/cache/projects/mystd",
+        url=url,
     )
 
 
 def _pack(
-    url: str = "https://host/packs",
+    url: str = PACKS_URL,
     version: int = 3,
-    name: str = "MYSTD",
-    major: int = 2,
-    min_minor: int = 3,
+    satisfies: tuple[VersionConstraint, ...] = (VersionConstraint("MYSTD", 2, 3),),
     local_path: str = "/cache/packs/host-packs/v3",
     products=None,
 ) -> Pack:
@@ -462,9 +532,8 @@ def _pack(
     manifest = build_manifest(
         version=version,
         url=url,
-        standard_name=name,
-        standard_major=major,
-        min_minor=min_minor,
+        filecodec={"date": {"regex": r"\d{8}"}},
+        satisfies_standards=satisfies,
         products=products,
     )
     return Pack(manifest=manifest, local_path=local_path)
@@ -479,143 +548,180 @@ def _registry(project: Project | None = None, pack: Pack | None = None) -> Regis
     return registry
 
 
-def _fake_project_module() -> SimpleNamespace:
-    return SimpleNamespace(
-        models=SimpleNamespace(Dataset=object()),
-        filecodec=FILECODEC,
+def _pass_outcome(resolution: Resolution) -> CheckOutcome:
+    """A passing :class:`CheckOutcome` over ``resolution``'s verifiable targets.
+
+    Used where a fully-resolved file would otherwise run a real model/schema
+    check; lets a ``check_upload`` test assert the surface maps a PASS verdict
+    through without scaffolding a real project package on disk.
+    """
+    return CheckOutcome(
+        project_results=[
+            ProjectCheckResult(target=target)
+            for target in resolution.projects
+            if target.verifiable
+        ],
+        pack_result=None,
+        failures=[],
+        warnings=[],
+        verdict=Verdict.PASS,
     )
 
 
-def _run_check_upload(nc_path: str, registry: Registry) -> CheckContext:
-    """Drive ``check_upload`` against ``nc_path`` with the registry and project
-    import patched, returning the resulting context."""
+def _run_check_upload(
+    nc_path: str, registry: Registry, *, run_check=None
+) -> CheckContext:
+    """Drive ``check_upload`` against ``nc_path`` with the registry patched.
+
+    ``run_check`` optionally replaces the check spine (e.g. with
+    :func:`_pass_outcome`) for cases that would otherwise read a project package
+    or pack schema from disk.
+    """
     from vocal.web import utils as web_utils
 
     with open(nc_path, "rb") as fh:
         upload = UploadFile(filename=Path(nc_path).name, file=fh)
-        with (
-            patch("vocal.resolution.Registry.load", return_value=registry),
-            patch.object(
-                web_utils,
-                "import_project_package",
-                return_value=_fake_project_module(),
-            ),
-        ):
+        patches = [patch("vocal.web.utils.Registry.load", return_value=registry)]
+        if run_check is not None:
+            patches.append(patch("vocal.web.utils.run_check", side_effect=run_check))
+        with patches[0]:
+            if run_check is not None:
+                with patches[1]:
+                    return asyncio.run(web_utils.check_upload(upload))
             return asyncio.run(web_utils.check_upload(upload))
 
 
-class TestCheckUploadResolution:
-    """The five resolver failure categories each surface as a typed error."""
+class TestCheckUploadVerdict:
+    """A recognisable file is always given a tri-state verdict, never refused."""
 
-    def test_project_missing(self, tmp_path: Path) -> None:
+    def test_pass_from_own_claims(self, tmp_path: Path) -> None:
         nc = _make_nc(
             tmp_path,
             conventions="MYSTD-2.3",
-            project_url="https://host/mystd.git",
-            definitions_url="https://host/packs",
-            definitions_version=3,
+            project_url=MYSTD_URL,
+        )
+        registry = _registry(project=_project(url=MYSTD_URL))
+        context = _run_check_upload(
+            nc, registry, run_check=lambda res, fn: _pass_outcome(res)
+        )
+
+        assert context.error is None
+        assert context.verdict == "pass"
+        assert "MYSTD-2" in context.projects
+        assert not context.unverified
+
+    def test_mandatory_project_missing_is_indeterminate(self, tmp_path: Path) -> None:
+        # A vocal_project_url whose project isn't installed is a recognisable
+        # claim: accepted and rendered INDETERMINATE (with a fetch hint), never
+        # refused and never silently passed.
+        nc = _make_nc(tmp_path, conventions="MYSTD-2.3", project_url=MYSTD_URL)
+        context = _run_check_upload(nc, _registry())
+
+        assert context.error is None
+        assert context.verdict == "indeterminate"
+        assert any("No project registered" in c.message for c in context.unverified)
+        assert any(
+            c.hint and "vocal fetch" in c.hint for c in context.unverified
+        )
+
+    def test_missing_pack_is_indeterminate(self, tmp_path: Path) -> None:
+        nc = _make_nc(
+            tmp_path, definitions_url=PACKS_URL, definitions_version=3
         )
         context = _run_check_upload(nc, _registry())
 
-        assert context.error is not None
-        assert context.error.code == "project_missing"
-        assert "No project registered for MYSTD-2" in context.error.message
-        assert context.error.hint is not None
-        assert not context.projects and not context.definitions
-
-    def test_project_too_old(self, tmp_path: Path) -> None:
-        nc = _make_nc(
-            tmp_path,
-            conventions="MYSTD-2.5",
-            definitions_url="https://host/packs",
-            definitions_version=3,
-        )
-        context = _run_check_upload(nc, _registry(project=_project(minor=3)))
-
-        assert context.error is not None
-        assert context.error.code == "project_too_old"
-        assert (
-            "File claims MYSTD-2.5 but registered project is at MYSTD-2.3"
-            in context.error.message
+        assert context.error is None
+        assert context.verdict == "indeterminate"
+        assert any(
+            "No pack registered for https://host/packs version 3" in c.message
+            for c in context.unverified
         )
 
-    def test_pack_missing(self, tmp_path: Path) -> None:
-        nc = _make_nc(
-            tmp_path,
-            conventions="MYSTD-2.3",
-            definitions_url="https://host/packs",
-            definitions_version=3,
-        )
-        context = _run_check_upload(nc, _registry(project=_project()))
+    def test_too_old_standard_is_indeterminate_with_update_hint(
+        self, tmp_path: Path
+    ) -> None:
+        # The file claims a newer minor than is installed: the older model must
+        # not be run, so the claim is unverifiable → INDETERMINATE with an
+        # update hint (not a silent pass, not a fail).
+        nc = _make_nc(tmp_path, conventions="MYSTD-2.5", project_url=MYSTD_URL)
+        registry = _registry(project=_project(minor=3, url=MYSTD_URL))
+        context = _run_check_upload(nc, registry)
 
-        assert context.error is not None
-        assert context.error.code == "pack_missing"
-        assert (
-            "No pack registered for https://host/packs version 3"
-            in context.error.message
-        )
-        assert context.error.hint is not None
-        assert "vocal fetch https://host/packs" in context.error.hint
-
-    def test_pack_incompatible(self, tmp_path: Path) -> None:
-        nc = _make_nc(
-            tmp_path,
-            conventions="MYSTD-2.3",
-            definitions_url="https://host/packs",
-            definitions_version=3,
-        )
-        pack = _pack(major=3, min_minor=0)
-        context = _run_check_upload(nc, _registry(project=_project(), pack=pack))
-
-        assert context.error is not None
-        assert context.error.code == "pack_incompatible"
-        assert (
-            "Pack targets MYSTD-3 but registered project is MYSTD-2"
-            in context.error.message
+        assert context.error is None
+        assert context.verdict == "indeterminate"
+        assert any(
+            c.hint and "--update" in c.hint for c in context.unverified
         )
 
-    def test_product_not_found(self, tmp_path: Path) -> None:
+    def test_product_not_found_is_indeterminate(self, tmp_path: Path) -> None:
         nc = _make_nc(
             tmp_path,
             name="unmatched.nc",
-            conventions="MYSTD-2.3",
-            definitions_url="https://host/packs",
+            definitions_url=PACKS_URL,
             definitions_version=3,
         )
-        context = _run_check_upload(nc, _registry(project=_project(), pack=_pack()))
-
-        assert context.error is not None
-        assert context.error.code == "product_not_found"
-        assert "'unmatched.nc' did not match any product pattern" in (
-            context.error.message
+        context = _run_check_upload(
+            nc, _registry(pack=_pack())
         )
-        assert context.error.hint is not None
-        assert "foo_{date}" in context.error.hint
+
+        assert context.error is None
+        assert context.verdict == "indeterminate"
+        assert any(
+            "did not match any product pattern" in c.message
+            for c in context.unverified
+        )
 
 
-class TestCheckUploadPreconditions:
-    """The web flow rejects files it cannot resolve without a flag fallback."""
+class TestCheckUploadPrecondition:
+    """Only a file with no recognisable vocal claim is refused upfront."""
 
-    def test_missing_conventions(self, tmp_path: Path) -> None:
-        nc = _make_nc(
-            tmp_path,
-            definitions_url="https://host/packs",
-            definitions_version=3,
-        )  # no Conventions attribute
+    def test_no_vocal_claim_refused(self, tmp_path: Path) -> None:
+        # Only an external CF token, no installed CF project, no vocal URLs:
+        # not a vocal-managed file. Refused upfront — a distinct state, not a
+        # verdict.
+        nc = _make_nc(tmp_path, conventions="CF-1.8")
         context = _run_check_upload(nc, _registry(project=_project()))
 
         assert context.error is not None
-        assert context.error.code == "missing_conventions"
-        assert "Conventions" in context.error.message
+        assert context.error.code == "not_vocal_managed"
+        assert context.error.hint is not None
+        assert context.verdict is None
         assert not context.projects and not context.definitions
 
-    def test_missing_pack_reference(self, tmp_path: Path) -> None:
-        # Conventions present, but no vocal_definitions_url / _version: the web
-        # UI cannot fall back to a -d flag, so the file is rejected.
-        nc = _make_nc(tmp_path, conventions="MYSTD-2.3")
+    def test_no_attributes_at_all_refused(self, tmp_path: Path) -> None:
+        nc = _make_nc(tmp_path)  # no vocal-managed attributes whatsoever
         context = _run_check_upload(nc, _registry(project=_project()))
 
         assert context.error is not None
-        assert context.error.code == "missing_pack_reference"
-        assert context.error.hint is not None
-        assert "vocal_definitions_url" in context.error.hint
+        assert context.error.code == "not_vocal_managed"
+        assert context.verdict is None
+
+    def test_conventions_only_no_installed_match_is_indeterminate(
+        self, tmp_path: Path
+    ) -> None:
+        # A Conventions token whose standard name matches an installed project but
+        # whose major is not installed: recognisable, so accepted — and rendered
+        # INDETERMINATE rather than rejected.
+        nc = _make_nc(tmp_path, conventions="MYSTD-3.0")
+        context = _run_check_upload(
+            nc, _registry(project=_project(major=2, minor=3))
+        )
+
+        assert context.error is None
+        assert context.verdict == "indeterminate"
+        assert any("MYSTD-3.0" in c.message for c in context.unverified)
+
+    def test_conventions_only_installed_match_is_checked(
+        self, tmp_path: Path
+    ) -> None:
+        # The opportunistic standard is installed at the claimed version, so the
+        # file is genuinely checked and gets a verdict.
+        nc = _make_nc(tmp_path, conventions="MYSTD-2.3")
+        registry = _registry(project=_project(major=2, minor=3))
+        context = _run_check_upload(
+            nc, registry, run_check=lambda res, fn: _pass_outcome(res)
+        )
+
+        assert context.error is None
+        assert context.verdict == "pass"
+        assert "MYSTD-2" in context.projects

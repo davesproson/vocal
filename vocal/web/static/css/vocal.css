@@ -606,6 +606,54 @@ input[type="submit"]:hover { background: #1a4d80; }
 
 .muted { color: var(--text-muted); }
 
+/* ── Tri-state verdict banner ─────────────────────────────────────── */
+.verdict-banner {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 16px 20px;
+    border: 1px solid;
+    border-radius: var(--radius-lg);
+    margin-bottom: 22px;
+    font-weight: 700;
+    font-size: 1.05rem;
+    letter-spacing: 0.01em;
+}
+
+.verdict-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    color: #fff;
+    font-size: 0.95rem;
+    font-weight: 700;
+    flex-shrink: 0;
+}
+
+.verdict-banner.verdict-pass {
+    background: var(--success-bg);
+    border-color: var(--success-border);
+    color: var(--success);
+}
+.verdict-banner.verdict-pass .verdict-icon { background: var(--success); }
+
+.verdict-banner.verdict-fail {
+    background: var(--error-bg);
+    border-color: var(--error-border);
+    color: var(--error);
+}
+.verdict-banner.verdict-fail .verdict-icon { background: var(--error); }
+
+.verdict-banner.verdict-indeterminate {
+    background: var(--warning-bg);
+    border-color: var(--warning-border);
+    color: var(--warning);
+}
+.verdict-banner.verdict-indeterminate .verdict-icon { background: var(--warning); }
+
 /* ── Incomplete-check banner ──────────────────────────────────────── */
 .incomplete-banner {
     border: 1px solid var(--error-border);

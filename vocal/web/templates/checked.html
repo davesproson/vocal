@@ -4,10 +4,11 @@
 <div class="container">
 
     {% if error %}
+    {# Refusal, not a verdict: the file carries no recognisable vocal claim. #}
     <div class="incomplete-banner">
         <div class="incomplete-banner-header">
             <span class="incomplete-icon">!</span>
-            COULDN'T CHECK FILE
+            NOT A VOCAL-MANAGED FILE
         </div>
         <div class="incomplete-banner-body">
             <div class="incomplete-msg">{{ error.message }}</div>
@@ -17,13 +18,50 @@
             <div class="incomplete-footer">No checks could be run against this file.</div>
         </div>
     </div>
+    {% else %}
+
+    {# Tri-state verdict banner: passed / failed / couldn't verify. #}
+    {% if verdict == 'pass' %}
+    <div class="verdict-banner verdict-pass">
+        <span class="verdict-icon">✓</span>
+        <span class="verdict-text">PASSED — the file honours all of its claims.</span>
+    </div>
+    {% elif verdict == 'fail' %}
+    <div class="verdict-banner verdict-fail">
+        <span class="verdict-icon">✗</span>
+        <span class="verdict-text">FAILED — the file violated a check.</span>
+    </div>
+    {% else %}
+    <div class="verdict-banner verdict-indeterminate">
+        <span class="verdict-icon">?</span>
+        <span class="verdict-text">COULDN'T VERIFY — the check could not be completed.</span>
+    </div>
+    {% endif %}
+
+    {% if unverified %}
+    <div class="check-panel panel-warning">
+        <div class="check-panel-header">
+            <span class="status-badge">!</span>
+            Couldn't verify — fetch or update these
+        </div>
+        <div class="check-panel-body">
+            {% for item in unverified %}
+            <div class="check-item">
+                <span class="msg">{{ item.message }}</span>
+                {% if item.hint %}
+                <span class="path">{{ item.hint }}</span>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+    </div>
     {% endif %}
 
     {% for project in projects %}
     <div class="check-panel panel-{{'success' if projects[project]['passed'] else 'error'}}">
         <div class="check-panel-header">
             <span class="status-badge">{{ '✓' if projects[project]['passed'] else '✗' }}</span>
-            Project: <strong>{{ project }}</strong>
+            Standard: <strong>{{ project }}</strong>
         </div>
         {% if not projects[project]['passed'] %}
         <div class="check-panel-body">
@@ -110,6 +148,8 @@
         </div>
     </div>
     {% endfor %}
+
+    {% endif %}
 
 </div>
 {% endblock %}

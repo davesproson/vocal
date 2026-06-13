@@ -215,7 +215,7 @@ def resolve_file(
     if registry is None:
         registry = _load_registry()
 
-    claimed = _parse_conventions(attrs.conventions)
+    claimed = tokenise_conventions(attrs.conventions)
 
     resolution = Resolution()
     covered: set[str] = set()
@@ -235,12 +235,15 @@ def resolve_file(
     return resolution
 
 
-def _parse_conventions(conventions: Optional[str]) -> list[Version]:
+def tokenise_conventions(conventions: Optional[str]) -> list[Version]:
     """Tokenise a ``Conventions`` string into the standard versions it claims.
 
     Tokens are split on whitespace; each is parsed as a :class:`Version` and
-    non-conforming tokens (and an absent attribute) are silently dropped. The
-    order in which tokens appear is preserved.
+    non-conforming tokens (and an absent attribute) are silently dropped (so
+    external CF/ACDD tokens fall out). The order in which tokens appear is
+    preserved. Exposed as the canonical ``Conventions`` parser so surfaces (e.g.
+    the web checker's recognisability precondition) tokenise identically to the
+    resolver rather than reimplementing it.
     """
     if not conventions:
         return []

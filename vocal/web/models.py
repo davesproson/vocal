@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 from vocal.application.install import derive_url_slug
 from vocal.checking import CheckError, CheckComment, CheckWarning
 from vocal.utils.registry import Pack, Registry, project_key
+from vocal.versioning import VersionConstraint
 
 RequirementStatus = Literal["satisfied", "project_missing", "project_too_old"]
 
@@ -16,19 +17,32 @@ REQUIREMENT_LABELS: dict[RequirementStatus, str] = {
 
 
 class ResolverError(BaseModel):
-    """A typed resolution failure surfaced on the results page.
+    """A typed failure surfaced on the results page *as a refusal, not a verdict*.
 
-    Mirrors the ``code`` / ``message`` / ``hint`` shape of the resolver's typed
-    errors (:class:`vocal.resolution.ResolutionError`). ``code`` is drawn from
-    the resolver's shared vocabulary (``project_missing``, ``project_too_old``,
-    ``pack_missing``, ``pack_incompatible``, ``product_not_found``) for genuine
-    resolution failures, or from the web-layer attribute-precondition vocabulary
-    (``missing_conventions``, ``missing_pack_reference``) for files that cannot
-    be resolved at all because the web UI has no ``-p`` / ``-d`` flag fallback.
-    The web UI renders ``message`` and ``hint`` directly.
+    The web checker refuses a file upfront only when it carries no recognisable
+    vocal claim at all (``not_vocal_managed``): there is nothing to check and no
+    verdict to render. ``code`` / ``message`` / ``hint`` mirror the resolver's
+    typed-error shape (:class:`vocal.resolution.ResolutionError`); the web UI
+    renders ``message`` and ``hint`` directly. Recoverable, per-claim problems
+    (a missing pack, a too-old standard) are *not* refusals — they ride the
+    INDETERMINATE verdict as :class:`UnverifiedClaim`\\ s instead.
     """
 
     code: str
+    message: str
+    hint: str | None = None
+
+
+class UnverifiedClaim(BaseModel):
+    """A claim the check could not finish verifying — what to fetch or update.
+
+    Surfaced alongside the INDETERMINATE verdict. Covers an unresolved mandatory
+    standard or pack (fetch it), a claimed standard installed at a minor too old
+    to run (update it), and an opportunistic ``Conventions`` standard whose
+    project is not installed (skipped). ``message`` says what wasn't verified;
+    ``hint`` says how to complete the check.
+    """
+
     message: str
     hint: str | None = None
 
@@ -59,51 +73,68 @@ class CheckDefinition(BaseModel):
 
 
 class CheckContext(BaseModel):
-    """
-    A class to hold the context of a check, to be used in the web API.
+    """The context of a web check, rendered into the results page.
 
-    When resolution fails (or the file is missing the attributes the web flow
-    requires), ``error`` carries the single typed failure and ``projects`` /
-    ``definitions`` are empty. When resolution succeeds, ``error`` is ``None``
-    and the validation results populate ``projects`` and ``definitions``.
+    The web surface renders a **tri-state verdict** — ``"pass"``, ``"fail"``, or
+    ``"indeterminate"`` — driven by the check spine's
+    :class:`~vocal.checking.shared.Verdict`. ``projects`` and ``definitions``
+    carry the per-axis check results; ``unverified`` carries the
+    fetch-it/update-it items that explain an INDETERMINATE verdict.
+
+    ``error`` is set *only* when the file is refused upfront for carrying no
+    recognisable vocal claim — a distinct "not a vocal-managed file" state, not a
+    verdict. When ``error`` is set, ``verdict`` is ``None`` and the result
+    collections are empty; otherwise ``verdict`` is always populated.
 
     Attributes:
-        projects (dict): The project (standard) validation result, keyed by
+        verdict (str | None): ``"pass"`` / ``"fail"`` / ``"indeterminate"``, or
+            ``None`` when the file was refused upfront.
+        projects (dict): The standards-axis validation results, keyed by
             ``{name}-{major}``.
-        definitions (dict): The product-definition check result, keyed by
-            product name.
-        error (ResolverError | None): The typed resolution failure, if any.
+        definitions (dict): The product-axis check result, keyed by product name.
+        unverified (list[UnverifiedClaim]): What couldn't be verified and how to
+            complete the check (populated for the INDETERMINATE state).
+        error (ResolverError | None): The upfront refusal, if any.
     """
 
+    verdict: str | None = None
     projects: dict[str, CheckProject] = Field(default_factory=dict)
     definitions: dict[str, CheckDefinition] = Field(default_factory=dict)
+    unverified: list[UnverifiedClaim] = Field(default_factory=list)
     error: ResolverError | None = None
+
+
+class SatisfiedStandardView(BaseModel):
+    """One ``satisfies_standards`` constraint of a pack, plus its install status.
+
+    ``constraint`` is the rendered constraint (e.g. ``MYSTD-2.3+``).
+    ``status`` is the three-state status of that standard against the registry,
+    mirroring the resolver's ``project_missing`` / ``project_too_old`` distinction:
+    ``satisfied`` when a ``{name}-{major}`` project exists with ``minor >=
+    min_minor``, ``project_missing`` when none is fetched, ``project_too_old``
+    when one exists below the required minimum. It is informational only — the
+    ``satisfies_standards`` assertion is advisory and never gates a check.
+    """
+
+    constraint: str
+    status: RequirementStatus
+
+    @property
+    def label(self) -> str:
+        """The human-readable label for :attr:`status`."""
+        return REQUIREMENT_LABELS[self.status]
 
 
 class PackVersionView(BaseModel):
     """One registered release of a pack, as shown on the Packs page.
 
-    ``requires_standard`` is the ``{name}-{major}`` of the project standard the
-    version targets; ``requires_min_minor`` is the minimum minor it needs.
-
-    ``requirement_status`` is the three-state status of that requirement against
-    the registry, mirroring the resolver's ``project_missing`` /
-    ``project_too_old`` distinction: ``satisfied`` when a ``{name}-{major}``
-    project exists with ``minor >= min_minor``, ``project_missing`` when no such
-    project is fetched, and ``project_too_old`` when it exists but its minor is
-    below the required minimum. It is informational only — it does not change
-    check gating.
+    ``satisfies`` is the advisory list of standards the version's product is
+    intended to satisfy, each carrying its install status against the registry.
+    A pack may satisfy several standards (or none).
     """
 
     version: int
-    requires_standard: str
-    requires_min_minor: int
-    requirement_status: RequirementStatus
-
-    @property
-    def requirement_label(self) -> str:
-        """The human-readable label for :attr:`requirement_status`."""
-        return REQUIREMENT_LABELS[self.requirement_status]
+    satisfies: list[SatisfiedStandardView] = Field(default_factory=list)
 
 
 class PackView(BaseModel):
@@ -124,13 +155,13 @@ class PackView(BaseModel):
 
 
 class ProjectPackView(BaseModel):
-    """A pack targeting a project's exact standard, as shown on the Projects page.
+    """A pack satisfying a project's exact standard, as shown on the Projects page.
 
-    Lists only the versions of this pack URL whose ``requires_standard`` matches
-    the project's exact ``{name}-{major}`` (a URL whose later version moved to a
-    different major appears here only for the versions that still target this
-    project). ``anchor_id`` matches the corresponding :class:`PackView`'s, so the
-    entry can deep-link to that pack's card on the Packs tab.
+    Lists only the versions of this pack URL whose ``satisfies_standards``
+    includes the project's exact ``{name}-{major}`` (a URL whose later version
+    dropped or changed that standard appears here only for the versions that
+    still satisfy this project). ``anchor_id`` matches the corresponding
+    :class:`PackView`'s, so the entry can deep-link to that pack's card.
     """
 
     url: str
@@ -139,11 +170,12 @@ class ProjectPackView(BaseModel):
 
 
 class ProjectView(BaseModel):
-    """A registered project plus the packs that target its exact standard.
+    """A registered project plus the packs that satisfy its exact standard.
 
     ``key`` is the registry key (``{name}-{major}``). ``packs`` lists the packs
-    targeting this project, grouped by URL (URLs sorted ascending) and filtered
-    to only the versions whose required standard matches ``key``.
+    asserting they satisfy this project, grouped by URL (URLs sorted ascending)
+    and filtered to only the versions whose ``satisfies_standards`` includes
+    ``key``.
     """
 
     key: str
@@ -166,18 +198,21 @@ class LibraryView(BaseModel):
     projects: list[ProjectView] = Field(default_factory=list)
 
 
-def _requirement_status(registry: Registry, pack: Pack) -> RequirementStatus:
-    """Return the three-state requirement status of ``pack`` against ``registry``.
+def _constraint_status(
+    registry: Registry, constraint: VersionConstraint
+) -> RequirementStatus:
+    """Return the three-state install status of one ``satisfies_standards``
+    constraint against ``registry``.
 
-    Mirrors the resolver's ``_resolve_project`` lookup (``projects.get`` keyed by
-    ``{name}-{major}``, then a ``minor`` comparison) so the UI's notion of
-    compatibility matches the resolver's rather than inventing a parallel one.
+    Mirrors the resolver's project lookup (``projects.get`` keyed by
+    ``{name}-{major}``, then a ``minor`` comparison) so the UI's notion of "is
+    this standard installed?" matches the resolver's rather than inventing a
+    parallel one.
     """
-    requires = pack.manifest.requires_standard
-    project = registry.projects.get(project_key(requires.name, requires.major))
+    project = registry.projects.get(project_key(constraint.name, constraint.major))
     if project is None:
         return "project_missing"
-    if project.minor < requires.min_minor:
+    if project.minor < constraint.min_minor:
         return "project_too_old"
     return "satisfied"
 
@@ -187,8 +222,8 @@ def build_library_view(registry: Registry) -> LibraryView:
 
     Packs are grouped by URL (URLs sorted ascending for a stable page order),
     and each group's versions are sorted descending so the latest release leads.
-    Each version's three-state requirement status is computed against
-    ``registry``'s projects, mirroring the resolver's project lookup.
+    Each version's advisory ``satisfies_standards`` are rendered with their
+    three-state install status against ``registry``'s projects.
     """
     by_url: dict[str, list] = {}
     for pack in registry.packs.values():
@@ -200,12 +235,13 @@ def build_library_view(registry: Registry) -> LibraryView:
         versions = [
             PackVersionView(
                 version=pack.version,
-                requires_standard=(
-                    f"{pack.manifest.requires_standard.name}"
-                    f"-{pack.manifest.requires_standard.major}"
-                ),
-                requires_min_minor=pack.manifest.requires_standard.min_minor,
-                requirement_status=_requirement_status(registry, pack),
+                satisfies=[
+                    SatisfiedStandardView(
+                        constraint=str(constraint),
+                        status=_constraint_status(registry, constraint),
+                    )
+                    for constraint in pack.manifest.satisfies_standards
+                ],
             )
             for pack in packs
         ]
@@ -219,20 +255,22 @@ def build_library_view(registry: Registry) -> LibraryView:
 def _project_views(registry: Registry) -> list[ProjectView]:
     """Build the per-project view models, including the reverse pack links.
 
-    For each project (keyed ``{name}-{major}``), the packs targeting it are the
-    pack versions whose ``requires_standard`` resolves to that exact key. They
-    are grouped by URL (URLs sorted ascending), and within each group only the
+    For each project (keyed ``{name}-{major}``), the packs satisfying it are the
+    pack versions whose ``satisfies_standards`` includes that exact key. They are
+    grouped by URL (URLs sorted ascending), and within each group only the
     matching versions are kept, sorted descending. A pack URL whose later
-    versions moved to a different major therefore appears under the old project
-    only for the versions that still target it.
+    versions dropped that standard therefore appears under the project only for
+    the versions that still satisfy it.
     """
     project_views: list[ProjectView] = []
     for key in sorted(registry.projects):
         project = registry.projects[key]
         by_url: dict[str, list[int]] = {}
         for pack in registry.packs.values():
-            requires = pack.manifest.requires_standard
-            if project_key(requires.name, requires.major) == project.key:
+            if any(
+                project_key(constraint.name, constraint.major) == project.key
+                for constraint in pack.manifest.satisfies_standards
+            ):
                 by_url.setdefault(pack.url, []).append(pack.version)
         pack_links = [
             ProjectPackView(

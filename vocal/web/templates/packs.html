@@ -25,12 +25,13 @@
                 <span class="code">v{{ version.version }}</span>
             </span>
             <span>
-                <span class="label">Requires</span>
-                <span class="code">{{ version.requires_standard }}.{{ version.requires_min_minor }}+</span>
-            </span>
-            <span>
-                <span class="label">Status</span>
-                <span class="status status-{{ version.requirement_status }}">{{ version.requirement_label }}</span>
+                <span class="label">Satisfies</span>
+                {% for std in version.satisfies %}
+                <span class="code">{{ std.constraint }}</span>
+                <span class="status status-{{ std.status }}">{{ std.label }}</span>
+                {% else %}
+                <span class="muted">No standards declared</span>
+                {% endfor %}
             </span>
         </div>
         {% endfor %}

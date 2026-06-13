@@ -1,17 +1,23 @@
 import os
 import tempfile
-from typing import Any, Mapping, Optional
 
-from pydantic import ValidationError
 from fastapi import UploadFile, HTTPException, status
 
-from vocal.checking import ProductChecker
-from vocal.conventions_file import import_project_package
-from vocal.netcdf.writer import NetCDFReader
-from vocal.resolution import ResolutionError, ResolvedTarget, resolve_file
+from vocal.checking.shared import (
+    CheckOutcome,
+    DefinitionCheckResult,
+    ProjectCheckResult,
+    run_check,
+)
+from vocal.resolution import (
+    NothingToCheck,
+    Resolution,
+    resolve_file,
+    tokenise_conventions,
+)
 from vocal.utils import get_error_locs
 from vocal.utils.conventions import FileConventions, read_file_conventions
-from vocal.utils.registry import Project
+from vocal.utils.registry import Registry
 from vocal.web.models import (
     Check,
     CheckContext,
@@ -19,138 +25,160 @@ from vocal.web.models import (
     CheckError,
     CheckProject,
     ResolverError,
+    UnverifiedClaim,
 )
 
 
-def _web_precondition_error(attrs: FileConventions) -> Optional[ResolverError]:
-    """Reject files the web flow cannot resolve for lack of a flag fallback.
+def _load_registry() -> Registry:
+    """Load the machine-local registry, falling back to an empty one.
 
-    The CLI lets the user supply ``-p`` / ``-d`` when a file does not
-    self-describe; the web UI has no such fallback, so the file must carry both
-    a ``Conventions`` string and a pack reference
-    (``vocal_definitions_url`` + ``vocal_definitions_version``). This mirrors
-    the "Web behaviour" column of the parent PRD's graceful-degradation matrix.
-
-    Returns a :class:`ResolverError` describing the missing attribute, or
-    ``None`` when the file carries everything the resolver needs.
+    A machine that has never fetched anything has no registry file; the web
+    checker treats that as "nothing registered" rather than an error, so a
+    missing file resolves to an empty :class:`Registry`.
     """
-    if not attrs.conventions:
-        return ResolverError(
-            code="missing_conventions",
-            message="The file has no Conventions attribute.",
-            hint=(
-                "The web checker resolves a file from the attributes it carries. "
-                "Add a Conventions attribute naming the standard and version the "
-                "file was authored against (e.g. 'MYSTD-1.2')."
-            ),
-        )
-
-    if attrs.definitions_url is None or attrs.definitions_version is None:
-        return ResolverError(
-            code="missing_pack_reference",
-            message="The file declares no product definitions pack.",
-            hint=(
-                "The web checker needs the vocal_definitions_url and "
-                "vocal_definitions_version global attributes to locate the pack "
-                "the file should be validated against."
-            ),
-        )
-
-    return None
-
-
-def _load_filecodec(project: Project) -> Mapping[str, Mapping[str, Any]]:
-    """Import a resolved project's package and return its ``filecodec``.
-
-    Passed to :func:`vocal.resolution.resolve` so product matching can expand
-    templated ``file_pattern`` entries. Defined here (rather than relying on the
-    resolver's default loader) so tests can patch the import in this module.
-    """
-    return import_project_package(project.local_path).filecodec
-
-
-def _check_against_standard(
-    context: CheckContext, target: ResolvedTarget, file_path: str
-) -> None:
-    """Validate the file against the resolved project's ``Dataset`` model.
-
-    Populates ``context.projects`` under the project's ``{name}-{major}`` key,
-    recording per-attribute validation errors when pydantic rejects the file.
-    """
-    project = target.project
-    project_name = f"{project.name}-{project.major}"
-    result = CheckProject(passed=True, errors=[])
-    context.projects[project_name] = result
-
-    project_mod = import_project_package(project.local_path)
-    nc = NetCDFReader(file_path)
-
     try:
-        nc_noval = nc.to_model(project_mod.models.Dataset, validate=False)
-        nc.to_model(project_mod.models.Dataset)
-    except ValidationError as err:
-        result.passed = False
-        locs, msgs = get_error_locs(err, nc_noval)
-        for loc, msg in zip(locs, msgs):
-            result.errors.append(CheckError(path=loc, message=msg))
+        return Registry.load()
+    except FileNotFoundError:
+        return Registry()
 
 
-def _check_against_definition(
-    context: CheckContext, target: ResolvedTarget, file_path: str
-) -> None:
-    """Check the file against the resolved product definition.
+def _has_vocal_claim(attrs: FileConventions, registry: Registry) -> bool:
+    """Whether the file carries *any* recognisable vocal claim.
 
-    Populates ``context.definitions`` under the matched product's name with the
-    pass/warning/comment state and the individual checks, mirroring the shape
-    the results template renders.
+    The web checker has no ``-p`` / ``-d`` flag fallback, so a file must
+    self-describe. It is recognisable when it declares a ``vocal_project_url``, a
+    ``vocal_definitions_url``, or a ``Conventions`` token that name-matches an
+    installed project. A file that does none of these (e.g. one carrying only
+    external CF/ACDD tokens, or nothing at all) is not vocal-managed and is
+    refused upfront — distinct from a verdict.
+
+    A recognisable file is *always* given a verdict: even one whose mandatory
+    standards aren't installed, or whose only ``Conventions`` standard is
+    installed at the wrong major, resolves to INDETERMINATE rather than a
+    refusal.
     """
-    schema_path = target.schema_path
-    if schema_path is None:
-        return
+    if attrs.project_urls:
+        return True
+    if attrs.definitions_url is not None:
+        return True
+    installed_names = {project.name for project in registry.projects.values()}
+    return any(
+        token.name in installed_names for token in tokenise_conventions(attrs.conventions)
+    )
 
-    def_name = target.product.name if target.product else os.path.basename(schema_path)
-    result = CheckDefinition(passed=True, warnings=False, comments=False, checks=[])
-    context.definitions[def_name] = result
 
-    pc = ProductChecker(schema_path)
-    report = pc.check(file_path)
+def _project_view(result: ProjectCheckResult) -> CheckProject:
+    """Render one standards-axis model-check result for the results page."""
+    if result.passed:
+        return CheckProject(passed=True, errors=[])
 
-    result.passed = all(check.passed for check in report.checks)
+    assert result.error is not None and result.nc_noval is not None
+    locs, msgs = get_error_locs(result.error, result.nc_noval)
+    errors = [CheckError(path=loc, message=msg) for loc, msg in zip(locs, msgs)]
+    return CheckProject(passed=False, errors=errors)
 
-    for check in report.checks:
+
+def _definition_view(result: DefinitionCheckResult) -> CheckDefinition:
+    """Render the product-axis structural check report for the results page."""
+    view = CheckDefinition(passed=result.passed, warnings=False, comments=False, checks=[])
+    if result.report is None:
+        return view
+
+    for check in result.report.checks:
         _check = Check(description=check.description)
-
         if check.passed:
             if check.has_comment and check.comment:
-                result.comments = True
+                view.comments = True
                 _check.comment = check.comment
             if check.has_warning and check.warning:
-                result.warnings = True
+                view.warnings = True
                 _check.warning = check.warning
         elif check.error:
             _check.error = check.error
+        view.checks.append(_check)
 
-        result.checks.append(_check)
+    return view
+
+
+def _unverified_claims(
+    resolution: Resolution, outcome: CheckOutcome
+) -> list[UnverifiedClaim]:
+    """Collect the fetch-it/update-it items that explain an INDETERMINATE verdict.
+
+    Three sources, all carried through from resolution: unresolved mandatory
+    claims (a missing project or pack — fetch it), claimed standards installed at
+    a minor too old to run (update it), and opportunistic ``Conventions``
+    standards whose project isn't installed (skipped with a note). Advisory
+    ``satisfies_standards`` warnings are not actionable here and are omitted.
+    """
+    claims: list[UnverifiedClaim] = []
+
+    for failure in outcome.failures:
+        claims.append(UnverifiedClaim(message=failure.message, hint=failure.hint))
+
+    for target in resolution.projects:
+        if not target.verifiable:
+            claims.append(
+                UnverifiedClaim(
+                    message=(
+                        f"{target.claimed_version} could not be verified: the "
+                        f"installed project is at an older minor."
+                    ),
+                    hint=target.hint,
+                )
+            )
+
+    for warning in outcome.warnings:
+        if warning.code == "standard_not_verified":
+            claims.append(
+                UnverifiedClaim(message=warning.message, hint=warning.hint)
+            )
+
+    return claims
+
+
+def _build_context(resolution: Resolution, outcome: CheckOutcome) -> CheckContext:
+    """Turn a resolution and its :class:`CheckOutcome` into a render context.
+
+    A pure mapping from the check spine's result to the template's view models:
+    the tri-state verdict, the per-axis results, and the fetch/update items.
+    """
+    context = CheckContext(verdict=outcome.verdict.value)
+
+    for result in outcome.project_results:
+        name = f"{result.target.project.name}-{result.target.project.major}"
+        context.projects[name] = _project_view(result)
+
+    if outcome.pack_result is not None:
+        context.definitions[outcome.pack_result.target.product.name] = _definition_view(
+            outcome.pack_result
+        )
+
+    context.unverified = _unverified_claims(resolution, outcome)
+    return context
 
 
 async def check_upload(file: UploadFile) -> CheckContext:
-    """
-    Check the uploaded file against the registered project and pack.
+    """Check an uploaded file against the standards and product it claims.
 
-    The web flow drives :mod:`vocal.resolution` exactly as ``vocal check`` does
-    on the CLI, but without the ``-p`` / ``-d`` flag fallback: the file must
-    self-describe through its ``Conventions`` and ``vocal_definitions_*``
-    attributes. Resolution failures (and missing-attribute preconditions) are
-    surfaced as a single typed :class:`ResolverError` on the returned context;
-    on success the project and product checks populate it.
+    The web flow drives :mod:`vocal.resolution` and the check spine exactly as
+    ``vocal check`` does on the CLI, but without the ``-p`` / ``-d`` flag
+    fallback: the file must self-describe, and nothing is ever fetched. The
+    result is a tri-state :class:`~vocal.web.models.CheckContext`:
+
+    - A file carrying no recognisable vocal claim is refused upfront with a
+      distinct ``not_vocal_managed`` :class:`~vocal.web.models.ResolverError` —
+      not a verdict.
+    - Any other file is given a verdict. A file whose only claims resolve to
+      nothing runnable (e.g. a ``Conventions`` standard installed at the wrong
+      major) renders INDETERMINATE rather than being rejected.
 
     Args:
         file (UploadFile): The file to check.
 
     Returns:
-        CheckContext: The context of the check.
+        CheckContext: The render context for the results page.
     """
-
     context = CheckContext()
 
     if not file.filename:
@@ -165,25 +193,56 @@ async def check_upload(file: UploadFile) -> CheckContext:
         file.file.close()
 
         attrs = read_file_conventions(file_path)
+        registry = _load_registry()
 
-        # The web UI has no flag fallback: a file that does not self-describe
-        # cannot be checked. Reject it with a clear, actionable error.
-        precondition = _web_precondition_error(attrs)
-        if precondition is not None:
-            context.error = precondition
+        # The web UI has no flag fallback: a file that carries no recognisable
+        # vocal claim cannot be checked. Refuse it upfront — distinct from a
+        # verdict — with a clear "not a vocal-managed file" message.
+        if not _has_vocal_claim(attrs, registry):
+            context.error = ResolverError(
+                code="not_vocal_managed",
+                message="This file carries no recognisable vocal claim.",
+                hint=(
+                    "The web checker validates a file against the standards and "
+                    "product it declares. Add a vocal_project_url, a "
+                    "vocal_definitions_url, or a Conventions token naming an "
+                    "installed standard."
+                ),
+            )
             return context
 
         try:
-            target = resolve_file(
-                file_path,
-                attrs=attrs,
-                filecodec_loader=_load_filecodec,
-            )
-        except ResolutionError as e:
-            context.error = ResolverError(code=e.code, message=e.message, hint=e.hint)
-            return context
+            resolution = resolve_file(file_path, attrs=attrs, registry=registry)
+        except NothingToCheck:
+            # The file is recognisable (the precondition passed) but nothing it
+            # names is runnable here — e.g. a Conventions standard installed at a
+            # different major. That is INDETERMINATE, not a refusal: surface the
+            # resolution's warnings so the user knows what to fetch.
+            return _indeterminate_unresolvable(file_path, attrs, registry)
 
-        _check_against_standard(context, target, file_path)
-        _check_against_definition(context, target, file_path)
+        outcome = run_check(resolution, file_path)
+        context = _build_context(resolution, outcome)
 
     return context
+
+
+def _indeterminate_unresolvable(
+    file_path: str, attrs: FileConventions, registry: Registry
+) -> CheckContext:
+    """Build the INDETERMINATE context for a recognisable file that resolves to
+    nothing runnable.
+
+    ``resolve_file`` raises :class:`~vocal.resolution.NothingToCheck` in this
+    case rather than returning a resolution, so the resolver's warnings are
+    re-derived for the surface by recording the opportunistic standards that
+    weren't installed. The verdict is INDETERMINATE: the file claimed something
+    vocal-managed, but nothing could be verified.
+    """
+    claims: list[UnverifiedClaim] = [
+        UnverifiedClaim(
+            message=f"{token} was not verified: no matching project is installed.",
+            hint=f"Run 'vocal fetch' for {token.name}-{token.major} to verify it.",
+        )
+        for token in tokenise_conventions(attrs.conventions)
+    ]
+    return CheckContext(verdict="indeterminate", unverified=claims)

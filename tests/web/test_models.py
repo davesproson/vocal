@@ -3,12 +3,14 @@
 ``build_library_view`` is driven directly against in-memory ``Registry``
 objects, asserting the shape of the view models it returns. This slice covers
 grouping packs by URL and the descending version sort, and the three-state
-requirement status of each version against the registry's projects.
+install status of each version's advisory ``satisfies_standards`` against the
+registry's projects.
 """
 
 from vocal.application.install import derive_url_slug
 from vocal.manifest import build_manifest
 from vocal.utils.registry import Pack, Project, Registry
+from vocal.versioning import VersionConstraint
 from vocal.web.models import build_library_view
 
 
@@ -22,9 +24,8 @@ def _pack(
     manifest = build_manifest(
         version=version,
         url=url,
-        standard_name=name,
-        standard_major=major,
-        min_minor=min_minor,
+        filecodec={},
+        satisfies_standards=(VersionConstraint(name, major, min_minor),),
         products=[],
     )
     return Pack(manifest=manifest, local_path=f"/cache/{version}")
@@ -91,60 +92,60 @@ class TestBuildLibraryView:
         urls = {pack.url for pack in view.packs}
         assert urls == {"https://host/a", "https://host/b"}
 
-    def test_version_carries_required_standard(self) -> None:
+    def test_version_carries_satisfied_standard(self) -> None:
         registry = _registry(_pack(name="MYSTD", major=2, min_minor=4))
         view = build_library_view(registry)
 
         version = view.packs[0].versions[0]
-        assert version.requires_standard == "MYSTD-2"
-        assert version.requires_min_minor == 4
+        assert len(version.satisfies) == 1
+        assert version.satisfies[0].constraint == "MYSTD-2.4+"
 
 
-class TestRequirementStatus:
+class TestSatisfiedStandardStatus:
     def test_satisfied_when_project_minor_meets_minimum(self) -> None:
         registry = _registry(
             _pack(name="MYSTD", major=2, min_minor=3),
             projects=(_project(name="MYSTD", major=2, minor=3),),
         )
-        version = build_library_view(registry).packs[0].versions[0]
+        std = build_library_view(registry).packs[0].versions[0].satisfies[0]
 
-        assert version.requirement_status == "satisfied"
-        assert version.requirement_label == "Satisfied"
+        assert std.status == "satisfied"
+        assert std.label == "Satisfied"
 
     def test_satisfied_when_project_minor_exceeds_minimum(self) -> None:
         registry = _registry(
             _pack(name="MYSTD", major=2, min_minor=3),
             projects=(_project(name="MYSTD", major=2, minor=5),),
         )
-        version = build_library_view(registry).packs[0].versions[0]
+        std = build_library_view(registry).packs[0].versions[0].satisfies[0]
 
-        assert version.requirement_status == "satisfied"
+        assert std.status == "satisfied"
 
     def test_project_missing_when_no_such_standard(self) -> None:
         registry = _registry(_pack(name="MYSTD", major=2, min_minor=3))
-        version = build_library_view(registry).packs[0].versions[0]
+        std = build_library_view(registry).packs[0].versions[0].satisfies[0]
 
-        assert version.requirement_status == "project_missing"
-        assert version.requirement_label == "Project not fetched"
+        assert std.status == "project_missing"
+        assert std.label == "Project not fetched"
 
     def test_project_missing_when_only_other_major_fetched(self) -> None:
         registry = _registry(
             _pack(name="MYSTD", major=2, min_minor=3),
             projects=(_project(name="MYSTD", major=1, minor=9),),
         )
-        version = build_library_view(registry).packs[0].versions[0]
+        std = build_library_view(registry).packs[0].versions[0].satisfies[0]
 
-        assert version.requirement_status == "project_missing"
+        assert std.status == "project_missing"
 
     def test_project_too_old_when_minor_below_minimum(self) -> None:
         registry = _registry(
             _pack(name="MYSTD", major=2, min_minor=3),
             projects=(_project(name="MYSTD", major=2, minor=2),),
         )
-        version = build_library_view(registry).packs[0].versions[0]
+        std = build_library_view(registry).packs[0].versions[0].satisfies[0]
 
-        assert version.requirement_status == "project_too_old"
-        assert version.requirement_label == "Project too old"
+        assert std.status == "project_too_old"
+        assert std.label == "Project too old"
 
 
 class TestProjectReverseLinks:
@@ -152,7 +153,7 @@ class TestProjectReverseLinks:
         views = {p.key: p for p in build_library_view(registry).projects}
         return views[key]
 
-    def test_project_lists_packs_targeting_its_standard(self) -> None:
+    def test_project_lists_packs_satisfying_its_standard(self) -> None:
         registry = _registry(
             _pack(url="https://host/widgets", version=1, name="MYSTD", major=2),
             projects=(_project(name="MYSTD", major=2),),
@@ -163,7 +164,7 @@ class TestProjectReverseLinks:
         assert project.packs[0].url == "https://host/widgets"
         assert project.packs[0].versions == [1]
 
-    def test_project_with_no_targeting_packs_has_empty_list(self) -> None:
+    def test_project_with_no_satisfying_packs_has_empty_list(self) -> None:
         registry = _registry(
             _pack(name="MYSTD", major=2),
             projects=(_project(name="OTHER", major=1),),
@@ -186,8 +187,8 @@ class TestProjectReverseLinks:
 
     def test_reverse_link_filters_to_matching_major_per_project(self) -> None:
         # One pack URL whose later version moved to a different major: v1
-        # targets MYSTD-2, v2 targets MYSTD-3. Each project must see only the
-        # versions that target its exact {name}-{major}.
+        # satisfies MYSTD-2, v2 satisfies MYSTD-3. Each project must see only the
+        # versions that satisfy its exact {name}-{major}.
         registry = _registry(
             _pack(url="https://host/widgets", version=1, name="MYSTD", major=2),
             _pack(url="https://host/widgets", version=2, name="MYSTD", major=3),
