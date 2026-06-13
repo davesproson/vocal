@@ -21,13 +21,15 @@ class FileConventions:
 
     All four attributes are optional on the file. ``conventions`` is the raw
     ``Conventions`` string (which may also carry CF/ACDD tokens); the resolver
-    tokenises and parses it. ``project_url`` / ``definitions_url`` /
-    ``definitions_version`` correspond to the ``vocal_project_url`` /
-    ``vocal_definitions_url`` / ``vocal_definitions_version`` attributes.
+    tokenises and parses it. ``project_urls`` is the (possibly empty) list of
+    repository URLs parsed from the whitespace-separated ``vocal_project_url``
+    attribute — the authoritative set of mandatory standards. ``definitions_url``
+    / ``definitions_version`` correspond to the (singular) ``vocal_definitions_url``
+    / ``vocal_definitions_version`` attributes.
     """
 
     conventions: Optional[str]
-    project_url: Optional[str]
+    project_urls: list[str]
     definitions_url: Optional[str]
     definitions_version: Optional[int]
 
@@ -39,18 +41,21 @@ def read_file_conventions(ncfile: str) -> FileConventions:
         ncfile: the path to the netCDF file.
 
     Returns:
-        a :class:`FileConventions` with each attribute set to ``None`` when
-        absent. ``definitions_version`` is coerced to ``int`` when present.
+        a :class:`FileConventions`. ``conventions`` / ``definitions_url`` are
+        ``None`` when absent; ``definitions_version`` is coerced to ``int`` when
+        present. ``project_urls`` is the whitespace-split ``vocal_project_url``
+        attribute — a one-element list for a single URL and an empty list when
+        the attribute is absent.
     """
     with netCDF4.Dataset(ncfile) as nc:
         conventions = getattr(nc, "Conventions", None)
-        project_url = getattr(nc, "vocal_project_url", None)
+        raw_project_url = getattr(nc, "vocal_project_url", None)
         definitions_url = getattr(nc, "vocal_definitions_url", None)
         raw_version = getattr(nc, "vocal_definitions_version", None)
 
     return FileConventions(
         conventions=conventions,
-        project_url=project_url,
+        project_urls=raw_project_url.split() if raw_project_url is not None else [],
         definitions_url=definitions_url,
         definitions_version=int(raw_version) if raw_version is not None else None,
     )

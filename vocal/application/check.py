@@ -267,7 +267,7 @@ def _carries_missing_url(error: ResolutionError, attrs) -> bool:
     to fetch it.
     """
     if isinstance(error, ProjectMissing):
-        return attrs.project_url is not None
+        return bool(attrs.project_urls)
     if isinstance(error, PackMissing):
         return attrs.definitions_url is not None
     return False

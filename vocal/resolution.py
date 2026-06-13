@@ -257,7 +257,7 @@ def resolve_file(
         definitions_url=attrs.definitions_url,
         definitions_version=attrs.definitions_version,
         definition_override=definition_override,
-        project_url=attrs.project_url,
+        project_url=attrs.project_urls[0] if attrs.project_urls else None,
         filecodec_loader=filecodec_loader,
     )
 

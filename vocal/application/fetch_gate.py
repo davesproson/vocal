@@ -185,16 +185,18 @@ def confirm_file_fetch(
         # Let fetch_for_file surface the typed UnreadableNetCDF error.
         return
 
-    if not attrs.project_url:
+    if not attrs.project_urls:
         # Let fetch_for_file surface the typed MissingProjectURL error.
         return
+
+    project_url = attrs.project_urls[0]
 
     try:
         registry = Registry.load()
     except FileNotFoundError:
         registry = Registry()
 
-    project_new = registry.find_project_by_url(attrs.project_url) is None
+    project_new = registry.find_project_by_url(project_url) is None
     can_prompt = not quiet and _stdin_isatty()
 
     decision = decide_fetch_gate(
@@ -215,6 +217,6 @@ def confirm_file_fetch(
         )
 
     console = Console(stderr=True, no_color=no_color)
-    _render_warning(console, filename, attrs.project_url, attrs.definitions_url, route)
+    _render_warning(console, filename, project_url, attrs.definitions_url, route)
     if not typer.confirm("Continue?", default=False):
         raise FetchDeclined("Aborted — nothing fetched.")

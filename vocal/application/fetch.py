@@ -160,7 +160,7 @@ def fetch_for_file(
             hint="Pass the path to a readable vocal-managed netCDF file.",
         ) from e
 
-    if not attrs.project_url:
+    if not attrs.project_urls:
         raise MissingProjectURL(
             f"File '{filename}' declares no vocal_project_url; nothing to fetch.",
             hint="The file is not self-describing — supply sources manually with "
@@ -169,14 +169,15 @@ def fetch_for_file(
 
     outcomes: list[FetchOutcome] = []
 
-    # Project first, fail-fast: if this raises, nothing further is attempted and
+    # Projects first, fail-fast: if any raises, nothing further is attempted and
     # nothing already installed is rolled back. An already-present project is an
     # idempotent skip, not an error.
-    try:
-        fetch_project(attrs.project_url, git=git, update=update, force=force)
-        outcomes.append(FetchOutcome("project", attrs.project_url, "fetched"))
-    except ProjectAlreadyFetched:
-        outcomes.append(FetchOutcome("project", attrs.project_url, "already-present"))
+    for project_url in attrs.project_urls:
+        try:
+            fetch_project(project_url, git=git, update=update, force=force)
+            outcomes.append(FetchOutcome("project", project_url, "fetched"))
+        except ProjectAlreadyFetched:
+            outcomes.append(FetchOutcome("project", project_url, "already-present"))
 
     if attrs.definitions_url:
         # Honour the attribute name as the declared kind: the pack URL is
