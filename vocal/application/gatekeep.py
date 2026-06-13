@@ -17,11 +17,11 @@ from typing import Protocol
 import rich
 import typer
 
-from vocal.checking.shared import run_check
+from vocal.checking.shared import Verdict, run_check
 from vocal.utils import cache_dir
 from vocal.utils.conventions import read_file_conventions
 from vocal.utils.registry import Registry
-from vocal.resolution import ResolutionError, ResolvedTarget, resolve_file
+from vocal.resolution import NothingToCheck, resolve_file
 
 
 class PassAction(str, enum.Enum):
@@ -209,30 +209,33 @@ def file_has_recently_changed(filepath: str, threshold_seconds: int = 30) -> boo
     return (current_time - last_modified_time) < threshold_seconds
 
 
-def ensure_file_eligibility(registry: Registry, filepath: str) -> ResolvedTarget | None:
+def evaluate_file(registry: Registry, filepath: str) -> Verdict:
     """
-    Check if a file is eligible for processing by ensuring it has vocal-managed
-    global attributes and that they resolve correctly against the registry.
-    """
+    Resolve a file's claims and check it, returning the tri-state verdict that
+    drives routing.
 
+    Only a PASS lets a file through; FAIL and INDETERMINATE both route to the
+    fail action (the gatekeeper's "only fully-verified files get through" rule).
+    A file that can't be read (non-netCDF or unreadable) or carries no
+    recognisable vocal claim at all is folded into FAIL — it is ineligible, and
+    the gatekeeper has always treated ineligible as failure — so it is routed and
+    logged alongside genuinely failing files rather than stopping the loop.
+    """
     try:
         attrs = read_file_conventions(filepath)
     except Exception:
         # The watch folder may hold non-netCDF or unreadable files; those are
-        # simply not eligible rather than an error that should stop the loop.
-        return None
+        # ineligible (== failure) rather than an error that should stop the loop.
+        return Verdict.FAIL
 
     try:
-        resolved = resolve_file(filepath, attrs=attrs, registry=registry)
-    except ResolutionError:
-        # The file self-describes but its project/pack/product is not registered
-        # (or is incompatible): not eligible for processing.
-        return None
+        resolution = resolve_file(filepath, attrs=attrs, registry=registry)
+    except NothingToCheck:
+        # The file carries no recognisable vocal claim: nothing to verify, so it
+        # is ineligible (== failure).
+        return Verdict.FAIL
 
-    if resolved.is_fully_resolved:
-        return resolved
-
-    return None
+    return run_check(resolution, filepath).verdict
 
 
 def _run_command(command: str, filepath: str, timeout: int | None = None) -> bool:
@@ -303,27 +306,31 @@ def pass_file(filepath: str, config: GatekeepConfig) -> bool:
             return _run_command(config.pass_command, filepath, config.command_timeout)
 
 
-def check_file(filename: str, target: ResolvedTarget) -> bool:
+def log_verdict(filepath: str, verdict: Verdict) -> None:
     """
-    Check a file against the resolved target's project and definition.
+    Log a file's tri-state verdict distinctly.
 
-    Args:
-        filename (str): The path of the file to check.
-        target (ResolvedTarget): The resolved target to check against.
-
-    Returns:
-        bool: True if the file passes all checks, False otherwise.
+    FAIL and INDETERMINATE both route to the fail action, but they are logged
+    differently so an operator can tell *why* a file was held back: FAIL means
+    the file violated a check it was run against; INDETERMINATE means the check
+    could not be completed (something the file claims is not installed, or is
+    installed at a minor too old to verify, or there was nothing to run).
     """
-    rich.print(f":timer_clock:  Checking '{filename}'.")
-
-    check_result = run_check(target, filename)
-
-    if not check_result.passed:
-        rich.print(f"   ↳ [bold red]✗[/bold red] File '{filename}' failed checks.")
-        return False
-
-    rich.print(f"   ↳ [bold green]✓[/bold green] File '{filename}' passed checks.")
-    return True
+    match verdict:
+        case Verdict.PASS:
+            rich.print(
+                f"   ↳ [bold green]✓[/bold green] File '{filepath}' passed checks."
+            )
+        case Verdict.FAIL:
+            rich.print(
+                f"   ↳ [bold red]✗[/bold red] File '{filepath}' failed checks."
+            )
+        case Verdict.INDETERMINATE:
+            rich.print(
+                f"   ↳ [bold yellow]?[/bold yellow] File '{filepath}' could not be "
+                "verified (a claimed standard or pack is not installed, or is "
+                "installed too old); holding it back."
+            )
 
 
 def dispatch_file_after_check(
@@ -368,14 +375,14 @@ def _process_file(config: GatekeepConfig, filepath: str) -> None:
     if config.database.has_been_processed(filepath):
         return
 
-    target = ensure_file_eligibility(config.registry, filepath)
+    rich.print(f":timer_clock:  Checking '{filepath}'.")
 
-    if target is None:
-        rich.print(f":question: File '{filepath}' cannot be processed.")
-        passed = False
-    else:
-        passed = check_file(filepath, target)
+    verdict = evaluate_file(config.registry, filepath)
+    log_verdict(filepath, verdict)
 
+    # Only a fully-verified file passes; FAIL and INDETERMINATE both route to the
+    # fail action (logged distinctly above).
+    passed = verdict is Verdict.PASS
     dispatch_file_after_check(filepath, passed, config)
 
 

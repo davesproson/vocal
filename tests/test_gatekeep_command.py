@@ -14,6 +14,7 @@ from vocal.application.gatekeep import (
     check_watch_folder_exists,
     check_move_folders_exist,
 )
+from vocal.checking.shared import Verdict
 from vocal.utils.registry import Registry
 
 
@@ -244,24 +245,21 @@ class TestActions:
 
 
 class TestProcessFileMarking:
-    def _patch_check(self, monkeypatch, *, passed: bool, calls: list):
-        """Make every file eligible; record each check_file call; return ``passed``."""
+    def _patch_check(self, monkeypatch, *, verdict: Verdict, calls: list):
+        """Make every file resolve to ``verdict``; record each evaluate_file call."""
         monkeypatch.setattr(gatekeep, "file_has_recently_changed", lambda *a, **k: False)
-        monkeypatch.setattr(
-            gatekeep, "ensure_file_eligibility", lambda registry, fp: object()
-        )
 
-        def fake_check_file(filepath, target):
+        def fake_evaluate_file(registry, filepath):
             calls.append(filepath)
-            return passed
+            return verdict
 
-        monkeypatch.setattr(gatekeep, "check_file", fake_check_file)
+        monkeypatch.setattr(gatekeep, "evaluate_file", fake_evaluate_file)
 
     def test_passing_none_file_is_marked_and_skipped(self, monkeypatch, tmp_path):
         f = tmp_path / "f.nc"
         f.write_text("x")
         calls: list = []
-        self._patch_check(monkeypatch, passed=True, calls=calls)
+        self._patch_check(monkeypatch, verdict=Verdict.PASS, calls=calls)
 
         db = FakeDataBase()
         config = make_config(
@@ -274,7 +272,7 @@ class TestProcessFileMarking:
         gatekeep._process_file(config, str(f))
         assert db.has_been_processed(str(f))
 
-        # Second pass: already processed, so check_file is not invoked again.
+        # Second pass: already processed, so evaluate_file is not invoked again.
         gatekeep._process_file(config, str(f))
         assert calls == [str(f)]
 
@@ -283,7 +281,7 @@ class TestProcessFileMarking:
         dest.mkdir()
         f = tmp_path / "f.nc"
         f.write_text("x")
-        self._patch_check(monkeypatch, passed=True, calls=[])
+        self._patch_check(monkeypatch, verdict=Verdict.PASS, calls=[])
 
         db = FakeDataBase()
         config = make_config(
@@ -298,6 +296,73 @@ class TestProcessFileMarking:
         assert not f.exists()
         assert (dest / "f.nc").exists()
         assert db.processed == set()  # gone from the folder ⇒ nothing to dedup
+
+
+class TestVerdictRouting:
+    """A file is routed by its tri-state verdict: PASS → pass action, FAIL and
+    INDETERMINATE → fail action (and the two are logged distinctly)."""
+
+    def _config(self, tmp_path, passed_dir, failed_dir):
+        return make_config(
+            watch_folder=str(tmp_path),
+            pass_action=PassAction.MOVE,
+            fail_action=FailAction.MOVE,
+            pass_folder=str(passed_dir),
+            fail_folder=str(failed_dir),
+            database=FakeDataBase(),
+            registry=Registry(),
+        )
+
+    def _route(self, monkeypatch, tmp_path, verdict: Verdict):
+        """Process one file whose evaluation yields ``verdict``; return where it landed."""
+        passed_dir = tmp_path / "passed"
+        failed_dir = tmp_path / "failed"
+        passed_dir.mkdir()
+        failed_dir.mkdir()
+        f = tmp_path / "f.nc"
+        f.write_text("x")
+
+        monkeypatch.setattr(gatekeep, "file_has_recently_changed", lambda *a, **k: False)
+        monkeypatch.setattr(gatekeep, "evaluate_file", lambda registry, fp: verdict)
+
+        config = self._config(tmp_path, passed_dir, failed_dir)
+        gatekeep._process_file(config, str(f))
+
+        if (passed_dir / "f.nc").exists():
+            return "pass"
+        if (failed_dir / "f.nc").exists():
+            return "fail"
+        return "none"
+
+    def test_pass_routes_to_pass_action(self, monkeypatch, tmp_path):
+        assert self._route(monkeypatch, tmp_path, Verdict.PASS) == "pass"
+
+    def test_fail_routes_to_fail_action(self, monkeypatch, tmp_path):
+        assert self._route(monkeypatch, tmp_path, Verdict.FAIL) == "fail"
+
+    def test_indeterminate_routes_to_fail_action(self, monkeypatch, tmp_path):
+        assert self._route(monkeypatch, tmp_path, Verdict.INDETERMINATE) == "fail"
+
+
+class TestDistinctLogging:
+    """FAIL and INDETERMINATE both route to the fail action but are logged
+    distinctly, so an operator can tell why a file was held back."""
+
+    def test_pass_fail_indeterminate_log_distinctly(self, capsys):
+        gatekeep.log_verdict("/data/f.nc", Verdict.PASS)
+        passed = capsys.readouterr().out
+
+        gatekeep.log_verdict("/data/f.nc", Verdict.FAIL)
+        failed = capsys.readouterr().out
+
+        gatekeep.log_verdict("/data/f.nc", Verdict.INDETERMINATE)
+        indeterminate = capsys.readouterr().out
+
+        # Three distinct messages: passed vs failed vs could-not-verify.
+        assert "passed" in passed
+        assert "failed" in failed
+        assert "could not be verified" in indeterminate
+        assert failed != indeterminate
 
 
 class TestDataBasePruning:
