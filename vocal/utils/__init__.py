@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import glob
+import hashlib
 import importlib
 import importlib.util
 import os
@@ -261,14 +262,23 @@ def import_project(project: str) -> ModuleType:
 
     project = os.path.normpath(project)
 
+    # A project package names itself by its directory (e.g. ``faam``) and pulls
+    # its submodules in with relative imports (``from . import models``). Keying
+    # sys.modules by that bare name alone collides whenever two registered
+    # standards share a package directory name (e.g. a standard and a fork of
+    # it): the second import reuses the first's cached ``<name>.models`` and so
+    # silently checks against the wrong project. Qualify the module name with a
+    # digest of the project's absolute path so each project gets its own
+    # sys.modules namespace — parent and relative-imported submodules alike.
+    digest = hashlib.sha1(os.path.abspath(project).encode()).hexdigest()[:12]
+    spec_name = f"{os.path.basename(project)}_{digest}"
+
     with flip_to_dir(os.path.dirname(project)):
         module_path = os.path.join(os.path.basename(project), "__init__.py")
         if not module_path.startswith("/"):
             module_path = os.path.join(os.getcwd(), module_path)
 
-        spec = importlib.util.spec_from_file_location(
-            f"{os.path.basename(project)}", module_path
-        )
+        spec = importlib.util.spec_from_file_location(spec_name, module_path)
         if spec is None:
             raise ImportError(import_error_msg)
         try:

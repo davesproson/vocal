@@ -231,6 +231,34 @@ class TestImportProject:
         with pytest.raises(Exception):
             import_project(str(tmp_path / "no_such_project"))
 
+    def test_same_package_name_different_paths_do_not_collide(
+        self, tmp_path: Path
+    ) -> None:
+        # Regression: two registered standards that share a package directory
+        # name (e.g. a standard and a fork of it) must not contaminate each other
+        # via sys.modules. Each package below is named ``faam`` and pulls in its
+        # ``models`` submodule with a relative import, but defines a different
+        # Dataset. Importing the second must yield *its own* model, not a cached
+        # copy of the first's.
+        def _make_relative_project(root: Path, marker: str) -> str:
+            pkg = root / "faam"
+            pkg.mkdir(parents=True)
+            (pkg / "models.py").write_text(
+                "from pydantic import BaseModel\n\n\n"
+                f"class Dataset(BaseModel):\n    marker: str = {marker!r}\n"
+            )
+            (pkg / "__init__.py").write_text(
+                "from . import models\nfrom .models import Dataset\n"
+            )
+            return str(pkg)
+
+        first = import_project(_make_relative_project(tmp_path / "a", "A"))
+        second = import_project(_make_relative_project(tmp_path / "b", "B"))
+
+        assert first.Dataset().marker == "A"
+        assert second.Dataset().marker == "B"
+        assert first.models is not second.models
+
 
 class TestGetProductRoot:
     def test_derives_repo_root_from_module_file(self, tmp_path: Path) -> None:
