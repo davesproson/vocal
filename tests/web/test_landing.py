@@ -3,9 +3,9 @@
 The landing decision is the deep module behind ``vocal web --upload-to``: a file
 that PASSes validation is copied into the configured directory, confined there
 by a safe name. ``decide_landing`` is the pure policy (no I/O); ``perform_landing``
-is the thin shell that copies, logs, and returns a typed result.
-
-Collision-on-existing-name (``REFUSE_EXISTS``) is deferred to a later slice.
+is the thin shell that copies, logs, and returns a typed result. A name
+collision in the directory is refused (``REFUSE_EXISTS``) rather than
+overwriting the existing good file.
 """
 
 import logging
@@ -46,10 +46,11 @@ class TestDecideLanding:
             # PASS with an unsafe name → refuse, write nothing.
             (True, False, False, LandingOutcome.REFUSE_UNSAFE_NAME),
             (True, False, True, LandingOutcome.REFUSE_UNSAFE_NAME),
-            # PASS with a safe name → land. (Collision handling is a later slice,
-            # so an existing target still lands for now.)
+            # PASS with a safe name and no collision → land.
             (True, True, False, LandingOutcome.LAND),
-            (True, True, True, LandingOutcome.LAND),
+            # PASS with a safe name but the target already exists → refuse,
+            # never overwrite the existing good file.
+            (True, True, True, LandingOutcome.REFUSE_EXISTS),
         ],
     )
     def test_decision_matrix(
@@ -142,6 +143,33 @@ class TestPerformLanding:
         # No write outside (or inside) the directory for an unsafe name.
         assert list(dest_dir.iterdir()) == []
         assert landing is not None and landing.status == "refused"
+        assert any(r.levelno == logging.WARNING for r in caplog.records)
+
+    def test_collision_leaves_existing_untouched_and_refuses(
+        self, tmp_path, caplog
+    ) -> None:
+        source = _write_source(tmp_path, data=b"new-upload")
+        dest_dir = tmp_path / "incoming"
+        dest_dir.mkdir()
+        # A previously stored good file of the same name must not be clobbered.
+        existing = dest_dir / "flight123.nc"
+        existing.write_bytes(b"already-stored")
+
+        with caplog.at_level(logging.WARNING, logger="vocal.web.landing"):
+            landing = perform_landing(
+                is_pass=True,
+                source_path=source,
+                filename="flight123.nc",
+                upload_dir=dest_dir,
+            )
+
+        # The existing file is left exactly as it was — no overwrite.
+        assert existing.read_bytes() == b"already-stored"
+        assert landing is not None and landing.status == "refused"
+        # The refusal message names the collision as the reason, path-free.
+        assert "already" in landing.message.lower()
+        assert str(dest_dir) not in landing.message
+        # A WARNING audit line records the refused landing.
         assert any(r.levelno == logging.WARNING for r in caplog.records)
 
     def test_non_pass_writes_nothing_and_returns_none(self, tmp_path) -> None:

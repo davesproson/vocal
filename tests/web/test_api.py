@@ -478,6 +478,29 @@ class TestUploadPost:
         assert response.status_code == 200
         assert "could not be stored" in response.text
 
+    def test_collision_refusal_renders_reason(self, client: TestClient) -> None:
+        # A PASS whose name collided: the page explains it passed but was not
+        # stored because the name already exists, never naming the server path.
+        context = CheckContext(
+            verdict="pass",
+            landing=Landing(
+                status="refused",
+                message=(
+                    "Your file passed validation but could not be stored: a "
+                    "file with the same name already exists and was not "
+                    "overwritten."
+                ),
+            ),
+        )
+        with patch("vocal.web.api.check_upload", return_value=context):
+            response = client.post(
+                "/",
+                files={"file": ("test.nc", b"dummy", "application/octet-stream")},
+            )
+        assert response.status_code == 200
+        assert "could not be stored" in response.text
+        assert "already exists" in response.text
+
     def test_landing_message_omits_absolute_server_path(
         self, client: TestClient
     ) -> None:
@@ -853,6 +876,28 @@ class TestCheckUploadLanding:
         assert context.verdict == "indeterminate"
         assert context.landing is None
         assert list(dest.iterdir()) == []
+
+    def test_collision_passes_but_refuses_storage(self, tmp_path: Path) -> None:
+        # A PASS whose name already exists in the directory: the verdict still
+        # PASSes, but storage is refused and the existing file is untouched.
+        nc = _make_nc(tmp_path, conventions="MYSTD-2.3", project_url=MYSTD_URL)
+        registry = _registry(project=_project(url=MYSTD_URL))
+        dest = tmp_path / "incoming"
+        dest.mkdir()
+        existing = dest / Path(nc).name
+        existing.write_bytes(b"already-stored")
+
+        context = _run_check_upload(
+            nc,
+            registry,
+            run_check=lambda res, fn: _pass_outcome(res),
+            upload_dir=dest,
+        )
+
+        assert context.verdict == "pass"
+        assert context.landing is not None and context.landing.status == "refused"
+        # The previously stored file is left exactly as it was.
+        assert existing.read_bytes() == b"already-stored"
 
 
 class TestCheckUploadPrecondition:

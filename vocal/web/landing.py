@@ -35,14 +35,19 @@ class LandingOutcome(enum.Enum):
 
     - ``NOT_ATTEMPTED`` — the verdict is not PASS (or the feature is off): nothing
       is stored.
-    - ``LAND`` — a PASS file with a safe name: copy it into the directory.
+    - ``LAND`` — a PASS file with a safe name and no collision: copy it into the
+      directory.
     - ``REFUSE_UNSAFE_NAME`` — a PASS file whose derived name is unsafe (empty,
       ``.``/``..``, or still containing a path separator): refuse, write nothing.
+    - ``REFUSE_EXISTS`` — a PASS file with a safe name, but a file of that name
+      already exists in the directory: refuse rather than overwrite the existing
+      good file.
     """
 
     NOT_ATTEMPTED = "not_attempted"
     LAND = "land"
     REFUSE_UNSAFE_NAME = "refuse_unsafe_name"
+    REFUSE_EXISTS = "refuse_exists"
 
 
 def safe_landing_name(filename: str) -> tuple[str, bool]:
@@ -78,15 +83,16 @@ def decide_landing(
 
     - verdict not PASS → :attr:`LandingOutcome.NOT_ATTEMPTED`;
     - PASS, unsafe name → ``REFUSE_UNSAFE_NAME`` (write nothing outside ``DIR``);
-    - PASS, safe name → ``LAND``.
-
-    ``target_exists`` is carried as an input (collision handling lands in a later
-    slice) but does not yet change the outcome.
+    - PASS, safe name, target already exists → ``REFUSE_EXISTS`` (never
+      overwrite the existing good file);
+    - PASS, safe name, no collision → ``LAND``.
     """
     if not is_pass:
         return LandingOutcome.NOT_ATTEMPTED
     if not name_safe:
         return LandingOutcome.REFUSE_UNSAFE_NAME
+    if target_exists:
+        return LandingOutcome.REFUSE_EXISTS
     return LandingOutcome.LAND
 
 
@@ -103,9 +109,10 @@ def perform_landing(
     exists, and consults :func:`decide_landing`. On ``LAND`` it copies the
     already-validated bytes from *source_path* (the temp file ``check_upload``
     wrote) into *upload_dir*, logs an INFO audit line, and returns a
-    ``"stored"`` :class:`~vocal.web.models.Landing`. On ``REFUSE_UNSAFE_NAME`` it
-    writes nothing, logs a WARNING, and returns a ``"refused"`` result. When
-    storage was not attempted (the verdict is not PASS) it returns ``None``.
+    ``"stored"`` :class:`~vocal.web.models.Landing`. On ``REFUSE_UNSAFE_NAME`` or
+    ``REFUSE_EXISTS`` (a name collision) it writes nothing, logs a WARNING, and
+    returns a ``"refused"`` result. When storage was not attempted (the verdict
+    is not PASS) it returns ``None``.
 
     The returned message is path-free by design; only the server-side log names
     the directory, for the operator's audit trail.
@@ -128,6 +135,21 @@ def perform_landing(
             message=(
                 "Your file passed validation but could not be stored: the "
                 "filename was rejected as unsafe."
+            ),
+        )
+
+    if outcome is LandingOutcome.REFUSE_EXISTS:
+        logger.warning(
+            "Refused to store upload '%s' in %s: a file of that name already "
+            "exists (not overwritten).",
+            name,
+            upload_dir,
+        )
+        return Landing(
+            status="refused",
+            message=(
+                "Your file passed validation but could not be stored: a file "
+                "with the same name already exists and was not overwritten."
             ),
         )
 
