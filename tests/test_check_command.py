@@ -238,6 +238,27 @@ class TestExitCodes:
         assert result.exit_code == 2
         assert "INDETERMINATE" in result.output
 
+    def test_opportunistic_too_old_warns_but_does_not_block_pass(
+        self, tmp_path: Path
+    ) -> None:
+        """A too-old *opportunistic* standard (Conventions-only) is best effort: it
+        warns but never forces INDETERMINATE, so a file that otherwise passes still
+        passes."""
+        nc = _make_nc(
+            tmp_path,
+            conventions="MYSTD-2.7",  # opportunistic (no vocal_project_url)
+            definitions_url=PACK_URL,
+            definitions_version=3,
+        )
+        # MYSTD-2.3 installed is too old for the claimed 2.7; the pack passes.
+        result = _invoke(
+            [nc], _registry(project=_project(minor=3), pack=_pack())
+        )
+
+        assert result.exit_code == 0
+        assert "PASS" in result.output
+        assert "MYSTD-2.7" in result.output  # the advisory warning is surfaced
+
 
 # ---------------------------------------------------------------------------
 # Hints: fetch --for on unresolved mandatory; --update on too-old.

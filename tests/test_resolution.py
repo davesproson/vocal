@@ -276,8 +276,10 @@ class TestTooOld:
         assert target.hint is not None and "--update" in target.hint
         assert _verifiable(resolution) == []
 
-    def test_opportunistic_too_old_is_unverifiable_with_update_hint(self) -> None:
+    def test_opportunistic_too_old_warns_without_target(self) -> None:
         # Installed MYSTD-2.3; file claims MYSTD-2.7 via Conventions only.
+        # Best effort: a too-old opportunistic standard is noted as a warning
+        # and dropped — no target, so it never taints the verdict.
         project = _project(minor=3)
         registry = _registry(project)
 
@@ -286,11 +288,12 @@ class TestTooOld:
             registry=registry,
         )
 
-        assert len(resolution.projects) == 1
-        target = resolution.projects[0]
-        assert target.verifiable is False
-        assert target.mandatory is False
-        assert target.hint is not None and "--update" in target.hint
+        assert resolution.projects == []
+        assert len(resolution.warnings) == 1
+        warning = resolution.warnings[0]
+        assert warning.code == "standard_not_verified_too_old"
+        assert "MYSTD-2.7" in warning.message
+        assert warning.hint is not None and "--update" in warning.hint
 
     def test_newer_installed_minor_is_verifiable(self) -> None:
         # Installed MYSTD-2.5; file claims MYSTD-2.3 — newer is fine.

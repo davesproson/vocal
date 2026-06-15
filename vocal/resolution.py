@@ -32,10 +32,15 @@ A claimed standard that is installed but at a minor *older* than the file claims
 cannot be fully verified and — because non-breaking minors are forward-only (a
 file conforming to ``STD-1.X`` conforms to ``STD-1.(X+n)`` but not the reverse)
 — its model must not be run lest it spuriously reject a legitimately
-newer-minor file. Such a claim is recorded as an *unverifiable*
-:class:`ProjectTarget` (``verifiable=False``) carrying an ``--update`` hint; the
-check spine turns that into an INDETERMINATE verdict. The gate that matters is
-**installed-vs-not**, not mandatory-vs-opportunistic.
+newer-minor file. What that means for the verdict turns on whether the file
+*mandated* the standard. A **mandatory** (URL-claimed) too-old standard is
+recorded as an *unverifiable* :class:`ProjectTarget` (``verifiable=False``)
+carrying an ``--update`` hint, which the check spine turns into INDETERMINATE.
+An **opportunistic** (``Conventions``-only) too-old standard is best effort: it
+is noted as a :class:`ResolutionWarning` and dropped, never touching the verdict
+— the file never required it, so an inability to verify it must not taint the
+result. (The model is skipped in both cases; only the verdict consequence
+differs.)
 
 The resolver is pure with respect to the application and filesystem layers when
 driven through :func:`resolve_file` with an explicit ``attrs`` and ``registry``,
@@ -91,8 +96,13 @@ class NothingToCheck(ResolutionError):
     """The file carries no recognisable vocal claim at all.
 
     Raised — not collected — when resolution produces no project target, no
-    pack, and no failure to report: there is literally nothing to verify. A
-    surface renders this as "not a vocal-managed file", distinct from a verdict.
+    pack, no failure, and no warning: there is literally nothing to verify and
+    nothing we even recognised. A warning counts as recognition — a too-old
+    opportunistic standard names an installed vocal project we simply couldn't
+    verify — so it suppresses this and the file resolves (the spine then yields
+    INDETERMINATE via the "zero checks ran" rule). A comment does not: an
+    uninstalled external co-convention (CF/ACDD) is not a vocal claim. A surface
+    renders this as "not a vocal-managed file", distinct from a verdict.
     """
 
     code = "nothing_to_check"
@@ -228,7 +238,7 @@ def resolve_file(
 
     Raises:
         NothingToCheck: the file carries no recognisable vocal claim — no
-            resolvable project target, no pack, and no failure to report.
+            resolvable project target, no pack, no failure, and no warning.
     """
     if attrs is None:
         attrs = read_file_conventions(filename)
@@ -244,7 +254,12 @@ def resolve_file(
     _resolve_opportunistic(claimed, registry, resolution, covered)
     _resolve_product_axis(attrs, filename, registry, claimed, resolution)
 
-    if not resolution.projects and resolution.pack is None and not resolution.failures:
+    if (
+        not resolution.projects
+        and resolution.pack is None
+        and not resolution.failures
+        and not resolution.warnings
+    ):
         raise NothingToCheck(
             "The file carries no recognisable vocal claim.",
             "Expected a vocal_project_url, a vocal_definitions_url, or a "
@@ -347,11 +362,18 @@ def _resolve_opportunistic(
 ) -> None:
     """Resolve the opportunistic standards named only in ``Conventions``.
 
-    A ``Conventions`` standard not already covered by a URL is verified when its
-    ``{name, major}`` project is installed, recorded as an unverifiable target
-    when installed-but-too-old, and skipped with a :class:`ResolutionComment`
-    when not installed (which is how external co-conventions fall out — an
-    everyday, non-actionable outcome, so a comment rather than a warning).
+    An opportunistic standard is *best effort*: verified when its ``{name,
+    major}`` project is installed and new enough, and otherwise noted without
+    touching the verdict. The two can't-verify cases differ only in flavour. Not
+    installed is skipped with a :class:`ResolutionComment` — that is how external
+    co-conventions (CF, ACDD) fall out, an everyday non-actionable outcome.
+    Installed-but-too-old is a :class:`ResolutionWarning`: unlike the comment
+    case, it is a real vocal project you hold locally and could fix with a single
+    ``vocal fetch --update``, so it is advisory rather than mere noise. Neither
+    forces INDETERMINATE — the file never *mandated* this standard, so an
+    inability to verify it must not taint the verdict (contrast a mandatory
+    too-old claim, which becomes an unverifiable target in
+    :func:`_resolve_mandatory`).
     """
     for token in claimed:
         if token.name in covered:
@@ -369,6 +391,21 @@ def _resolve_opportunistic(
                     ),
                     hint=f"Run 'vocal fetch' for {token.name}-{token.major} to "
                     f"verify it.",
+                )
+            )
+            continue
+
+        if project.minor < token.minor:
+            resolution.warnings.append(
+                ResolutionWarning(
+                    code="standard_not_verified_too_old",
+                    message=(
+                        f"{token} was not verified: installed "
+                        f"{token.name}-{project.major}.{project.minor} is older "
+                        f"than the claimed minor."
+                    ),
+                    hint=f"Update to {token.name}-{token.major}.{token.minor} or "
+                    f"later ('vocal fetch --update'), then re-check.",
                 )
             )
             continue

@@ -361,7 +361,6 @@ def _render_comments(outcome: CheckOutcome) -> None:
     hint = "" if p.comments else " (run with -c)"
     n = len(outcome.comments)
     p.print_err(f"{TS.BOLD}{TS.OKBLUE}i{TS.ENDC} {n} comments{hint}.")
-    p.print_err()
 
 
 def _render_fetch_hint(outcome: CheckOutcome, filename: str, fetched: bool) -> None:
@@ -408,9 +407,17 @@ def _render(
         if not target.verifiable:
             _render_unverifiable(target, filename)
 
-    # Standards-axis comments (opportunistic standards skipped) belong with the
-    # standards-axis results, alongside where a standard's errors would be shown.
-    _render_comments(outcome)
+    # Standards-axis advisories sit below the standards results, separated from the
+    # product axis by one blank line: opportunistic standards skipped (comments),
+    # then a too-old opportunistic standard (warning) as a sibling of those
+    # comments — rather than down with the product axis. Each helper's own leading
+    # blank spaces the parts; the region's single trailing blank is added here.
+    standards_warnings = [w for w in outcome.warnings if not _is_product_warning(w)]
+    if outcome.comments or standards_warnings:
+        _render_comments(outcome)
+        for warning in standards_warnings:
+            _render_warning(warning)
+        p.print_err()
 
     if outcome.pack_result is not None:
         _render_pack_result(outcome.pack_result, filename)
@@ -421,7 +428,8 @@ def _render(
     _render_fetch_hint(outcome, filename, fetched)
 
     for warning in outcome.warnings:
-        _render_warning(warning)
+        if _is_product_warning(warning):
+            _render_warning(warning)
 
     _render_verdict(outcome.verdict)
 
