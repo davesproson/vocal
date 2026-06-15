@@ -1,5 +1,7 @@
 import os
 import tempfile
+from pathlib import Path
+from typing import Optional
 
 from fastapi import UploadFile, HTTPException, status
 
@@ -158,7 +160,9 @@ def _build_context(resolution: Resolution, outcome: CheckOutcome) -> CheckContex
     return context
 
 
-async def check_upload(file: UploadFile) -> CheckContext:
+async def check_upload(
+    file: UploadFile, *, upload_dir: Optional[Path] = None
+) -> CheckContext:
     """Check an uploaded file against the standards and product it claims.
 
     The web flow drives :mod:`vocal.resolution` and the check spine exactly as
@@ -175,6 +179,9 @@ async def check_upload(file: UploadFile) -> CheckContext:
 
     Args:
         file (UploadFile): The file to check.
+        upload_dir: When set (``vocal web --upload-to``), the directory into
+            which a PASS file is copied. Accepted now and threaded through;
+            storing the validated file lands in a later slice.
 
     Returns:
         CheckContext: The render context for the results page.

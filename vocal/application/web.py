@@ -10,19 +10,28 @@ gated by two independent, default-safe controls:
   combination — unauthenticated remote code execution — and is refused unless
   ``--dangerously-allow-remote`` acknowledges it.
 
-The security decision is isolated as two pure functions, :func:`is_remote_bind`
-and :func:`decide_launch`, so the full matrix can be tested without sockets or
-uvicorn. :func:`command` is the thin I/O shell: classify, decide, warn or
-refuse, then run.
+A separate, opt-in ``--upload-to=DIR`` turns the checker into a lightweight
+ingest gate (files that PASS are copied into ``DIR``). It is refused alongside
+``--allow-downloads`` — never combine a disk-writing ingest with the
+unauthenticated-RCE download surface — and the directory is validated (exists,
+is a directory, writable; never created) before the server binds.
+
+The security decisions are isolated as pure functions — :func:`is_remote_bind`,
+:func:`decide_launch`, and :func:`upload_downloads_conflict` — so the full
+matrix can be tested without sockets or uvicorn. :func:`command` is the thin I/O
+shell: classify, decide, warn or refuse, then run.
 """
 
 from __future__ import annotations
 
 import enum
 import ipaddress
+import os
 import threading
 import time
 import webbrowser
+from pathlib import Path
+from typing import Optional
 
 import typer
 import uvicorn
@@ -42,6 +51,37 @@ class RemoteDownloadsBlocked(VocalError):
     combination vocal refuses outright; the operator must pass
     ``--dangerously-allow-remote`` to proceed.
     """
+
+
+class UploadDownloadsBlocked(VocalError):
+    """Refuse to combine ``--upload-to`` with ``--allow-downloads``.
+
+    Downloads turn the server into an unauthenticated remote code-execution
+    surface (a fetched project's code runs when a file is checked); pairing that
+    with a process that writes attacker-influenced files to the operator's disk
+    is the one combination we refuse outright. The two flags are mutually
+    exclusive — see :func:`upload_downloads_conflict`.
+    """
+
+
+class UploadDirUnavailable(VocalError):
+    """Refuse to start when the ``--upload-to`` directory cannot receive files.
+
+    Validated before the server binds so a typo or a permissions problem fails
+    fast rather than surprising the operator mid-session. The directory must
+    already exist, be a directory, and be writable; it is never created.
+    """
+
+
+def upload_downloads_conflict(*, upload_to: bool, allow_downloads: bool) -> bool:
+    """Whether ``--upload-to`` and ``--allow-downloads`` are both in play.
+
+    The central safety invariant as a pure function of the two flags (no I/O),
+    so the refusal is unit-testable without binding a server: never combine a
+    disk-writing ingest with the unauthenticated-RCE surface that downloads
+    create.
+    """
+    return upload_to and allow_downloads
 
 
 class LaunchDecision(enum.Enum):
@@ -141,6 +181,32 @@ def _render_remote_downloads_warning(console: Console, host: str) -> None:
     )
 
 
+def _validate_upload_dir(path: Path) -> None:
+    """Refuse to launch unless *path* can receive landed files.
+
+    Runs before the server binds so a misconfigured ``--upload-to`` fails fast
+    instead of after a user uploads a file. The directory must already exist, be
+    a directory, and be writable; it is *never* created — a typo'd path must not
+    silently produce an unexpected directory tree. Raises
+    :class:`UploadDirUnavailable` on any of these.
+    """
+    if not path.exists():
+        raise UploadDirUnavailable(
+            f"Upload directory '{path}' does not exist.",
+            hint="Create it first (vocal never creates it), or fix the path.",
+        )
+    if not path.is_dir():
+        raise UploadDirUnavailable(
+            f"Upload target '{path}' is not a directory.",
+            hint="Point --upload-to at an existing, writable directory.",
+        )
+    if not os.access(path, os.W_OK):
+        raise UploadDirUnavailable(
+            f"Upload directory '{path}' is not writable.",
+            hint="Grant write permission, or choose a writable directory.",
+        )
+
+
 def command(
     host: str = typer.Option("127.0.0.1", "--host", help="The host to bind to."),
     port: int = typer.Option(8088, "--port", help="The port to bind to."),
@@ -162,8 +228,30 @@ def command(
             "a non-loopback bind with --allow-downloads."
         ),
     ),
+    upload_to: Optional[Path] = typer.Option(
+        None,
+        "--upload-to",
+        help=(
+            "Copy files that PASS validation into this existing, writable "
+            "directory. Mutually exclusive with --allow-downloads. The "
+            "directory is never created."
+        ),
+    ),
 ) -> None:
     """Launch a web-based checker GUI."""
+    if upload_downloads_conflict(
+        upload_to=upload_to is not None, allow_downloads=allow_downloads
+    ):
+        raise UploadDownloadsBlocked(
+            "Refusing to combine --upload-to with --allow-downloads: this would "
+            "write uploaded files to disk while exposing unauthenticated remote "
+            "code execution.",
+            hint="Run an ingest server (--upload-to) without --allow-downloads.",
+        )
+
+    if upload_to is not None:
+        _validate_upload_dir(upload_to)
+
     decision = decide_launch(
         remote_bind=is_remote_bind(host),
         allow_downloads=allow_downloads,
@@ -192,7 +280,7 @@ def command(
 
     threading.Thread(target=_start_browser_in_thread, args=(host, port)).start()
     uvicorn.run(
-        create_app(allow_user_download=allow_downloads),
+        create_app(allow_user_download=allow_downloads, upload_dir=upload_to),
         host=host,
         port=port,
         log_level="info",

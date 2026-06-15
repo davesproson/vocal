@@ -1,5 +1,7 @@
 import logging
 import os
+from pathlib import Path
+from typing import Optional
 
 from fastapi import APIRouter, FastAPI, Request, File, UploadFile, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -200,23 +202,35 @@ async def root(request: Request):
 
 @router.post("/", response_class=JSONResponse)
 async def upload(request: Request, file: UploadFile = File(...)) -> HTMLResponse:
-    context = await check_upload(file)
+    context = await check_upload(
+        file, upload_dir=getattr(request.app.state, "upload_dir", None)
+    )
 
     return templates.TemplateResponse(
         request=request, name="checked.html", context=context.model_dump()
     )
 
 
-def create_app(*, allow_user_download: bool = False) -> FastAPI:
-    """Build the web-checker app with the download gate set.
+def create_app(
+    *,
+    allow_user_download: bool = False,
+    upload_dir: Optional[Path] = None,
+) -> FastAPI:
+    """Build the web-checker app with the download gate and ingest dir set.
 
     ``allow_user_download`` is stored on ``app.state`` (the idiomatic place for
     app-scoped config) where the ``/add`` handlers and the template context
     processor read it. Defaults to ``False`` so the safe posture holds unless a
     caller — ``vocal web --allow-downloads`` — opts in.
+
+    ``upload_dir`` is stored on ``app.state`` the same way and read by the
+    ``POST /`` route, which passes it to :func:`check_upload`. Defaults to
+    ``None`` (feature off): absent ``vocal web --upload-to``, no file is stored.
+    The directory is validated by the command before the server binds.
     """
     app = FastAPI()
     app.state.allow_user_download = allow_user_download
+    app.state.upload_dir = upload_dir
     app.mount(
         "/static",
         StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")),

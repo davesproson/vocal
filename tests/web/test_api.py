@@ -443,6 +443,28 @@ class TestUploadPost:
         assert "PASSED" not in response.text
         assert "FAILED" not in response.text
 
+    def test_upload_dir_stored_on_app_state(self, tmp_path) -> None:
+        # create_app stashes upload_dir on app.state exactly as it does
+        # allow_user_download, so the route can read it at request time.
+        app = create_app(upload_dir=tmp_path)
+        assert app.state.upload_dir == tmp_path
+
+    def test_upload_dir_defaults_to_none(self) -> None:
+        app = create_app()
+        assert app.state.upload_dir is None
+
+    def test_post_root_passes_upload_dir_to_check_upload(self, tmp_path) -> None:
+        app = create_app(upload_dir=tmp_path)
+        client = TestClient(app, raise_server_exceptions=True)
+        with patch(
+            "vocal.web.api.check_upload", return_value=CheckContext()
+        ) as check:
+            client.post(
+                "/",
+                files={"file": ("test.nc", b"dummy", "application/octet-stream")},
+            )
+        assert check.call_args.kwargs["upload_dir"] == tmp_path
+
     def test_unknown_check_failure_renders_error_page(
         self, client: TestClient
     ) -> None:
