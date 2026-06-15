@@ -215,7 +215,7 @@ class TestOpportunisticProjects:
         assert target.mandatory is False
         assert target.verifiable is True
 
-    def test_uninstalled_opportunistic_standard_is_skipped_with_warning(self) -> None:
+    def test_uninstalled_opportunistic_standard_is_skipped_with_comment(self) -> None:
         # OTHER is named in Conventions but no project is installed for it.
         project = _project()
         registry = _registry(project)
@@ -225,15 +225,17 @@ class TestOpportunisticProjects:
             registry=registry,
         )
 
-        # MYSTD is verified; OTHER is skipped with a warning, not a failure.
+        # MYSTD is verified; OTHER is skipped with a comment, not a failure or
+        # a warning (it's an everyday, non-actionable outcome).
         assert [t.project for t in resolution.projects] == [project]
         assert resolution.failures == []
-        assert len(resolution.warnings) == 1
-        assert "OTHER-1.0" in resolution.warnings[0].message
-        assert resolution.warnings[0].code == "standard_not_verified"
+        assert resolution.warnings == []
+        assert len(resolution.comments) == 1
+        assert "OTHER-1.0" in resolution.comments[0].message
+        assert resolution.comments[0].code == "standard_not_verified"
 
     def test_external_co_conventions_fall_out(self) -> None:
-        # CF/ACDD have no URL and no installed project: they produce warnings,
+        # CF/ACDD have no URL and no installed project: they produce comments,
         # never failures, and never block resolution of the vocal standard.
         project = _project()
         registry = _registry(project)
@@ -245,9 +247,9 @@ class TestOpportunisticProjects:
 
         assert [t.project for t in resolution.projects] == [project]
         assert resolution.failures == []
-        warned = {w.message.split(" ")[0] for w in resolution.warnings}
-        assert "CF-1.8" in warned
-        assert "ACDD-1.3" in warned
+        commented = {c.message.split(" ")[0] for c in resolution.comments}
+        assert "CF-1.8" in commented
+        assert "ACDD-1.3" in commented
 
 
 # ---------------------------------------------------------------------------

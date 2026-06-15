@@ -51,6 +51,7 @@ from vocal.resolution import (
     ProjectMissing,
     ProjectTarget,
     Resolution,
+    ResolutionComment,
     ResolutionError,
     ResolutionWarning,
     resolve_file,
@@ -193,6 +194,9 @@ def _build_resolution(
         resolution.warnings.extend(
             w for w in file_resolution.warnings if not _is_product_warning(w)
         )
+        # Opportunistic-skip comments are standards-axis; carry them only when the
+        # file's standards axis is in play (an override replaces them).
+        resolution.comments.extend(file_resolution.comments)
 
     if override_product:
         assert definition_path is not None  # established by override_product
@@ -329,11 +333,35 @@ def _render_failure(failure: ResolutionError) -> None:
 
 
 def _render_warning(warning: ResolutionWarning) -> None:
-    """Render an advisory resolution warning (an opportunistic standard skipped,
-    or an unmet ``satisfies_standards`` assertion)."""
+    """Render an advisory resolution warning (e.g. an unmet ``satisfies_standards``
+    assertion)."""
     p.print_warn(f"\n{TS.BOLD}{TS.WARNING}!{TS.ENDC} {warning.message}")
     if warning.hint:
         p.print_warn(f"  {warning.hint}")
+
+
+def _render_comment(comment: ResolutionComment) -> None:
+    """Render one standards-axis comment's message and hint (an opportunistic
+    standard skipped because no project is installed). Suppressed unless ``-c``."""
+    p.print_comment(f"{TS.BOLD}{TS.OKBLUE}i{TS.ENDC} {comment.message}")
+    if comment.hint:
+        p.print_comment(f"  {comment.hint}")
+
+
+def _render_comments(outcome: CheckOutcome) -> None:
+    """Render the standards-axis comments alongside the standards-axis results.
+
+    The individual notes are ``-c`` gated, but the count line is always shown when
+    any comment exists, so a plain check still signals that comments are available
+    (the hint drops once ``-c`` is on). Mirrors the product box's comment line."""
+    if not outcome.comments:
+        return
+    for comment in outcome.comments:
+        _render_comment(comment)
+    hint = "" if p.comments else " (run with -c)"
+    n = len(outcome.comments)
+    p.print_err(f"{TS.BOLD}{TS.OKBLUE}i{TS.ENDC} {n} comments{hint}.")
+    p.print_err()
 
 
 def _render_fetch_hint(outcome: CheckOutcome, filename: str, fetched: bool) -> None:
@@ -379,6 +407,10 @@ def _render(
     for target in resolution.projects:
         if not target.verifiable:
             _render_unverifiable(target, filename)
+
+    # Standards-axis comments (opportunistic standards skipped) belong with the
+    # standards-axis results, alongside where a standard's errors would be shown.
+    _render_comments(outcome)
 
     if outcome.pack_result is not None:
         _render_pack_result(outcome.pack_result, filename)

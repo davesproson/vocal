@@ -368,6 +368,64 @@ class TestSpecifiedOnly:
 
 
 # ---------------------------------------------------------------------------
+# Comments: an opportunistic standard with no installed project is informational
+# (not a warning), suppressed unless -c, and rendered with the standards-axis
+# results — not folded into the product check's results box.
+# ---------------------------------------------------------------------------
+
+
+class TestStandardComments:
+    def test_opportunistic_skip_message_hidden_but_count_reported(
+        self, tmp_path: Path
+    ) -> None:
+        # CF is named in Conventions with no installed project: an opportunistic
+        # skip → a comment. Without -c the message is suppressed, but the count
+        # line still reports that comments exist and how to surface them.
+        nc = _make_nc(tmp_path, conventions="MYSTD-2.3 CF-1.8")
+        result = _invoke([nc], _registry(project=_project()))
+
+        assert result.exit_code == 0
+        assert "CF-1.8" not in result.output
+        assert "1 comments (run with -c)" in result.output
+
+    def test_dash_c_shows_the_comment_with_the_standards_results(
+        self, tmp_path: Path
+    ) -> None:
+        # -c surfaces the skip alongside the standards-axis check output, before
+        # the product results box.
+        nc = _make_nc(
+            tmp_path,
+            conventions="MYSTD-2.3 CF-1.8",
+            definitions_url=PACK_URL,
+            definitions_version=3,
+        )
+        result = _invoke(
+            [nc, "-c"], _registry(project=_project(), pack=_pack())
+        )
+
+        assert result.exit_code == 0
+        assert "CF-1.8" in result.output
+        # The standards-axis comment is rendered before the product results box.
+        assert result.output.index("CF-1.8") < result.output.index("specification")
+
+    def test_product_box_counts_only_product_comments(self, tmp_path: Path) -> None:
+        # The product results box reports the product check's own comment tally; a
+        # standards-axis skip does not inflate it.
+        nc = _make_nc(
+            tmp_path,
+            conventions="MYSTD-2.3 CF-1.8",
+            definitions_url=PACK_URL,
+            definitions_version=3,
+        )
+        result = _invoke(
+            [nc], _registry(project=_project(), pack=_pack())
+        )
+
+        assert result.exit_code == 0
+        assert "0 comments (run with -c)" in result.output
+
+
+# ---------------------------------------------------------------------------
 # No implicit fetch: a plain check never fetches.
 # ---------------------------------------------------------------------------
 

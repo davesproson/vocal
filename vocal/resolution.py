@@ -12,7 +12,7 @@ two axes that never consult each other:
   :meth:`~vocal.utils.registry.Registry.find_project_by_url`) a project the file
   must be verified against. Standards named only in ``Conventions`` are
   *opportunistic* — verified if their project is installed, skipped with a
-  :class:`ResolutionWarning` if not (so external co-conventions such as CF and
+  :class:`ResolutionComment` if not (so external co-conventions such as CF and
   ACDD, which have no URL and no installed project, simply fall out). The
   **major** of every URL-claimed standard is sourced from the matching
   ``Conventions`` token *by name*, never from the URL lookup.
@@ -137,12 +137,30 @@ class PackTarget:
 
 @dataclass(frozen=True)
 class ResolutionWarning:
-    """A non-fatal note about a claim that was not (fully) verified.
+    """A non-fatal but advisory note about a claim that was not (fully) verified.
 
-    Warnings never change a verdict on their own; they explain what was skipped
-    (an opportunistic standard whose project isn't installed) or that a pack's
-    advisory ``satisfies_standards`` assertion doesn't intersect the file's
-    claimed standards. ``code`` tags the category for a surface to render.
+    Warnings never change a verdict on their own; they flag something the user
+    may want to act on — e.g. a pack's advisory ``satisfies_standards`` assertion
+    that doesn't intersect the file's claimed standards. ``code`` tags the
+    category for a surface to render. Contrast :class:`ResolutionComment`, which
+    is purely informational.
+    """
+
+    code: str
+    message: str
+    hint: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class ResolutionComment:
+    """A purely informational note about what was and wasn't checked.
+
+    Like a warning, a comment never changes a verdict; unlike a warning, it
+    carries no expectation of action. An opportunistic ``Conventions`` standard
+    skipped because no project is installed is the canonical case — external
+    co-conventions (CF, ACDD) name themselves there on nearly every file and are
+    essentially never installable as vocal projects, so reporting them as
+    warnings would be noise. Surfaces suppress comments unless asked (``-c``).
     """
 
     code: str
@@ -159,13 +177,15 @@ class Resolution:
     product-axis target, or ``None`` when the file declares no pack (or the pack
     could not be resolved — in which case ``failures`` explains why).
     ``failures`` are the typed, per-claim problems for mandatory claims;
-    ``warnings`` are advisory notes.
+    ``warnings`` are advisory notes the user may want to act on; ``comments`` are
+    purely informational notes about what was and wasn't checked.
     """
 
     projects: list[ProjectTarget] = field(default_factory=list)
     pack: Optional[PackTarget] = None
     failures: list[ResolutionError] = field(default_factory=list)
     warnings: list[ResolutionWarning] = field(default_factory=list)
+    comments: list[ResolutionComment] = field(default_factory=list)
 
 
 def _load_registry() -> Registry:
@@ -329,8 +349,9 @@ def _resolve_opportunistic(
 
     A ``Conventions`` standard not already covered by a URL is verified when its
     ``{name, major}`` project is installed, recorded as an unverifiable target
-    when installed-but-too-old, and skipped with a :class:`ResolutionWarning`
-    when not installed (which is how external co-conventions fall out).
+    when installed-but-too-old, and skipped with a :class:`ResolutionComment`
+    when not installed (which is how external co-conventions fall out — an
+    everyday, non-actionable outcome, so a comment rather than a warning).
     """
     for token in claimed:
         if token.name in covered:
@@ -339,8 +360,8 @@ def _resolve_opportunistic(
 
         project = registry.projects.get(project_key(token.name, token.major))
         if project is None:
-            resolution.warnings.append(
-                ResolutionWarning(
+            resolution.comments.append(
+                ResolutionComment(
                     code="standard_not_verified",
                     message=(
                         f"{token} was not verified: no matching project is "

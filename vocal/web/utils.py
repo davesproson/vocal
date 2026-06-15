@@ -108,7 +108,7 @@ def _unverified_claims(
     Three sources, all carried through from resolution: unresolved mandatory
     claims (a missing project or pack — fetch it), claimed standards installed at
     a minor too old to run (update it), and opportunistic ``Conventions``
-    standards whose project isn't installed (skipped with a note). Advisory
+    standards whose project isn't installed (an informational comment). Advisory
     ``satisfies_standards`` warnings are not actionable here and are omitted.
     """
     claims: list[UnverifiedClaim] = []
@@ -128,10 +128,10 @@ def _unverified_claims(
                 )
             )
 
-    for warning in outcome.warnings:
-        if warning.code == "standard_not_verified":
+    for comment in outcome.comments:
+        if comment.code == "standard_not_verified":
             claims.append(
-                UnverifiedClaim(message=warning.message, hint=warning.hint)
+                UnverifiedClaim(message=comment.message, hint=comment.hint)
             )
 
     return claims

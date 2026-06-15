@@ -42,6 +42,7 @@ from vocal.resolution import (
     PackTarget,
     ProjectTarget,
     Resolution,
+    ResolutionComment,
     ResolutionError,
     ResolutionWarning,
 )
@@ -106,9 +107,10 @@ class CheckOutcome:
 
     ``project_results`` holds one entry per *verifiable* standards-axis target
     that was run; ``pack_result`` is the product-axis result (or ``None`` when
-    the file declares no resolvable pack). ``failures`` and ``warnings`` are
-    carried through from the :class:`~vocal.resolution.Resolution` so a surface
-    can render unresolved mandatory claims and advisory notes alongside the
+    the file declares no resolvable pack). ``failures``, ``warnings`` and
+    ``comments`` are carried through from the
+    :class:`~vocal.resolution.Resolution` so a surface can render unresolved
+    mandatory claims, advisory notes and informational notes alongside the
     verdict. ``verdict`` is the rolled-up tri-state result.
     """
 
@@ -116,6 +118,7 @@ class CheckOutcome:
     pack_result: DefinitionCheckResult | None
     failures: list[ResolutionError]
     warnings: list[ResolutionWarning]
+    comments: list[ResolutionComment]
     verdict: Verdict
 
     @property
@@ -188,7 +191,7 @@ def run_check(resolution: Resolution, filename: str) -> CheckOutcome:
     Runs the model check for each *verifiable* standards-axis target (unverifiable
     too-old targets are skipped — they only force INDETERMINATE) and the schema
     check for the pack target, then aggregates the results, the resolution's
-    failures and warnings, and the rolled-up :class:`Verdict` into a
+    failures, warnings and comments, and the rolled-up :class:`Verdict` into a
     :class:`CheckOutcome`.
     """
     project_results = [
@@ -210,5 +213,6 @@ def run_check(resolution: Resolution, filename: str) -> CheckOutcome:
         pack_result=pack_result,
         failures=resolution.failures,
         warnings=resolution.warnings,
+        comments=resolution.comments,
         verdict=verdict,
     )

@@ -32,6 +32,7 @@ from vocal.resolution import (
     ProjectMissing,
     ProjectTarget,
     Resolution,
+    ResolutionComment,
     ResolutionWarning,
 )
 from vocal.utils.registry import Project
@@ -197,15 +198,18 @@ class TestRunsAndAggregation:
         assert [r.target for r in outcome.project_results] == targets
         assert outcome.pack_result is not None
 
-    def test_failures_and_warnings_carried_through(self) -> None:
+    def test_failures_warnings_and_comments_carried_through(self) -> None:
         failure = ProjectMissing("missing", "fetch it")
-        warning = ResolutionWarning(code="standard_not_verified", message="skipped")
+        warning = ResolutionWarning(code="satisfies_standards_unmet", message="advisory")
+        comment = ResolutionComment(code="standard_not_verified", message="skipped")
         resolution = Resolution(
             projects=[_project_target()],
             failures=[failure],
             warnings=[warning],
+            comments=[comment],
         )
         outcome = _run(resolution)
 
         assert outcome.failures == [failure]
         assert outcome.warnings == [warning]
+        assert outcome.comments == [comment]

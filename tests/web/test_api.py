@@ -564,6 +564,7 @@ def _pass_outcome(resolution: Resolution) -> CheckOutcome:
         pack_result=None,
         failures=[],
         warnings=[],
+        comments=[],
         verdict=Verdict.PASS,
     )
 
