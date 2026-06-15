@@ -9,6 +9,7 @@ from vocal.checking.shared import (
     CheckOutcome,
     DefinitionCheckResult,
     ProjectCheckResult,
+    Verdict,
     run_check,
 )
 from vocal.resolution import (
@@ -20,6 +21,7 @@ from vocal.resolution import (
 from vocal.utils import get_error_locs
 from vocal.utils.conventions import FileConventions, read_file_conventions
 from vocal.utils.registry import Registry
+from vocal.web.landing import perform_landing
 from vocal.web.models import (
     Check,
     CheckContext,
@@ -180,8 +182,10 @@ async def check_upload(
     Args:
         file (UploadFile): The file to check.
         upload_dir: When set (``vocal web --upload-to``), the directory into
-            which a PASS file is copied. Accepted now and threaded through;
-            storing the validated file lands in a later slice.
+            which a PASS file is copied. On a PASS verdict :func:`perform_landing`
+            stores the validated file and attaches the typed
+            :class:`~vocal.web.models.Landing` result to the context; FAIL,
+            INDETERMINATE, and upfront-refused files store nothing.
 
     Returns:
         CheckContext: The render context for the results page.
@@ -229,6 +233,18 @@ async def check_upload(
 
         outcome = run_check(resolution, file_path)
         context = _build_context(resolution, outcome)
+
+        # Storage is a post-verdict side effect: only a PASS file is copied into
+        # the --upload-to directory, and only while the validated temp file
+        # still exists (before this block's cleanup). FAIL / INDETERMINATE /
+        # upfront-refused files return earlier and are never stored.
+        if upload_dir is not None and outcome.verdict is Verdict.PASS:
+            context.landing = perform_landing(
+                is_pass=True,
+                source_path=file_path,
+                filename=file.filename,
+                upload_dir=upload_dir,
+            )
 
     return context
 

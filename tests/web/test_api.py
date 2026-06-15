@@ -49,7 +49,7 @@ from vocal.resolution import ProjectTarget, Resolution
 from vocal.utils.registry import Pack, Project, Registry
 from vocal.versioning import Version, VersionConstraint
 from vocal.web.api import app, create_app
-from vocal.web.models import CheckContext, ResolverError, UnverifiedClaim
+from vocal.web.models import CheckContext, Landing, ResolverError, UnverifiedClaim
 
 
 # ---------------------------------------------------------------------------
@@ -443,6 +443,73 @@ class TestUploadPost:
         assert "PASSED" not in response.text
         assert "FAILED" not in response.text
 
+    def test_stored_landing_renders_confirmation(self, client: TestClient) -> None:
+        context = CheckContext(
+            verdict="pass",
+            landing=Landing(
+                status="stored",
+                message="Your file passed validation and was stored.",
+            ),
+        )
+        with patch("vocal.web.api.check_upload", return_value=context):
+            response = client.post(
+                "/",
+                files={"file": ("test.nc", b"dummy", "application/octet-stream")},
+            )
+        assert response.status_code == 200
+        assert "Your file passed validation and was stored." in response.text
+
+    def test_refused_landing_renders_reason(self, client: TestClient) -> None:
+        context = CheckContext(
+            verdict="pass",
+            landing=Landing(
+                status="refused",
+                message=(
+                    "Your file passed validation but could not be stored: the "
+                    "filename was rejected as unsafe."
+                ),
+            ),
+        )
+        with patch("vocal.web.api.check_upload", return_value=context):
+            response = client.post(
+                "/",
+                files={"file": ("test.nc", b"dummy", "application/octet-stream")},
+            )
+        assert response.status_code == 200
+        assert "could not be stored" in response.text
+
+    def test_landing_message_omits_absolute_server_path(
+        self, client: TestClient
+    ) -> None:
+        # The landing notice is path-free by design: the message carries no
+        # absolute path, so a remote user never learns the server's layout.
+        context = CheckContext(
+            verdict="pass",
+            landing=Landing(
+                status="stored",
+                message="Your file passed validation and was stored.",
+            ),
+        )
+        with patch("vocal.web.api.check_upload", return_value=context):
+            response = client.post(
+                "/",
+                files={"file": ("test.nc", b"dummy", "application/octet-stream")},
+            )
+        assert "/data/incoming" not in response.text
+
+    def test_no_landing_notice_for_non_pass_verdict(
+        self, client: TestClient
+    ) -> None:
+        # A FAIL carries no landing result, so the page shows no landing notice.
+        context = CheckContext(verdict="fail")
+        with patch("vocal.web.api.check_upload", return_value=context):
+            response = client.post(
+                "/",
+                files={"file": ("test.nc", b"dummy", "application/octet-stream")},
+            )
+        assert "was stored" not in response.text
+        assert "could not be stored" not in response.text
+
     def test_upload_dir_stored_on_app_state(self, tmp_path) -> None:
         # create_app stashes upload_dir on app.state exactly as it does
         # allow_user_download, so the route can read it at request time.
@@ -591,14 +658,40 @@ def _pass_outcome(resolution: Resolution) -> CheckOutcome:
     )
 
 
+def _fail_outcome(resolution: Resolution) -> CheckOutcome:
+    """A failing :class:`CheckOutcome` over ``resolution``'s verifiable targets.
+
+    Mirrors :func:`_pass_outcome` but stamps a FAIL verdict, so a ``check_upload``
+    test can assert the surface treats a failed file as never-stored without
+    scaffolding a project package that genuinely violates a check.
+    """
+    return CheckOutcome(
+        project_results=[
+            ProjectCheckResult(target=target)
+            for target in resolution.projects
+            if target.verifiable
+        ],
+        pack_result=None,
+        failures=[],
+        warnings=[],
+        comments=[],
+        verdict=Verdict.FAIL,
+    )
+
+
 def _run_check_upload(
-    nc_path: str, registry: Registry, *, run_check=None
+    nc_path: str,
+    registry: Registry,
+    *,
+    run_check=None,
+    upload_dir: Path | None = None,
 ) -> CheckContext:
     """Drive ``check_upload`` against ``nc_path`` with the registry patched.
 
     ``run_check`` optionally replaces the check spine (e.g. with
     :func:`_pass_outcome`) for cases that would otherwise read a project package
-    or pack schema from disk.
+    or pack schema from disk. ``upload_dir`` is threaded through unchanged to
+    exercise the ``--upload-to`` landing.
     """
     from vocal.web import utils as web_utils
 
@@ -610,8 +703,12 @@ def _run_check_upload(
         with patches[0]:
             if run_check is not None:
                 with patches[1]:
-                    return asyncio.run(web_utils.check_upload(upload))
-            return asyncio.run(web_utils.check_upload(upload))
+                    return asyncio.run(
+                        web_utils.check_upload(upload, upload_dir=upload_dir)
+                    )
+            return asyncio.run(
+                web_utils.check_upload(upload, upload_dir=upload_dir)
+            )
 
 
 class TestCheckUploadVerdict:
@@ -693,6 +790,69 @@ class TestCheckUploadVerdict:
             "did not match any product pattern" in c.message
             for c in context.unverified
         )
+
+
+class TestCheckUploadLanding:
+    """``--upload-to``: a PASS file is stored; nothing else is."""
+
+    def test_pass_lands_file_and_sets_landing(self, tmp_path: Path) -> None:
+        nc = _make_nc(tmp_path, conventions="MYSTD-2.3", project_url=MYSTD_URL)
+        registry = _registry(project=_project(url=MYSTD_URL))
+        dest = tmp_path / "incoming"
+        dest.mkdir()
+
+        context = _run_check_upload(
+            nc,
+            registry,
+            run_check=lambda res, fn: _pass_outcome(res),
+            upload_dir=dest,
+        )
+
+        assert context.verdict == "pass"
+        assert context.landing is not None and context.landing.status == "stored"
+        # The validated file was copied into the configured directory.
+        assert (dest / Path(nc).name).exists()
+
+    def test_feature_off_leaves_landing_none(self, tmp_path: Path) -> None:
+        # Absent --upload-to (upload_dir=None), a PASS stores nothing.
+        nc = _make_nc(tmp_path, conventions="MYSTD-2.3", project_url=MYSTD_URL)
+        registry = _registry(project=_project(url=MYSTD_URL))
+
+        context = _run_check_upload(
+            nc, registry, run_check=lambda res, fn: _pass_outcome(res)
+        )
+
+        assert context.verdict == "pass"
+        assert context.landing is None
+
+    def test_fail_stores_nothing(self, tmp_path: Path) -> None:
+        nc = _make_nc(tmp_path, conventions="MYSTD-2.3", project_url=MYSTD_URL)
+        registry = _registry(project=_project(url=MYSTD_URL))
+        dest = tmp_path / "incoming"
+        dest.mkdir()
+
+        context = _run_check_upload(
+            nc,
+            registry,
+            run_check=lambda res, fn: _fail_outcome(res),
+            upload_dir=dest,
+        )
+
+        assert context.verdict == "fail"
+        assert context.landing is None
+        assert list(dest.iterdir()) == []
+
+    def test_indeterminate_stores_nothing(self, tmp_path: Path) -> None:
+        # A mandatory project that isn't installed → INDETERMINATE: never stored.
+        nc = _make_nc(tmp_path, conventions="MYSTD-2.3", project_url=MYSTD_URL)
+        dest = tmp_path / "incoming"
+        dest.mkdir()
+
+        context = _run_check_upload(nc, _registry(), upload_dir=dest)
+
+        assert context.verdict == "indeterminate"
+        assert context.landing is None
+        assert list(dest.iterdir()) == []
 
 
 class TestCheckUploadPrecondition:

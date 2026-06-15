@@ -47,6 +47,22 @@ class UnverifiedClaim(BaseModel):
     hint: str | None = None
 
 
+class Landing(BaseModel):
+    """The outcome of storing a PASS file under ``vocal web --upload-to``.
+
+    Surfaced on the results page only when storage was *attempted* — i.e. a PASS
+    verdict with the feature on. ``status`` discriminates the two cases the user
+    sees: ``"stored"`` (the validated file was collected) and ``"refused"`` (it
+    passed but could not be stored, e.g. an unsafe name). ``message`` is a
+    human-readable, deliberately **path-free** line: the server's filesystem
+    layout is never disclosed to a remote user (the server-side log is the only
+    place the directory is named).
+    """
+
+    status: Literal["stored", "refused"]
+    message: str
+
+
 class Check(BaseModel):
     """A class to hold the context of a check."""
 
@@ -95,6 +111,9 @@ class CheckContext(BaseModel):
         unverified (list[UnverifiedClaim]): What couldn't be verified and how to
             complete the check (populated for the INDETERMINATE state).
         error (ResolverError | None): The upfront refusal, if any.
+        landing (Landing | None): The storage outcome under ``--upload-to``,
+            populated only when a PASS file's storage was attempted; ``None``
+            otherwise (feature off, non-PASS verdict, or upfront refusal).
     """
 
     verdict: str | None = None
@@ -102,6 +121,7 @@ class CheckContext(BaseModel):
     definitions: dict[str, CheckDefinition] = Field(default_factory=dict)
     unverified: list[UnverifiedClaim] = Field(default_factory=list)
     error: ResolverError | None = None
+    landing: Landing | None = None
 
 
 class SatisfiedStandardView(BaseModel):

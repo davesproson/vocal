@@ -38,6 +38,23 @@
     </div>
     {% endif %}
 
+    {# Landing notice (--upload-to): present only when storage was attempted on a
+       PASS. The message is path-free by design — the server's directory is never
+       rendered. Nothing shows for non-PASS verdicts or upfront refusals. #}
+    {% if landing %}
+    <div class="check-panel panel-{{ 'success' if landing.status == 'stored' else 'warning' }}">
+        <div class="check-panel-header">
+            <span class="status-badge">{{ '✓' if landing.status == 'stored' else '!' }}</span>
+            {{ 'Stored' if landing.status == 'stored' else 'Not stored' }}
+        </div>
+        <div class="check-panel-body">
+            <div class="check-item">
+                <span class="msg">{{ landing.message }}</span>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
     {% if unverified %}
     <div class="check-panel panel-warning">
         <div class="check-panel-header">
