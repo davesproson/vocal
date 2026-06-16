@@ -36,7 +36,7 @@ class Renderer:
 
     render: Callable[[ProjectDoc | ProductDoc, str | None], str]
     extension: str
-    render_index: Callable[[PackDoc], str]
+    render_index: Callable[[PackDoc, str | None], str]
 
 
 RENDERERS: dict[str, Renderer] = {

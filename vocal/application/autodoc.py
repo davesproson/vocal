@@ -25,7 +25,7 @@ import typer
 
 from vocal.autodoc import document_product, document_project
 from vocal.autodoc.ir import ProductDoc, ProjectDoc
-from vocal.autodoc.pack import build_pack_doc, unique_slugs
+from vocal.autodoc.pack import build_pack_doc, pack_heading, unique_slugs
 from vocal.autodoc.renderers import Renderer, get_renderer
 from vocal.exceptions import VocalError
 from vocal.manifest import MANIFEST_FILENAME, load_manifest
@@ -181,8 +181,14 @@ def _render_pack(
         )
         for product, href in zip(manifest.products, hrefs)
     }
+    # The pack url's last path segment names the pack; when the url is bare, the
+    # --pack directory name stands in. Resolved here so the renderer needn't parse
+    # urls (it stays a pure IR consumer).
+    heading = pack_heading(manifest.url, pack_dir.name)
     index_name = f"index.{renderer.extension}"
-    pages[index_name] = renderer.render_index(build_pack_doc(manifest, hrefs))
+    pages[index_name] = renderer.render_index(
+        build_pack_doc(manifest, hrefs), heading
+    )
 
     out_dir = Path(out) if out else Path("autodoc")
     out_dir.mkdir(parents=True, exist_ok=True)

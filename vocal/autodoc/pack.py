@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import re
 from typing import Iterable
+from urllib.parse import urlsplit
 
 from vocal.manifest import Manifest
 
@@ -55,6 +56,19 @@ def unique_slugs(names: Iterable[str]) -> list[str]:
         used.add(candidate)
         out.append(candidate)
     return out
+
+
+def pack_heading(url: str, fallback: str) -> str:
+    """The pack's display heading: the last path segment of its ``url``.
+
+    The pack ``url`` is the pack's stable identity, so its trailing segment names
+    the pack (e.g. ``…/packs/demo`` → ``demo``). When the url carries no path —
+    a bare host — there is nothing to name the pack with, so the caller's
+    ``fallback`` (the ``--pack`` directory name) is used instead. Pure, so the
+    command can resolve the heading without the renderer parsing urls.
+    """
+    segment = urlsplit(url).path.rstrip("/").rsplit("/", 1)[-1]
+    return segment or fallback
 
 
 def build_pack_doc(manifest: Manifest, hrefs: list[str]) -> PackDoc:

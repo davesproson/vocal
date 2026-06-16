@@ -284,6 +284,31 @@ class TestPack:
             assert f'href="{href}"' in index
             assert (out_dir / href).exists()
 
+    def test_index_heading_is_the_pack_url_tail(self, tmp_path: Path) -> None:
+        pack_dir = tmp_path / "pack"
+        pack_dir.mkdir()
+        _write_pack(pack_dir, ["alpha"])
+        out_dir = tmp_path / "site"
+
+        runner.invoke(
+            cli_app, ["autodoc", "--pack", str(pack_dir), "-o", str(out_dir)]
+        )
+
+        # The pack url is .../packs/demo, so its last segment heads the index.
+        assert "<h1>demo</h1>" in (out_dir / "index.html").read_text()
+
+    def test_index_shows_each_products_file_pattern(self, tmp_path: Path) -> None:
+        pack_dir = tmp_path / "pack"
+        pack_dir.mkdir()
+        _write_pack(pack_dir, ["alpha"])
+        out_dir = tmp_path / "site"
+
+        runner.invoke(
+            cli_app, ["autodoc", "--pack", str(pack_dir), "-o", str(out_dir)]
+        )
+
+        assert "thing_{date}.nc" in (out_dir / "index.html").read_text()
+
     def test_product_page_titled_with_manifest_name(self, tmp_path: Path) -> None:
         pack_dir = tmp_path / "pack"
         pack_dir.mkdir()

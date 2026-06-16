@@ -167,26 +167,58 @@ class TestRegistry:
 
 
 class TestPackIndex:
-    """The minimal pack index seam (#64): a routing page of linked product names.
+    """The lean routing-table pack index (#65): a pack-level header rendered once,
+    then one linked row per product carrying its ``file_pattern``.
 
-    The lean header and the per-product ``file_pattern`` column arrive in #65;
-    here we only pin that the index is a document linking every product to the
-    page href it was assembled with.
+    Structural assertions only (test_renderers.py style) — that the pack identity,
+    the advisory standards, and every product row make it through, not the exact
+    HTML layout.
     """
 
-    def test_index_links_every_product_to_its_page_href(self) -> None:
+    def _pack(self) -> "object":
         from vocal.autodoc.ir import PackDoc, PackEntry
-        from vocal.autodoc.renderers.html import render_index
 
-        pack = PackDoc(
+        return PackDoc(
             url="https://host/packs/demo",
-            version=1,
+            version=3,
+            satisfies_standards=["MYSTD-2.4+"],
             products=[
                 PackEntry(name="alpha", href="alpha.html", file_pattern="a_{date}.nc"),
                 PackEntry(name="beta", href="beta.html", file_pattern="b_{date}.nc"),
             ],
         )
-        out = render_index(pack)
+
+    def test_index_links_every_product_to_its_page_href(self) -> None:
+        from vocal.autodoc.renderers.html import render_index
+
+        out = render_index(self._pack())
         assert out.startswith("<!doctype html>")
         assert 'href="alpha.html"' in out and ">alpha<" in out
         assert 'href="beta.html"' in out and ">beta<" in out
+
+    def test_header_shows_pack_url_and_version_once(self) -> None:
+        from vocal.autodoc.renderers.html import render_index
+
+        out = render_index(self._pack())
+        assert out.count("https://host/packs/demo") == 1
+        assert "version" in out.lower()
+        assert "3" in out
+
+    def test_satisfies_standards_appears_once(self) -> None:
+        from vocal.autodoc.renderers.html import render_index
+
+        out = render_index(self._pack())
+        assert out.count("MYSTD-2.4+") == 1
+
+    def test_each_product_row_shows_its_file_pattern(self) -> None:
+        from vocal.autodoc.renderers.html import render_index
+
+        out = render_index(self._pack())
+        assert "a_{date}.nc" in out
+        assert "b_{date}.nc" in out
+
+    def test_title_overrides_the_heading(self) -> None:
+        from vocal.autodoc.renderers.html import render_index
+
+        out = render_index(self._pack(), "demo")
+        assert "<h1>demo</h1>" in out

@@ -644,6 +644,9 @@ details.group details.group { border-left: 3px solid #b9c6da; }
 .mrules { border: 1px solid #d9e0ea; background: #f4f7fb; border-radius: 8px; padding: 8px 12px; margin: 12px 0; }
 .mrules-head { font: 700 14px system-ui, sans-serif; color: #4a5573; margin-bottom: 4px; }
 .mrules .rules { margin: 0; } .mrules .rules ul { margin: 2px 0 0; }
+
+.packmeta { color: #6a727b; margin: 16px 0 0; font-family: ui-monospace, monospace; font-size: 13px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+table.packindex td.name a { font-weight: 700; }
 """
 
 
@@ -704,26 +707,48 @@ def render(doc: ProjectDoc | ProductDoc, title: str | None = None) -> str:
     return _document(build_doc(doc), title)
 
 
-def render_index(pack: PackDoc) -> str:
-    """Render a pack's index page: a routing list linking to each product page.
+def render_index(pack: PackDoc, title: str | None = None) -> str:
+    """Render a pack's index page: a lean routing table over its products.
 
-    This is the minimal index — one link per product to the page it was
-    assembled with. The lean pack-level header (``url`` / ``version`` /
-    ``satisfies_standards``) and the per-product ``file_pattern`` column are
-    layered on top of this seam in a later slice.
+    A pack-level header states the pack identity (``url`` / ``version``) and the
+    advisory ``satisfies_standards`` **once**; then one row per product links its
+    ``name`` to its page (``href``) alongside the ``file_pattern`` a conforming
+    data file matches. No per-product description or counts are pulled in — those
+    live on each product page.
+
+    ``title`` overrides the heading (the command resolves it from the pack url's
+    last path segment, falling back to the ``--pack`` directory name); without it
+    the page is still a valid index headed simply ``pack``.
     """
+    heading = _esc(title or "pack")
+    standards = ""
+    if pack.satisfies_standards:
+        standards = (
+            '<div class="packmeta">satisfies standards: '
+            + ", ".join(
+                f"<code>{_esc(s)}</code>" for s in pack.satisfies_standards
+            )
+            + "</div>"
+        )
     rows = "".join(
-        f'<li><a href="{_esc(entry.href)}">{_esc(entry.name)}</a></li>'
+        f'<tr><td class="name"><a href="{_esc(entry.href)}">{_esc(entry.name)}</a></td>'
+        f"<td><code>{_esc(entry.file_pattern)}</code></td></tr>"
         for entry in pack.products
     )
     body = (
-        '<header><h1>pack</h1><span class="mode">pack</span>'
+        f'<header><h1>{heading}</h1><span class="mode">pack</span>'
         '<span class="brand">vocal</span></header>'
-        f'<main><ul class="packindex">{rows}</ul></main>'
+        f'<main><div class="packmeta">{_esc(pack.url)} '
+        f'<span class="badge">version {_esc(pack.version)}</span></div>'
+        f"{standards}"
+        '<h2>Products <span class="count">'
+        f'{len(pack.products)}</span></h2>'
+        '<table class="packindex"><thead><tr><th>Product</th>'
+        f"<th>File pattern</th></tr></thead><tbody>{rows}</tbody></table></main>"
     )
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width, initial-scale=1'>"
-        f"<title>autodoc — pack</title><style>{_CSS}</style></head>"
+        f"<title>autodoc — {heading}</title><style>{_CSS}</style></head>"
         f"<body>{body}</body></html>"
     )
