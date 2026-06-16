@@ -28,9 +28,7 @@ def _download_flag_context(request: Request) -> dict[str, bool]:
     render time, defaulting to ``False`` so a stray render without it errs safe.
     """
     return {
-        "allow_user_download": getattr(
-            request.app.state, "allow_user_download", False
-        )
+        "allow_user_download": getattr(request.app.state, "allow_user_download", False)
     }
 
 
@@ -138,7 +136,10 @@ async def add_post(request: Request):
         return templates.TemplateResponse(
             request=request,
             name="add.html",
-            context={"error": "Please provide a project or pack URL.", "url": url or ""},
+            context={
+                "error": "Please provide a project or pack URL.",
+                "url": url or "",
+            },
             status_code=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -197,7 +198,11 @@ async def root(request: Request):
     if num_projects == 0:
         return templates.TemplateResponse(request=request, name="no-projects.html")
 
-    return templates.TemplateResponse(request=request, name="checker.html")
+    return templates.TemplateResponse(
+        request=request,
+        name="checker.html",
+        context={"upload_enabled": request.app.state.upload_dir is not None},
+    )
 
 
 @router.post("/", response_class=JSONResponse)

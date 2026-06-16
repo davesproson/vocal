@@ -675,8 +675,8 @@ def _pass_outcome(resolution: Resolution) -> CheckOutcome:
         ],
         pack_result=None,
         failures=[],
-        warnings=[],
-        comments=[],
+        warnings=resolution.warnings,
+        comments=resolution.comments,
         verdict=Verdict.PASS,
     )
 
@@ -696,8 +696,8 @@ def _fail_outcome(resolution: Resolution) -> CheckOutcome:
         ],
         pack_result=None,
         failures=[],
-        warnings=[],
-        comments=[],
+        warnings=resolution.warnings,
+        comments=resolution.comments,
         verdict=Verdict.FAIL,
     )
 
@@ -929,7 +929,8 @@ class TestCheckUploadPrecondition:
     ) -> None:
         # A Conventions token whose standard name matches an installed project but
         # whose major is not installed: recognisable, so accepted — and rendered
-        # INDETERMINATE rather than rejected.
+        # INDETERMINATE rather than rejected. The skipped opportunistic standard is
+        # an informational comment, not an actionable unverified claim.
         nc = _make_nc(tmp_path, conventions="MYSTD-3.0")
         context = _run_check_upload(
             nc, _registry(project=_project(major=2, minor=3))
@@ -937,7 +938,8 @@ class TestCheckUploadPrecondition:
 
         assert context.error is None
         assert context.verdict == "indeterminate"
-        assert any("MYSTD-3.0" in c.message for c in context.unverified)
+        assert not context.unverified
+        assert any("MYSTD-3.0" in c.message for c in context.comments)
 
     def test_conventions_only_installed_match_is_checked(
         self, tmp_path: Path
@@ -953,3 +955,62 @@ class TestCheckUploadPrecondition:
         assert context.error is None
         assert context.verdict == "pass"
         assert "MYSTD-2" in context.projects
+
+    def test_opportunistic_skip_is_a_comment_not_a_warning(
+        self, tmp_path: Path
+    ) -> None:
+        # A file with a real mandatory standard plus an opportunistic CF token
+        # whose project isn't installed: CF is skipped as an informational
+        # comment, never as an actionable unverified claim (matching the CLI's
+        # comment tier). The verdict is unaffected.
+        nc = _make_nc(
+            tmp_path, conventions="MYSTD-2.3 CF-1.8", project_url=MYSTD_URL
+        )
+        registry = _registry(project=_project(url=MYSTD_URL))
+        context = _run_check_upload(
+            nc, registry, run_check=lambda res, fn: _pass_outcome(res)
+        )
+
+        assert context.error is None
+        assert context.verdict == "pass"
+        assert not context.unverified
+        assert any("CF-1.8" in c.message for c in context.comments)
+
+    def test_too_old_opportunistic_standard_is_an_advisory_warning(
+        self, tmp_path: Path
+    ) -> None:
+        # An opportunistic (Conventions-only) standard installed but at an older
+        # minor than claimed: best-effort, so it never gates the verdict, but it
+        # is worth acting on (a vocal fetch --update). It surfaces as an advisory
+        # warning, not a comment and not an unverified claim. Nothing else runs,
+        # so the verdict is INDETERMINATE.
+        nc = _make_nc(tmp_path, conventions="MYSTD-2.5")
+        registry = _registry(project=_project(major=2, minor=3))
+        context = _run_check_upload(nc, registry)
+
+        assert context.error is None
+        assert context.verdict == "indeterminate"
+        assert not context.unverified
+        assert not context.comments
+        assert any(
+            "older than the claimed minor" in w.message for w in context.warnings
+        )
+        assert any(w.hint and "--update" in w.hint for w in context.warnings)
+
+    def test_unmet_satisfies_standards_is_an_advisory_warning(
+        self, tmp_path: Path
+    ) -> None:
+        # The file resolves a pack whose satisfies_standards asserts a standard the
+        # file doesn't claim. The assertion is advisory — the file is still checked
+        # against the pack schema — so it surfaces as a warning, never a failure.
+        nc = _make_nc(tmp_path, definitions_url=PACKS_URL, definitions_version=3)
+        registry = _registry(pack=_pack())
+        context = _run_check_upload(
+            nc, registry, run_check=lambda res, fn: _pass_outcome(res)
+        )
+
+        assert context.error is None
+        assert any(
+            "satisfies" in w.message and "none of which the file claims" in w.message
+            for w in context.warnings
+        )

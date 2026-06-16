@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 
 from vocal.application.install import derive_url_slug
 from vocal.checking import CheckError, CheckComment, CheckWarning
-from vocal.utils.registry import Pack, Registry, project_key
+from vocal.utils.registry import Registry, project_key
 from vocal.versioning import VersionConstraint
 
 RequirementStatus = Literal["satisfied", "project_missing", "project_too_old"]
@@ -37,10 +37,41 @@ class UnverifiedClaim(BaseModel):
     """A claim the check could not finish verifying — what to fetch or update.
 
     Surfaced alongside the INDETERMINATE verdict. Covers an unresolved mandatory
-    standard or pack (fetch it), a claimed standard installed at a minor too old
-    to run (update it), and an opportunistic ``Conventions`` standard whose
-    project is not installed (skipped). ``message`` says what wasn't verified;
-    ``hint`` says how to complete the check.
+    standard or pack (fetch it) and a claimed standard installed at a minor too
+    old to run (update it). ``message`` says what wasn't verified; ``hint`` says
+    how to complete the check. An opportunistic ``Conventions`` standard whose
+    project isn't installed is *not* an unverified claim — it never expected to be
+    checked — and is carried as an :class:`InfoComment` instead.
+    """
+
+    message: str
+    hint: str | None = None
+
+
+class AdvisoryWarning(BaseModel):
+    """An advisory note the user may want to act on, but which never gates a check.
+
+    The web counterpart of :class:`vocal.resolution.ResolutionWarning`: a pack's
+    unmet ``satisfies_standards`` assertion (the pack claims to satisfy standards
+    the file doesn't), or an opportunistic ``Conventions`` standard installed at a
+    minor too old to verify. Advisory — it never changes the verdict — but, unlike
+    an :class:`InfoComment`, it flags something worth acting on (often a single
+    ``vocal fetch --update``). ``message`` says what; ``hint`` says what to do.
+    """
+
+    message: str
+    hint: str | None = None
+
+
+class InfoComment(BaseModel):
+    """A purely informational note about what wasn't checked — never actionable.
+
+    The web counterpart of :class:`vocal.resolution.ResolutionComment`: an
+    opportunistic ``Conventions`` standard (CF, ACDD, ...) skipped because no
+    matching project is installed. It never changes the verdict and carries no
+    expectation of action, so the results page renders it as an info note,
+    distinct from an :class:`UnverifiedClaim` (which says *fetch or update this*).
+    ``message`` says what wasn't checked; ``hint`` says how to check it if wanted.
     """
 
     message: str
@@ -110,6 +141,13 @@ class CheckContext(BaseModel):
         definitions (dict): The product-axis check result, keyed by product name.
         unverified (list[UnverifiedClaim]): What couldn't be verified and how to
             complete the check (populated for the INDETERMINATE state).
+        warnings (list[AdvisoryWarning]): Advisory notes the user may want to act
+            on but which never change the verdict — an unmet
+            ``satisfies_standards`` assertion, or an opportunistic standard
+            installed too old to verify. The CLI shows these as warnings too.
+        comments (list[InfoComment]): Purely informational notes about what wasn't
+            checked — opportunistic standards skipped because their project isn't
+            installed. Never actionable; the CLI shows these as comments too.
         error (ResolverError | None): The upfront refusal, if any.
         landing (Landing | None): The storage outcome under ``--upload-to``,
             populated only when a PASS file's storage was attempted; ``None``
@@ -120,6 +158,8 @@ class CheckContext(BaseModel):
     projects: dict[str, CheckProject] = Field(default_factory=dict)
     definitions: dict[str, CheckDefinition] = Field(default_factory=dict)
     unverified: list[UnverifiedClaim] = Field(default_factory=list)
+    warnings: list[AdvisoryWarning] = Field(default_factory=list)
+    comments: list[InfoComment] = Field(default_factory=list)
     error: ResolverError | None = None
     landing: Landing | None = None
 

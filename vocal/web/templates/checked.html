@@ -24,23 +24,23 @@
     {% if verdict == 'pass' %}
     <div class="verdict-banner verdict-pass">
         <span class="verdict-icon">✓</span>
-        <span class="verdict-text">PASSED — the file honours all of its claims.</span>
+        <span class="verdict-text">PASSED: the file honours all of its claims.</span>
     </div>
     {% elif verdict == 'fail' %}
     <div class="verdict-banner verdict-fail">
         <span class="verdict-icon">✗</span>
-        <span class="verdict-text">FAILED — the file violated a check.</span>
+        <span class="verdict-text">FAILED: the file violated one or more checks.</span>
     </div>
     {% else %}
     <div class="verdict-banner verdict-indeterminate">
         <span class="verdict-icon">?</span>
-        <span class="verdict-text">COULDN'T VERIFY — the check could not be completed.</span>
+        <span class="verdict-text">COULDN'T VERIFY: the check could not be completed.</span>
     </div>
     {% endif %}
 
     {# Landing notice (--upload-to): present only when storage was attempted on a
-       PASS. The message is path-free by design — the server's directory is never
-       rendered. Nothing shows for non-PASS verdicts or upfront refusals. #}
+    PASS. The message is path-free by design — the server's directory is never
+    rendered. Nothing shows for non-PASS verdicts or upfront refusals. #}
     {% if landing %}
     <div class="check-panel panel-{{ 'success' if landing.status == 'stored' else 'warning' }}">
         <div class="check-panel-header">
@@ -74,6 +74,28 @@
     </div>
     {% endif %}
 
+    {# Advisory, never verdict-changing: an unmet satisfies_standards assertion,
+    or an opportunistic standard installed too old to verify. Worth acting on
+    (often a vocal fetch --update), so distinct from the info comments below. #}
+    {% if warnings %}
+    <div class="check-panel panel-warning">
+        <div class="check-panel-header">
+            <span class="status-badge">!</span>
+            Warnings — advisory
+        </div>
+        <div class="check-panel-body">
+            {% for item in warnings %}
+            <div class="check-item">
+                <span class="msg">{{ item.message }}</span>
+                {% if item.hint %}
+                <span class="path">{{ item.hint }}</span>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+
     {% for project in projects %}
     <div class="check-panel panel-{{'success' if projects[project]['passed'] else 'error'}}">
         <div class="check-panel-header">
@@ -92,6 +114,28 @@
         {% endif %}
     </div>
     {% endfor %}
+
+    {# Informational, never actionable: opportunistic standards (CF, ACDD, ...)
+    skipped because their project isn't installed. The CLI shows these as
+    comments too (vocal check -c), not warnings. #}
+    {% if comments %}
+    <div class="check-panel panel-info">
+        <div class="check-panel-header">
+            <span class="status-badge">i</span>
+            Comments
+        </div>
+        <div class="check-panel-body">
+            {% for item in comments %}
+            <div class="check-item">
+                <span class="msg">{{ item.message }}</span>
+                {% if item.hint %}
+                <span class="path">{{ item.hint }}</span>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
 
     {% for definition in definitions %}
     <div class="definition-card">

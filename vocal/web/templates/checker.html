@@ -3,7 +3,7 @@
 {% block content %}
 <div class="centered-page">
     <div class="upload-card">
-        <h2>Check a NetCDF File</h2>
+        <h2>{% if upload_enabled %}Check and upload a NetCDF File{% else %}Check a NetCDF File{% endif %}</h2>
         <p>Validate your file against registered project definitions.</p>
 
         <form action="/" method="post" enctype="multipart/form-data" id="upload-form">
@@ -25,7 +25,7 @@
 </div>
 
 <script>
-    document.getElementById("ncfile").addEventListener("change", function() {
+    document.getElementById("ncfile").addEventListener("change", function () {
         document.getElementById("progress-bar").style.display = "flex";
         document.getElementById("upload-form").style.display = "none";
         document.getElementById("upload-form").submit();

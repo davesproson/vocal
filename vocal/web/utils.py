@@ -23,11 +23,13 @@ from vocal.utils.conventions import FileConventions, read_file_conventions
 from vocal.utils.registry import Registry
 from vocal.web.landing import perform_landing
 from vocal.web.models import (
+    AdvisoryWarning,
     Check,
     CheckContext,
     CheckDefinition,
     CheckError,
     CheckProject,
+    InfoComment,
     ResolverError,
     UnverifiedClaim,
 )
@@ -109,11 +111,13 @@ def _unverified_claims(
 ) -> list[UnverifiedClaim]:
     """Collect the fetch-it/update-it items that explain an INDETERMINATE verdict.
 
-    Three sources, all carried through from resolution: unresolved mandatory
-    claims (a missing project or pack — fetch it), claimed standards installed at
-    a minor too old to run (update it), and opportunistic ``Conventions``
-    standards whose project isn't installed (an informational comment). Advisory
-    ``satisfies_standards`` warnings are not actionable here and are omitted.
+    Two sources, both carried through from resolution: unresolved mandatory claims
+    (a missing project or pack — fetch it) and claimed standards installed at a
+    minor too old to run (update it). Opportunistic ``Conventions`` standards
+    whose project isn't installed are *not* unverified claims — they were never
+    required — and are surfaced as :class:`InfoComment`\\ s by
+    :func:`_info_comments`. Advisory ``satisfies_standards`` warnings are not
+    actionable here and are omitted.
     """
     claims: list[UnverifiedClaim] = []
 
@@ -132,13 +136,39 @@ def _unverified_claims(
                 )
             )
 
-    for comment in outcome.comments:
-        if comment.code == "standard_not_verified":
-            claims.append(
-                UnverifiedClaim(message=comment.message, hint=comment.hint)
-            )
-
     return claims
+
+
+def _advisory_warnings(outcome: CheckOutcome) -> list[AdvisoryWarning]:
+    """Collect the advisory warnings the user may want to act on.
+
+    Carried through from resolution: a pack's unmet ``satisfies_standards``
+    assertion and an opportunistic standard installed at a minor too old to
+    verify. Neither changes the verdict, but each flags something actionable, so
+    they ride a distinct warnings panel rather than the informational comments or
+    the fetch/update unverified list. Mirrors the CLI, which renders these as
+    warnings.
+    """
+    return [
+        AdvisoryWarning(message=warning.message, hint=warning.hint)
+        for warning in outcome.warnings
+    ]
+
+
+def _info_comments(outcome: CheckOutcome) -> list[InfoComment]:
+    """Collect the purely informational notes about what wasn't checked.
+
+    An opportunistic ``Conventions`` standard (CF, ACDD, ...) skipped because no
+    matching project is installed is the canonical case: never actionable, never
+    verdict-changing. Surfaced as an info note rather than an
+    :class:`UnverifiedClaim`, mirroring the CLI's comment tier (``vocal check
+    -c``).
+    """
+    return [
+        InfoComment(message=comment.message, hint=comment.hint)
+        for comment in outcome.comments
+        if comment.code == "standard_not_verified"
+    ]
 
 
 def _build_context(resolution: Resolution, outcome: CheckOutcome) -> CheckContext:
@@ -159,6 +189,8 @@ def _build_context(resolution: Resolution, outcome: CheckOutcome) -> CheckContex
         )
 
     context.unverified = _unverified_claims(resolution, outcome)
+    context.warnings = _advisory_warnings(outcome)
+    context.comments = _info_comments(outcome)
     return context
 
 
@@ -256,16 +288,18 @@ def _indeterminate_unresolvable(
     nothing runnable.
 
     ``resolve_file`` raises :class:`~vocal.resolution.NothingToCheck` in this
-    case rather than returning a resolution, so the resolver's warnings are
-    re-derived for the surface by recording the opportunistic standards that
-    weren't installed. The verdict is INDETERMINATE: the file claimed something
-    vocal-managed, but nothing could be verified.
+    case rather than returning a resolution, so the opportunistic standards that
+    weren't installed are re-derived for the surface. They are informational
+    comments, not unverified claims — the file never required them — so they
+    render as info notes, matching the comment tier the resolver would have
+    emitted. The verdict is INDETERMINATE: the file named something vocal-managed,
+    but nothing could be verified.
     """
-    claims: list[UnverifiedClaim] = [
-        UnverifiedClaim(
+    comments: list[InfoComment] = [
+        InfoComment(
             message=f"{token} was not verified: no matching project is installed.",
             hint=f"Run 'vocal fetch' for {token.name}-{token.major} to verify it.",
         )
         for token in tokenise_conventions(attrs.conventions)
     ]
-    return CheckContext(verdict="indeterminate", unverified=claims)
+    return CheckContext(verdict="indeterminate", comments=comments)
