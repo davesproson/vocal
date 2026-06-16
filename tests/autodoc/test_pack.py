@@ -61,3 +61,28 @@ class TestUniqueSlugs:
             "alpha",
             "gamma",
         ]
+
+    def test_colliding_names_get_distinct_numeric_suffixes(self) -> None:
+        # Names that slugify to the same stem must still each get their own page
+        # filename, disambiguated by -2, -3, ... in input order.
+        assert unique_slugs(["Air Temp", "air temp", "AIR  TEMP"]) == [
+            "air-temp",
+            "air-temp-2",
+            "air-temp-3",
+        ]
+
+    def test_unsafe_characters_collapse_to_a_safe_stem(self) -> None:
+        # Anything outside [a-z0-9] collapses to single hyphens, trimmed at the
+        # ends, so the stem is always a safe filename.
+        assert unique_slugs(["Sea/Surface Temp! (°C)"]) == ["sea-surface-temp-c"]
+
+    def test_traversal_style_name_collapses_to_a_safe_stem(self) -> None:
+        # A path-traversal-style name cannot escape the output directory: the
+        # slug carries no slashes or dots, just a safe stem.
+        slug = unique_slugs(["../../etc/passwd"])[0]
+        assert slug == "etc-passwd"
+        assert "/" not in slug and ".." not in slug
+
+    def test_name_of_only_unsafe_characters_falls_back_to_product(self) -> None:
+        # A name that slugifies to nothing still yields a usable stem.
+        assert unique_slugs(["///", "!!!"]) == ["product", "product-2"]

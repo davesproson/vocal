@@ -157,10 +157,23 @@ def _render_pack(
     slugified once into the page filenames that double as the index's link
     targets, so links and files cannot drift. Each product page is produced
     exactly as ``--product`` would (manifest ``name`` as the title, the pack-wide
-    ``satisfies_standards``). Output lands in a directory (default ``./autodoc/``):
-    created if missing, our generated files overwritten, any other files left
-    untouched.
+    ``satisfies_standards``). The whole site is rendered in memory first, so a
+    missing or unparseable product schema aborts — naming the product — before
+    anything is written, never leaving a half-built doc site. ``--out -`` (stdout)
+    is rejected: a pack is many files. Output lands in a directory (default
+    ``./autodoc/``): created if missing, our generated files overwritten, any
+    other files left untouched.
     """
+    # A pack writes many files into a directory; '-' (stdout) would concatenate
+    # them into broken output, so reject it before doing any work.
+    if out == "-":
+        p.print_err(
+            f"{TS.BOLD}{TS.FAIL}✗{TS.ENDC} --out - (stdout) is not supported with "
+            f"--pack, which writes an index plus one page per product into a "
+            f"directory. Pass an output directory instead."
+        )
+        raise typer.Exit(code=1)
+
     pack_dir = Path(pack)
     manifest = load_manifest(pack_dir / MANIFEST_FILENAME)
 
@@ -172,15 +185,22 @@ def _render_pack(
     ]
     standards = [str(constraint) for constraint in manifest.satisfies_standards]
 
-    pages = {
-        href: renderer.render(
-            document_product(
-                str(pack_dir / product.schema), satisfies_standards=standards
-            ),
-            product.name,
-        )
-        for product, href in zip(manifest.products, hrefs)
-    }
+    # Render the whole site in memory before writing a single file: if any
+    # product's schema is missing or unparseable we abort here, naming the
+    # offending product, and the output directory is never touched — no
+    # half-built, misleading doc site.
+    pages: dict[str, str] = {}
+    for product, href in zip(manifest.products, hrefs):
+        schema_path = pack_dir / product.schema
+        try:
+            doc = document_product(str(schema_path), satisfies_standards=standards)
+        except (OSError, ValueError) as e:
+            p.print_err(
+                f"{TS.BOLD}{TS.FAIL}✗{TS.ENDC} Could not read schema for product "
+                f"{product.name!r} ({schema_path}): {e}"
+            )
+            raise typer.Exit(code=1)
+        pages[href] = renderer.render(doc, product.name)
     # The pack url's last path segment names the pack; when the url is bare, the
     # --pack directory name stands in. Resolved here so the renderer needn't parse
     # urls (it stays a pure IR consumer).

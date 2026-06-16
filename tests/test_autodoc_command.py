@@ -334,6 +334,100 @@ class TestPack:
             assert Path("autodoc/index.html").exists()
             assert Path("autodoc/alpha.html").exists()
 
+    def test_missing_product_schema_aborts_naming_it_and_writes_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        # A manifest references a schema file that does not exist. The whole site
+        # is rendered in memory first, so this aborts before any write: the error
+        # names the offending product and the output directory stays untouched.
+        import json
+
+        pack_dir = tmp_path / "pack"
+        pack_dir.mkdir()
+        (pack_dir / "alpha.json").write_text(json.dumps(_PRODUCT))
+        (pack_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "version": 1,
+                    "url": "https://host/packs/demo",
+                    "filecodec": {"date": {"regex": r"\d{8}"}},
+                    "satisfies_standards": [],
+                    "products": [
+                        {
+                            "name": "alpha",
+                            "file_pattern": "a_{date}.nc",
+                            "schema": "alpha.json",
+                        },
+                        {
+                            "name": "ghost",
+                            "file_pattern": "g_{date}.nc",
+                            "schema": "missing.json",
+                        },
+                    ],
+                }
+            )
+        )
+        out_dir = tmp_path / "site"
+
+        result = runner.invoke(
+            cli_app, ["autodoc", "--pack", str(pack_dir), "-o", str(out_dir)]
+        )
+
+        assert result.exit_code != 0
+        assert "ghost" in result.output
+        # Nothing is written when any product is broken — not even the good page.
+        assert not out_dir.exists()
+
+    def test_unparseable_product_schema_aborts_naming_it(self, tmp_path: Path) -> None:
+        import json
+
+        pack_dir = tmp_path / "pack"
+        pack_dir.mkdir()
+        (pack_dir / "broken.json").write_text("{ this is not json")
+        (pack_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "version": 1,
+                    "url": "https://host/packs/demo",
+                    "filecodec": {"date": {"regex": r"\d{8}"}},
+                    "satisfies_standards": [],
+                    "products": [
+                        {
+                            "name": "wonky",
+                            "file_pattern": "w_{date}.nc",
+                            "schema": "broken.json",
+                        }
+                    ],
+                }
+            )
+        )
+        out_dir = tmp_path / "site"
+
+        result = runner.invoke(
+            cli_app, ["autodoc", "--pack", str(pack_dir), "-o", str(out_dir)]
+        )
+
+        assert result.exit_code != 0
+        assert "wonky" in result.output
+        assert not out_dir.exists()
+
+    def test_stdout_out_is_rejected_in_pack_mode(self, tmp_path: Path) -> None:
+        # A pack writes many files into a directory; stdout would concatenate
+        # them into broken output, so '-' is refused with a clear error.
+        pack_dir = tmp_path / "pack"
+        pack_dir.mkdir()
+        _write_pack(pack_dir, ["alpha"])
+
+        result = runner.invoke(
+            cli_app, ["autodoc", "--pack", str(pack_dir), "--out", "-"]
+        )
+
+        assert result.exit_code != 0
+        assert "-" in result.output
+        assert "--pack" in result.output
+
     def test_rerun_overwrites_ours_and_leaves_others(self, tmp_path: Path) -> None:
         pack_dir = tmp_path / "pack"
         pack_dir.mkdir()
