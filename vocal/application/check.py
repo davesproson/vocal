@@ -141,7 +141,9 @@ def _override_pack_target(schema_path: str) -> PackTarget:
     manifest = build_manifest(
         version=0, url="", filecodec={}, satisfies_standards=(), products=(product,)
     )
-    pack = Pack(manifest=manifest, local_path=os.path.dirname(os.path.abspath(schema_path)))
+    pack = Pack(
+        manifest=manifest, local_path=os.path.dirname(os.path.abspath(schema_path))
+    )
     return PackTarget(pack=pack, product=product, schema_path=schema_path)
 
 
@@ -325,8 +327,12 @@ def _render_pack_result(result: DefinitionCheckResult, filename: str) -> None:
     print_checks(result.report, filename, result.target.schema_path)
 
 
-def _render_failure(failure: ResolutionError) -> None:
-    """Render an unresolved mandatory claim: its message and the resolver hint."""
+def _render_failure(failure: VocalError) -> None:
+    """Render a VocalError: its message and optional hint.
+
+    Used for unresolved mandatory claims (the resolver's failures) as well as
+    fetch and resolution-build errors raised along the way.
+    """
     p.print_err(f"\n{TS.BOLD}{TS.FAIL}✗{TS.ENDC} {failure.message}")
     if failure.hint:
         p.print_err(f"  {failure.hint}")
