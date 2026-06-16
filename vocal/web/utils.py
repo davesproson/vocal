@@ -237,6 +237,7 @@ async def check_upload(
     if not filename_is_safe:
         context.error = ResolverError(
             code="unsafe_filename",
+            title="INVALID FILENAME",
             message=(
                 f"The uploaded filename '{file.filename}' is unsafe: it is empty, "
                 "degenerate ('.' or '..'), or contains a path separator."
@@ -263,6 +264,7 @@ async def check_upload(
         if not _has_vocal_claim(attrs, registry):
             context.error = ResolverError(
                 code="not_vocal_managed",
+                title="NOT A VOCAL-MANAGED FILE",
                 message="This file carries no recognisable vocal claim.",
                 hint=(
                     "The web checker validates a file against the standards and "

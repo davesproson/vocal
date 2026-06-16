@@ -426,6 +426,7 @@ class TestUploadPost:
         context = CheckContext(
             error=ResolverError(
                 code="not_vocal_managed",
+                title="NOT A VOCAL-MANAGED FILE",
                 message="This file carries no recognisable vocal claim.",
                 hint="Add a vocal_project_url, a vocal_definitions_url, or a "
                 "Conventions token naming an installed standard.",
@@ -459,6 +460,10 @@ class TestUploadPost:
         assert "unsafe" in response.text
         assert "PASSED" not in response.text
         assert "FAILED" not in response.text
+        # The banner heading matches the refusal category: an unsafe name is
+        # not the same refusal as "no vocal claim" (issue #62).
+        assert "INVALID FILENAME" in response.text
+        assert "NOT A VOCAL-MANAGED FILE" not in response.text
 
     def test_stored_landing_renders_confirmation(self, client: TestClient) -> None:
         context = CheckContext(

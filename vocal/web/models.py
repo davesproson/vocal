@@ -19,16 +19,20 @@ REQUIREMENT_LABELS: dict[RequirementStatus, str] = {
 class ResolverError(BaseModel):
     """A typed failure surfaced on the results page *as a refusal, not a verdict*.
 
-    The web checker refuses a file upfront only when it carries no recognisable
-    vocal claim at all (``not_vocal_managed``): there is nothing to check and no
-    verdict to render. ``code`` / ``message`` / ``hint`` mirror the resolver's
-    typed-error shape (:class:`vocal.resolution.ResolutionError`); the web UI
-    renders ``message`` and ``hint`` directly. Recoverable, per-claim problems
-    (a missing pack, a too-old standard) are *not* refusals — they ride the
-    INDETERMINATE verdict as :class:`UnverifiedClaim`\\ s instead.
+    The web checker refuses a file upfront for a handful of distinct reasons: it
+    carries no recognisable vocal claim (``not_vocal_managed``), or its uploaded
+    name is unsafe (``unsafe_filename``). Either way it is a refusal, not a
+    verdict. ``code`` / ``message`` / ``hint`` mirror the resolver's typed-error
+    shape (:class:`vocal.resolution.ResolutionError`); ``title`` is the banner
+    heading shown for this refusal category (each ``code`` carries its own, so
+    the heading matches the reason). The web UI renders ``title`` / ``message`` /
+    ``hint`` directly. Recoverable, per-claim problems (a missing pack, a too-old
+    standard) are *not* refusals — they ride the INDETERMINATE verdict as
+    :class:`UnverifiedClaim`\\ s instead.
     """
 
     code: str
+    title: str
     message: str
     hint: str | None = None
 

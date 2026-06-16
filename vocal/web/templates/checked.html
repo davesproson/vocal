@@ -4,11 +4,13 @@
 <div class="container">
 
     {% if error %}
-    {# Refusal, not a verdict: the file carries no recognisable vocal claim. #}
+    {# Refusal, not a verdict. The heading is carried per refusal category on the
+    ResolverError (error.title) so it matches the reason — e.g. a file with no
+    vocal claim vs. one rejected for an unsafe uploaded name. #}
     <div class="incomplete-banner">
         <div class="incomplete-banner-header">
             <span class="incomplete-icon">!</span>
-            NOT A VOCAL-MANAGED FILE
+            {{ error.title }}
         </div>
         <div class="incomplete-banner-body">
             <div class="incomplete-msg">{{ error.message }}</div>
