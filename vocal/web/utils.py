@@ -21,7 +21,7 @@ from vocal.resolution import (
 from vocal.utils import get_error_locs
 from vocal.utils.conventions import FileConventions, read_file_conventions
 from vocal.utils.registry import Registry
-from vocal.web.landing import perform_landing
+from vocal.web.landing import perform_landing, safe_landing_name
 from vocal.web.models import (
     AdvisoryWarning,
     Check,
@@ -69,7 +69,8 @@ def _has_vocal_claim(attrs: FileConventions, registry: Registry) -> bool:
         return True
     installed_names = {project.name for project in registry.projects.values()}
     return any(
-        token.name in installed_names for token in tokenise_conventions(attrs.conventions)
+        token.name in installed_names
+        for token in tokenise_conventions(attrs.conventions)
     )
 
 
@@ -86,7 +87,9 @@ def _project_view(result: ProjectCheckResult) -> CheckProject:
 
 def _definition_view(result: DefinitionCheckResult) -> CheckDefinition:
     """Render the product-axis structural check report for the results page."""
-    view = CheckDefinition(passed=result.passed, warnings=False, comments=False, checks=[])
+    view = CheckDefinition(
+        passed=result.passed, warnings=False, comments=False, checks=[]
+    )
     if result.report is None:
         return view
 
@@ -229,8 +232,24 @@ async def check_upload(
             detail="No file provided", status_code=status.HTTP_400_BAD_REQUEST
         )
 
+    safe_filename, filename_is_safe = safe_landing_name(file.filename)
+
+    if not filename_is_safe:
+        context.error = ResolverError(
+            code="unsafe_filename",
+            message=(
+                f"The uploaded filename '{file.filename}' is unsafe: it is empty, "
+                "degenerate ('.' or '..'), or contains a path separator."
+            ),
+            hint=(
+                "The web checker refuses to check a file whose derived landing name is unsafe. "
+                "Rename the file and try again."
+            ),
+        )
+        return context
+
     with tempfile.TemporaryDirectory() as temp_dir:
-        file_path = os.path.join(temp_dir, file.filename)
+        file_path = os.path.join(temp_dir, safe_filename)
         with open(file_path, "wb") as f:
             f.write(file.file.read())
         file.file.close()

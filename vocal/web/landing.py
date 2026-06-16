@@ -66,10 +66,7 @@ def safe_landing_name(filename: str) -> tuple[str, bool]:
     """
     name = os.path.basename(filename)
     safe = (
-        bool(name)
-        and name not in {".", ".."}
-        and "/" not in name
-        and "\\" not in name
+        bool(name) and name not in {".", ".."} and "/" not in name and "\\" not in name
     )
     return name, safe
 
