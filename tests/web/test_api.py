@@ -441,6 +441,23 @@ class TestUploadPost:
         assert "NOT A VOCAL-MANAGED FILE" in response.text
         assert "This file carries no recognisable vocal claim." in response.text
         assert "PASSED" not in response.text
+
+    def test_unsafe_filename_post_is_refused_end_to_end(
+        self, client: TestClient
+    ) -> None:
+        # Unlike the other route tests, check_upload is NOT mocked here: this
+        # proves the real refusal fires through the HTTP layer for a crafted
+        # multipart filename, before any netCDF read (the dummy bytes are never
+        # parsed). A residual-separator name (backslash, which os.path.basename
+        # does not split on POSIX) is rejected with the unsafe-filename message
+        # rather than yielding a verdict.
+        response = client.post(
+            "/",
+            files={"file": ("..\\..\\evil.nc", b"dummy", "application/octet-stream")},
+        )
+        assert response.status_code == 200
+        assert "unsafe" in response.text
+        assert "PASSED" not in response.text
         assert "FAILED" not in response.text
 
     def test_stored_landing_renders_confirmation(self, client: TestClient) -> None:
@@ -1014,3 +1031,53 @@ class TestCheckUploadPrecondition:
             "satisfies" in w.message and "none of which the file claims" in w.message
             for w in context.warnings
         )
+
+    def test_unsafe_filename_refused_before_any_io(self) -> None:
+        # A crafted multipart filename that survives os.path.basename as a
+        # residual separator (a backslash name — the cross-platform traversal
+        # os.path.basename does not split on POSIX) is refused up front, before
+        # the upload is read or resolved, so it can never reach the filesystem.
+        # Patching read_file_conventions and resolve_file lets us assert that
+        # short-circuit directly: neither is ever called.
+        from io import BytesIO
+
+        from vocal.web import utils as web_utils
+
+        upload = UploadFile(filename="..\\..\\evil.nc", file=BytesIO(b"dummy"))
+        with (
+            patch("vocal.web.utils.read_file_conventions") as read_conv,
+            patch("vocal.web.utils.resolve_file") as resolve,
+        ):
+            context = asyncio.run(web_utils.check_upload(upload))
+
+        assert context.verdict is None
+        assert context.error is not None
+        assert context.error.code == "unsafe_filename"
+        assert context.error.hint is not None
+        read_conv.assert_not_called()
+        resolve.assert_not_called()
+
+    def test_posix_traversal_filename_is_sanitised_not_refused(
+        self, tmp_path: Path
+    ) -> None:
+        # A POSIX traversal name (../../foo) is *not* a refusal: os.path.basename
+        # reduces it to a safe basename, confining the temp write to the temp
+        # dir, and the file is then checked under that basename. The companion
+        # backslash case above is the one that is refused.
+        from io import BytesIO
+
+        from vocal.web import utils as web_utils
+
+        nc = _make_nc(tmp_path, conventions="MYSTD-2.3", project_url=MYSTD_URL)
+        registry = _registry(project=_project(url=MYSTD_URL))
+        with open(nc, "rb") as fh:
+            upload = UploadFile(filename="../../foo_20260522.nc", file=BytesIO(fh.read()))
+            with patch("vocal.web.utils.Registry.load", return_value=registry):
+                with patch(
+                    "vocal.web.utils.run_check",
+                    side_effect=lambda res, fn: _pass_outcome(res),
+                ):
+                    context = asyncio.run(web_utils.check_upload(upload))
+
+        assert context.error is None
+        assert context.verdict == "pass"
