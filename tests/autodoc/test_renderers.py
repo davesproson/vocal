@@ -160,3 +160,33 @@ class TestRegistry:
         for name, r in RENDERERS.items():
             assert callable(r.render), name
             assert r.extension and "." not in r.extension, name
+
+    def test_every_registered_renderer_has_a_render_index(self) -> None:
+        for name, r in RENDERERS.items():
+            assert callable(r.render_index), name
+
+
+class TestPackIndex:
+    """The minimal pack index seam (#64): a routing page of linked product names.
+
+    The lean header and the per-product ``file_pattern`` column arrive in #65;
+    here we only pin that the index is a document linking every product to the
+    page href it was assembled with.
+    """
+
+    def test_index_links_every_product_to_its_page_href(self) -> None:
+        from vocal.autodoc.ir import PackDoc, PackEntry
+        from vocal.autodoc.renderers.html import render_index
+
+        pack = PackDoc(
+            url="https://host/packs/demo",
+            version=1,
+            products=[
+                PackEntry(name="alpha", href="alpha.html", file_pattern="a_{date}.nc"),
+                PackEntry(name="beta", href="beta.html", file_pattern="b_{date}.nc"),
+            ],
+        )
+        out = render_index(pack)
+        assert out.startswith("<!doctype html>")
+        assert 'href="alpha.html"' in out and ">alpha<" in out
+        assert 'href="beta.html"' in out and ">beta<" in out

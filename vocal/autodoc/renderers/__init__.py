@@ -16,25 +16,33 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from ..ir import ProductDoc, ProjectDoc
+from ..ir import PackDoc, ProductDoc, ProjectDoc
 from . import html
 
 
 @dataclass(frozen=True)
 class Renderer:
-    """A registered output format: its render function and default extension.
+    """A registered output format: its render functions and default extension.
 
     ``extension`` (no dot) drives both the default ``--out`` filename
     (``autodoc.<extension>``) and how the command labels the format; it lives
     with the renderer so the command needn't know any per-format specifics.
+
+    ``render`` turns a single ``--project`` / ``--product`` IR root into a page;
+    ``render_index`` turns a :class:`~vocal.autodoc.ir.PackDoc` into a pack's
+    index page (``--pack`` mode). A future format implements its own
+    ``render_index`` rather than the command hard-coding an index format.
     """
 
     render: Callable[[ProjectDoc | ProductDoc, str | None], str]
     extension: str
+    render_index: Callable[[PackDoc], str]
 
 
 RENDERERS: dict[str, Renderer] = {
-    "html": Renderer(render=html.render, extension="html"),
+    "html": Renderer(
+        render=html.render, extension="html", render_index=html.render_index
+    ),
 }
 
 

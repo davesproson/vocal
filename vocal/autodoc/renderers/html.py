@@ -38,6 +38,7 @@ from ..ir import (
     DimensionDoc,
     GroupDoc,
     NodeRef,
+    PackDoc,
     ProductDoc,
     ProjectDoc,
     VariableDoc,
@@ -701,3 +702,28 @@ def render(doc: ProjectDoc | ProductDoc, title: str | None = None) -> str:
     ``short_name`` from the meta section.
     """
     return _document(build_doc(doc), title)
+
+
+def render_index(pack: PackDoc) -> str:
+    """Render a pack's index page: a routing list linking to each product page.
+
+    This is the minimal index — one link per product to the page it was
+    assembled with. The lean pack-level header (``url`` / ``version`` /
+    ``satisfies_standards``) and the per-product ``file_pattern`` column are
+    layered on top of this seam in a later slice.
+    """
+    rows = "".join(
+        f'<li><a href="{_esc(entry.href)}">{_esc(entry.name)}</a></li>'
+        for entry in pack.products
+    )
+    body = (
+        '<header><h1>pack</h1><span class="mode">pack</span>'
+        '<span class="brand">vocal</span></header>'
+        f'<main><ul class="packindex">{rows}</ul></main>'
+    )
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+        f"<title>autodoc — pack</title><style>{_CSS}</style></head>"
+        f"<body>{body}</body></html>"
+    )

@@ -22,11 +22,14 @@ from .ir import (
     DimensionDoc,
     GroupDoc,
     NodeRef,
+    PackDoc,
+    PackEntry,
     ProductDoc,
     ProjectDoc,
     RuleDoc,
     VariableDoc,
 )
+from .pack import build_pack_doc, unique_slugs
 from .placeholder import ParsedValue, parse_value
 from .product import document_product
 from .project import document_project
@@ -39,6 +42,8 @@ __all__ = [
     "DimensionDoc",
     "GroupDoc",
     "NodeRef",
+    "PackDoc",
+    "PackEntry",
     "ProductDoc",
     "ProjectDoc",
     "RuleDoc",
@@ -48,6 +53,8 @@ __all__ = [
     "normalize_constraints",
     "mixin_mismatch",
     "undescribed_validator",
+    "build_pack_doc",
+    "unique_slugs",
     "document_product",
     "document_project",
     "attribute_rules",

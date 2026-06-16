@@ -124,6 +124,14 @@ class TestSourceSelection:
         assert result.exit_code != 0
         assert "exactly one" in result.output
 
+    def test_pack_with_project_errors(self) -> None:
+        # --pack is the third mutually-exclusive source.
+        result = runner.invoke(
+            cli_app, ["autodoc", "-p", "proj", "--pack", "packdir"]
+        )
+        assert result.exit_code != 0
+        assert "exactly one" in result.output
+
 
 class TestFormat:
     def test_unknown_format_errors_before_generate(self) -> None:
@@ -210,3 +218,112 @@ class TestOutput:
             assert "<!doctype html>" in result.output
             # Nothing should have been written to disk in stdout mode.
             assert not Path("autodoc.html").exists()
+
+
+def _write_pack(directory: Path, names: list[str]) -> None:
+    """Write a real pack (manifest.json + a product schema per name) into a dir.
+
+    Pack mode runs the *real* ``document_product`` over these on-disk schemas, so
+    the generated pages are genuine output.
+    """
+    import json
+
+    for name in names:
+        (directory / f"{name}.json").write_text(json.dumps(_PRODUCT))
+    (directory / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "version": 1,
+                "url": "https://host/packs/demo",
+                "filecodec": {"date": {"regex": r"\d{8}"}},
+                "satisfies_standards": [],
+                "products": [
+                    {
+                        "name": name,
+                        "file_pattern": "thing_{date}.nc",
+                        "schema": f"{name}.json",
+                    }
+                    for name in names
+                ],
+            }
+        )
+    )
+
+
+class TestPack:
+    def test_pack_writes_index_and_a_page_per_product(self, tmp_path: Path) -> None:
+        pack_dir = tmp_path / "pack"
+        pack_dir.mkdir()
+        _write_pack(pack_dir, ["alpha", "beta"])
+        out_dir = tmp_path / "site"
+
+        result = runner.invoke(
+            cli_app, ["autodoc", "--pack", str(pack_dir), "-o", str(out_dir)]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert (out_dir / "index.html").exists()
+        assert (out_dir / "alpha.html").exists()
+        assert (out_dir / "beta.html").exists()
+        # The product pages are genuine product output.
+        assert "product" in (out_dir / "alpha.html").read_text()
+
+    def test_index_links_resolve_to_written_pages(self, tmp_path: Path) -> None:
+        pack_dir = tmp_path / "pack"
+        pack_dir.mkdir()
+        _write_pack(pack_dir, ["alpha", "beta"])
+        out_dir = tmp_path / "site"
+
+        runner.invoke(
+            cli_app, ["autodoc", "--pack", str(pack_dir), "-o", str(out_dir)]
+        )
+
+        index = (out_dir / "index.html").read_text()
+        for href in ("alpha.html", "beta.html"):
+            assert f'href="{href}"' in index
+            assert (out_dir / href).exists()
+
+    def test_product_page_titled_with_manifest_name(self, tmp_path: Path) -> None:
+        pack_dir = tmp_path / "pack"
+        pack_dir.mkdir()
+        _write_pack(pack_dir, ["alpha"])
+        out_dir = tmp_path / "site"
+
+        runner.invoke(
+            cli_app, ["autodoc", "--pack", str(pack_dir), "-o", str(out_dir)]
+        )
+
+        # The manifest product name overrides the page heading, so it matches the
+        # index link text.
+        assert "<h1>alpha</h1>" in (out_dir / "alpha.html").read_text()
+
+    def test_default_out_dir_is_autodoc(self, tmp_path: Path) -> None:
+        pack_dir = tmp_path / "pack"
+        pack_dir.mkdir()
+        _write_pack(pack_dir, ["alpha"])
+
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli_app, ["autodoc", "--pack", str(pack_dir)])
+            assert result.exit_code == 0, result.output
+            assert Path("autodoc/index.html").exists()
+            assert Path("autodoc/alpha.html").exists()
+
+    def test_rerun_overwrites_ours_and_leaves_others(self, tmp_path: Path) -> None:
+        pack_dir = tmp_path / "pack"
+        pack_dir.mkdir()
+        _write_pack(pack_dir, ["alpha"])
+        out_dir = tmp_path / "site"
+        out_dir.mkdir()
+        keepsake = out_dir / "keep.txt"
+        keepsake.write_text("untouched")
+
+        for _ in range(2):
+            result = runner.invoke(
+                cli_app, ["autodoc", "--pack", str(pack_dir), "-o", str(out_dir)]
+            )
+            assert result.exit_code == 0, result.output
+
+        assert (out_dir / "index.html").exists()
+        # An unrelated file in the output directory is left alone.
+        assert keepsake.read_text() == "untouched"

@@ -253,6 +253,38 @@ class ProductDoc(BaseModel):
     satisfies_standards: list[str] = Field(default_factory=list)
 
 
+class PackEntry(BaseModel):
+    """One product's row in a pack index: its name, page link, and file pattern.
+
+    ``href`` is the bare filename of the product's generated page (index and
+    product pages share one directory), derived from ``name`` via the slug helper
+    so the link target and the on-disk filename cannot drift. ``file_pattern`` is
+    the templated filename a conforming data file matches, carried from the
+    manifest so a reader can tell which files the product is meant for.
+    """
+
+    name: str
+    href: str
+    file_pattern: str
+
+
+class PackDoc(BaseModel):
+    """The IR root for a pack's index page, produced by ``build_pack_doc``.
+
+    A pack documents as a small static site — this routing node describes the
+    index. It carries the pack identity (``url`` / ``version``), the advisory
+    pack-wide ``satisfies_standards`` (canonical constraint strings, stated once
+    for the whole pack), and one :class:`PackEntry` per product. It is rendered by
+    a renderer's ``render_index`` seam, separate from the single-page ``render``.
+    """
+
+    mode: Literal["pack"] = "pack"
+    url: str
+    version: int
+    satisfies_standards: list[str] = Field(default_factory=list)
+    products: list[PackEntry] = Field(default_factory=list)
+
+
 # Resolve the ``"GroupDoc"`` forward reference in ``GroupChild`` now that every
 # node type exists, so the recursive ``groups`` union is fully built.
 GroupDoc.model_rebuild()
